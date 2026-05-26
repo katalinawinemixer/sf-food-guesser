@@ -49,3 +49,12 @@ The React app runs on `http://127.0.0.1:5173/` and the local API runs on
 ```bash
 npm run build
 ```
+
+## Build Checklist
+
+See [PROJECT_CHECKLIST.md](./PROJECT_CHECKLIST.md) for the ordered product,
+accuracy, security, and deployment checklist.
+
+The product promise and accuracy rules are in
+[docs/PRODUCT_SPEC.md](./docs/PRODUCT_SPEC.md). The private labeled-photo
+evaluation workflow is in [evaluation/README.md](./evaluation/README.md).

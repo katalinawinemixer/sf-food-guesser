@@ -12,6 +12,11 @@ dist
 dist-ssr
 *.local
 .env
+evaluation/labeled-photos.json
+evaluation/photos/*
+!evaluation/photos/.gitkeep
+evaluation/results/*
+!evaluation/results/.gitkeep
 
 # Editor directories and files
 .vscode/*

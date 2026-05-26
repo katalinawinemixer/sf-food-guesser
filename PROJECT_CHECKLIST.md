@@ -1,0 +1,120 @@
+# SF Food Guesser Build Checklist
+
+This checklist is ordered by how the product should be built, even when some
+items were completed earlier out of order.
+
+## 1. Product Goal And Success Criteria
+
+- [x] Define the core user promise: upload a gatekept SF food/interior photo and get the most likely venue.
+- [x] Define the first supported geography: San Francisco only.
+- [x] Define supported venue types: restaurants, cafes, bakeries, counters, bars, dessert shops.
+- [x] Define what counts as a correct answer: exact venue name, address, and supporting evidence.
+- [x] Define accuracy targets before claiming accuracy, for example top-1 and top-3 accuracy on a labeled photo set.
+- [x] Define uncertainty behavior: when confidence is low, show candidates and evidence instead of pretending certainty.
+
+## 2. Security And Repo Hygiene
+
+- [x] Create a private GitHub repo.
+- [x] Keep real API keys in local `.env`.
+- [x] Add `.env` to `.gitignore`.
+- [x] Commit only `.env.example` with obvious placeholders.
+- [x] Run secret scans before pushing code.
+- [x] Push code to GitHub without committed API keys.
+- [x] Add a pre-commit or CI secret scan so future commits are checked automatically.
+
+## 3. Local App Foundation
+
+- [x] Build a React/Vite frontend.
+- [x] Build a local Express backend.
+- [x] Add image upload and file picker support.
+- [x] Add drag-and-drop image upload support.
+- [x] Add preview and analysis state for uploaded photos.
+- [x] Add a visible analyzing/loading state so the UI does not look frozen.
+- [x] Add local API health checks.
+- [x] Add basic tests, lint, server syntax check, and production build.
+
+## 4. Vision Model Layer
+
+- [x] Add OpenRouter vision support.
+- [x] Keep optional direct OpenAI fallback placeholder clear in `.env.example`.
+- [x] Send uploaded images to the backend for model analysis.
+- [x] Prompt the model to inspect food, signage, interiors, packaging, decor, menus, street clues, and storefront clues.
+- [x] Force structured JSON output for candidates and evidence.
+- [ ] Add model/provider timeout handling and clearer retry messaging.
+- [ ] Log anonymized analysis steps locally for debugging without storing user photos.
+
+## 5. Search And Evidence Pipeline
+
+- [x] Add OpenRouter web search tool configuration for broad SF-specific search.
+- [x] Add Exa API key locally only.
+- [x] Add `exa-js`.
+- [x] Wire Exa deep search with `type: "deep"` and `contents: { highlights: true }`.
+- [x] Add Exa tests that verify the deep/highlights search configuration.
+- [x] Surface web evidence in the returned analysis payload.
+- [ ] Decide whether SerpAPI is actually part of the product. If yes, get a real key and keep it local only.
+- [ ] If SerpAPI is used, fetch candidate public images for likely venues and compare them visually against the upload.
+- [ ] Add source-specific search query generation for Google Maps/Business Profile pages, Yelp photos, restaurant sites, local blogs, Instagram/TikTok captions, Eater, Infatuation, and Michelin where available.
+- [ ] Avoid unsupported scraping; use provider APIs or publicly accessible search results.
+- [ ] Add a durable provider interface so Exa, OpenRouter search, SerpAPI, and future providers are isolated.
+
+## 6. Matching And Ranking
+
+- [x] Return multiple ranked candidates instead of only one guess.
+- [x] Include confidence scores and evidence reasons.
+- [x] Include source URLs and map queries when available.
+- [x] Prefer interior/storefront/photo evidence over generic dish similarity in the prompt.
+- [ ] Implement deterministic reranking after the model response, using evidence strength and source quality.
+- [ ] Penalize generic food-only matches unless there is strong supporting venue evidence.
+- [ ] Add explicit evidence categories: exact text match, interior match, storefront match, packaging/logo match, dish match, GPS match, web-source match.
+- [ ] Add confidence calibration rules so scores are consistent across runs.
+
+## 7. Ground Truth Evaluation
+
+- [ ] Create a private labeled test set of real SF photos with known correct venues.
+- [ ] Include hard cases: interior-only, dish-only, packaging-only, storefront, menu board, blurry screenshots, cropped social posts.
+- [x] Add an evaluation script that runs the pipeline over the labeled set.
+- [x] Track top-1 accuracy, top-3 accuracy, false positives, and “needs more evidence” quality.
+- [ ] Review failures and turn them into prompt, search, or ranking improvements.
+- [x] Do not call the app accurate until it performs well on this evaluation set.
+
+## 8. User Experience
+
+- [x] Make upload photo the main workflow.
+- [x] Remove the need for users to manually enter dish/sign/street/decor clues.
+- [x] Show analysis progress visually.
+- [x] Show detected visual evidence.
+- [x] Show candidate venues with confidence and reasons.
+- [x] Show a search trail when web/photo evidence exists.
+- [ ] Add a clear “why this guess” evidence view for each candidate.
+- [ ] Add “not correct” feedback so misses can be saved for evaluation.
+- [ ] Add a way for the user to upload the known answer after a miss.
+- [ ] Add mobile layout QA for upload, preview, loading, and results.
+
+## 9. Reliability And Error Handling
+
+- [x] Show missing-key/offline API health states.
+- [x] Reject requests without photos.
+- [x] Reject invalid venue payloads.
+- [ ] Add provider-specific error messages for OpenRouter, Exa, and SerpAPI.
+- [ ] Add graceful behavior when one provider fails but others work.
+- [ ] Add request size and file type messaging in the UI.
+- [ ] Add rate-limit messaging.
+
+## 10. Deployment Readiness
+
+- [ ] Choose deployment target.
+- [ ] Move API keys into deployment environment variables.
+- [ ] Keep GitHub free of real secrets.
+- [ ] Add production CORS/origin rules.
+- [ ] Add deployment README steps.
+- [x] Add CI for test, lint, build, and secret scan.
+- [ ] Decide whether uploaded photos are processed transiently only or stored with explicit consent.
+
+## 11. Future Accuracy Improvements
+
+- [ ] Add Google Places/Maps-compatible venue lookup if a compliant provider key is available.
+- [ ] Build a richer SF venue database from source-backed public pages.
+- [ ] Cache search results by query to reduce cost and latency.
+- [ ] Add image embedding comparison if a suitable provider is chosen.
+- [ ] Add manual review/admin workflow for failed guesses.
+- [ ] Add analytics for common failure modes without exposing private user photos.
