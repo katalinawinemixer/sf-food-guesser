@@ -4,6 +4,7 @@ import { fileURLToPath } from 'node:url'
 import express from 'express'
 import multer from 'multer'
 import OpenAI from 'openai'
+import Exa from 'exa-js'
 
 const upload = multer({
   storage: multer.memoryStorage(),
@@ -24,6 +25,7 @@ const model =
   (provider === 'openrouter' ? 'openai/gpt-4o-mini' : 'gpt-4.1-mini')
 const serpApiKey = process.env.SERPAPI_API_KEY
 const exaApiKey = process.env.EXA_API_KEY
+const exaClient = exaApiKey ? new Exa(exaApiKey) : null
 
 function parseModelJson(outputText) {
   const jsonStart = outputText.indexOf('{')
@@ -33,6 +35,14 @@ function parseModelJson(outputText) {
   }
 
   return JSON.parse(outputText.slice(jsonStart, jsonEnd + 1))
+}
+
+function getSourceName(url, fallback = 'Exa') {
+  try {
+    return new URL(url).hostname.replace(/^www\./, '')
+  } catch {
+    return String(fallback ?? 'Exa')
+  }
 }
 
 function createDefaultClient(visionProvider) {
@@ -272,42 +282,33 @@ function createDefaultPhotoSearch() {
     : null
 }
 
-async function searchExaWeb(searchQueries) {
+export async function searchExaWeb(searchQueries, searchClient = exaClient) {
   const pages = []
   const seen = new Set()
 
+  if (!searchClient) return pages
+
   for (const rawQuery of searchQueries.slice(0, 5)) {
     const query = `${rawQuery} San Francisco cafe restaurant interior reviews photos Yelp Google Maps`
-    const response = await fetch('https://api.exa.ai/search', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-api-key': exaApiKey,
+    const result = await searchClient.search(query, {
+      type: 'deep',
+      numResults: 10,
+      contents: {
+        highlights: true,
       },
-      body: JSON.stringify({
-        query,
-        type: 'auto',
-        numResults: 6,
-        contents: {
-          text: {
-            maxCharacters: 700,
-          },
-        },
-      }),
     })
-    if (!response.ok) continue
 
-    const result = await response.json()
     const results = Array.isArray(result.results) ? result.results : []
     for (const item of results) {
       const url = item.url || item.id
       if (!url || seen.has(url)) continue
       seen.add(url)
+      const highlights = Array.isArray(item.highlights) ? item.highlights : []
       pages.push({
         title: String(item.title ?? 'Candidate page'),
-        source: String(item.author ?? item.publishedDate ?? 'Exa'),
+        source: getSourceName(url, item.author),
         url: String(url),
-        snippet: String(item.text ?? item.summary ?? '').slice(0, 700),
+        snippet: highlights.join(' ').slice(0, 900),
         query,
       })
     }
@@ -317,9 +318,9 @@ async function searchExaWeb(searchQueries) {
 }
 
 function createDefaultWebSearch() {
-  return exaApiKey
+  return exaClient
     ? {
-        provider: 'exa',
+        provider: 'exa-deep-highlights',
         search: searchExaWeb,
       }
     : null

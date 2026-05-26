@@ -1,6 +1,6 @@
 import request from 'supertest'
 import { describe, expect, it, vi } from 'vitest'
-import { createApp } from './server.mjs'
+import { createApp, searchExaWeb } from './server.mjs'
 
 const pngPixel = Buffer.from(
   'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=',
@@ -10,7 +10,12 @@ const pngPixel = Buffer.from(
 describe('SF Food Guesser API', () => {
   it('reports when vision is disabled', async () => {
     const response = await request(
-      createApp({ openAIClient: null, visionModel: 'test-model', visionProvider: null }),
+      createApp({
+        openAIClient: null,
+        visionModel: 'test-model',
+        visionProvider: null,
+        webSearch: null,
+      }),
     )
       .get('/api/health')
       .expect(200)
@@ -74,7 +79,12 @@ describe('SF Food Guesser API', () => {
     }
 
     const response = await request(
-      createApp({ openAIClient, visionModel: 'test-model', visionProvider: 'openai' }),
+      createApp({
+        openAIClient,
+        visionModel: 'test-model',
+        visionProvider: 'openai',
+        webSearch: null,
+      }),
     )
       .post('/api/analyze-photo')
       .attach('photo', pngPixel, { filename: 'food.png', contentType: 'image/png' })
@@ -146,7 +156,12 @@ describe('SF Food Guesser API', () => {
     }
 
     const response = await request(
-      createApp({ visionClient, visionModel: 'openai/gpt-4o-mini', visionProvider: 'openrouter' }),
+      createApp({
+        visionClient,
+        visionModel: 'openai/gpt-4o-mini',
+        visionProvider: 'openrouter',
+        webSearch: null,
+      }),
     )
       .post('/api/analyze-photo')
       .attach('photo', pngPixel, { filename: 'food.png', contentType: 'image/png' })
@@ -282,6 +297,7 @@ describe('SF Food Guesser API', () => {
         visionModel: 'openai/gpt-4o-mini',
         visionProvider: 'openrouter',
         photoSearch,
+        webSearch: null,
       }),
     )
       .post('/api/analyze-photo')
@@ -411,5 +427,38 @@ describe('SF Food Guesser API', () => {
     const promptText = rankingRequest.messages[1].content[0].text
     expect(promptText).toContain('External web/review pages collected from search providers')
     expect(promptText).toContain('Black Counter Cafe review')
+  })
+
+  it('uses Exa deep search with highlights for web evidence', async () => {
+    const exaClient = {
+      search: vi.fn(async () => ({
+        results: [
+          {
+            title: 'Cafe interior photos',
+            url: 'https://example.com/cafe-interior',
+            highlights: ['Black counter and pastry case.', 'Green tile wall near espresso bar.'],
+          },
+        ],
+      })),
+    }
+
+    const pages = await searchExaWeb(['San Francisco cafe green tile interior'], exaClient)
+
+    expect(exaClient.search).toHaveBeenCalledWith(
+      expect.stringContaining('San Francisco cafe green tile interior'),
+      {
+        type: 'deep',
+        numResults: 10,
+        contents: {
+          highlights: true,
+        },
+      },
+    )
+    expect(pages[0]).toMatchObject({
+      title: 'Cafe interior photos',
+      source: 'example.com',
+      url: 'https://example.com/cafe-interior',
+      snippet: expect.stringContaining('Green tile wall'),
+    })
   })
 })
