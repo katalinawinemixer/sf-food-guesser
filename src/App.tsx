@@ -49,6 +49,8 @@ type VisionAnalysis = {
     pageUrl?: string
     thumbnailUrl?: string
     query?: string
+    placeTitle?: string
+    placeAddress?: string
   }>
   webEvidence?: Array<{
     title: string
@@ -344,6 +346,8 @@ async function analyzePhotoWithVision(file: File): Promise<VisionAnalysis> {
             pageUrl: photo.pageUrl ? String(photo.pageUrl) : undefined,
             thumbnailUrl: photo.thumbnailUrl ? String(photo.thumbnailUrl) : undefined,
             query: photo.query ? String(photo.query) : undefined,
+            placeTitle: photo.placeTitle ? String(photo.placeTitle) : undefined,
+            placeAddress: photo.placeAddress ? String(photo.placeAddress) : undefined,
           }))
           .slice(0, 6)
       : [],

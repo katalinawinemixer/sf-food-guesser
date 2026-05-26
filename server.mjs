@@ -168,11 +168,13 @@ ${JSON.stringify(
     query: photo.query,
     pageUrl: photo.pageUrl,
     imageUrl: photo.imageUrl,
+    placeTitle: photo.placeTitle,
+    placeAddress: photo.placeAddress,
   })),
 )}
 
 Important:
-- Compare the uploaded image against the external candidate photos. Use visual overlap with interiors, storefronts, counters, menu boards, decor, lighting, walls, display cases, cups, plates, and packaging.
+- Compare the uploaded image against the external candidate photos, especially Google Maps review/customer photos. Use visual overlap with interiors, storefronts, counters, menu boards, decor, lighting, walls, display cases, cups, plates, employee aprons, shelves, bags, bottles, and packaging.
 - Use external web/review pages to discover candidate venue names, addresses, neighborhoods, and pages likely to contain matching public photos.
 - Do not pick a candidate just because it has similar food. Similar interiors/photo-page evidence should outrank generic dish matches.
 - For every returned candidate, include comparisonPhotos showing which external candidate photos supported it.`
@@ -239,12 +241,13 @@ function normalizeEvidenceCategories(candidate) {
   return [...categories]
 }
 
-function scoreEvidenceCategories(categories) {
+function scoreEvidenceCategories(categories, options = {}) {
+  const hasExternalPhotoMatch = Boolean(options.hasExternalPhotoMatch)
   const weights = {
     visible_text: 28,
     packaging_logo: 24,
-    interior_match: 22,
-    storefront_match: 22,
+    interior_match: hasExternalPhotoMatch ? 22 : 8,
+    storefront_match: hasExternalPhotoMatch ? 22 : 8,
     gps_match: 20,
     web_source_match: 14,
     dish_match: 6,
@@ -265,35 +268,68 @@ function evidenceNote(category) {
   return notes[category] ?? null
 }
 
-export function rerankCandidates(rawCandidates = []) {
+export function rerankCandidates(rawCandidates = [], options = {}) {
+  const seedVenueIds = new Set(options.seedVenueIds ?? [])
+  const trustedPhotoUrls = new Set(options.photoEvidenceUrls ?? [])
+
   return rawCandidates
     .map((candidate, originalIndex) => {
       const evidenceCategoriesForCandidate = normalizeEvidenceCategories(candidate)
       const strongEvidence = evidenceCategoriesForCandidate.filter(
         (category) => category !== 'dish_match',
       )
+      const hasExternalPhotoMatch =
+        Array.isArray(candidate.comparisonPhotos) &&
+        candidate.comparisonPhotos.some((photo) => trustedPhotoUrls.has(photo.url))
+      const hasSeedMatch = Boolean(candidate.id) && seedVenueIds.has(candidate.id)
+      const hasHardVenueEvidence =
+        hasSeedMatch ||
+        hasExternalPhotoMatch ||
+        evidenceCategoriesForCandidate.some((category) =>
+          ['visible_text', 'packaging_logo', 'gps_match'].includes(category),
+        )
+      const hasUnverifiedVisualClaim =
+        !hasExternalPhotoMatch &&
+        evidenceCategoriesForCandidate.some((category) =>
+          ['interior_match', 'storefront_match'].includes(category),
+        )
       const dishOnly =
         evidenceCategoriesForCandidate.includes('dish_match') && strongEvidence.length === 0
       const hasSource = Array.isArray(candidate.sourceUrls) && candidate.sourceUrls.length > 0
       const hasReasons = Array.isArray(candidate.reasons) && candidate.reasons.length > 0
       const baseConfidence = Math.max(0, Math.min(100, Number(candidate.confidence ?? 0)))
-      const evidenceScore = scoreEvidenceCategories(evidenceCategoriesForCandidate)
-      const sourceScore = hasSource ? 8 : -8
+      const evidenceScore = scoreEvidenceCategories(evidenceCategoriesForCandidate, {
+        hasExternalPhotoMatch,
+      })
+      const sourceScore = hasSource ? (hasHardVenueEvidence ? 8 : 2) : -8
       const reasonScore = hasReasons ? Math.min(8, candidate.reasons.length * 2) : -6
       const dishOnlyPenalty = dishOnly ? -28 : 0
-      const adjustedScore = Math.max(
+      const rawAdjustedScore = Math.max(
         0,
         Math.min(100, baseConfidence * 0.62 + evidenceScore + sourceScore + reasonScore + dishOnlyPenalty),
       )
+      const confidenceCap =
+        dishOnly
+          ? 42
+          : !hasHardVenueEvidence && hasUnverifiedVisualClaim
+            ? 68
+            : !hasHardVenueEvidence
+              ? 74
+              : 100
+      const adjustedScore = Math.min(rawAdjustedScore, confidenceCap)
       const adjustedConfidence = Math.round(adjustedScore)
       const rankingNotes = [
         ...strongEvidence.map(evidenceNote).filter(Boolean),
         ...(dishOnly ? ['Food/drink similarity alone is weak evidence, so this was ranked lower.'] : []),
+        ...(hasUnverifiedVisualClaim
+          ? ['Interior/storefront similarity was not verified against external photos, so confidence is capped.']
+          : []),
         ...(hasSource ? ['Supporting source links were found for this venue.'] : ['No supporting source link was returned for this candidate.']),
       ]
 
       return {
         ...candidate,
+        id: hasSeedMatch ? candidate.id : '',
         confidence: adjustedConfidence,
         originalConfidence: baseConfidence,
         evidenceCategories: evidenceCategoriesForCandidate,
@@ -393,34 +429,62 @@ async function describeForExternalPhotoSearch({
   return normalizeSearchPlan(parseModelJson(result.output_text ?? '{}'))
 }
 
-async function searchSerpApiPhotos(searchQueries) {
+export async function searchSerpApiPhotos(searchQueries) {
   const photos = []
   const seen = new Set()
+  const seenPlaces = new Set()
 
-  for (const rawQuery of searchQueries.slice(0, 5)) {
-    const query = `${rawQuery} San Francisco interior photos Yelp Google Maps`
+  for (const rawQuery of searchQueries.slice(0, 3)) {
+    const query = `${rawQuery} San Francisco cafe restaurant`
     const url = new URL('https://serpapi.com/search.json')
-    url.searchParams.set('engine', 'google_images')
+    url.searchParams.set('engine', 'google_maps')
     url.searchParams.set('q', query)
+    url.searchParams.set('ll', '@37.7749,-122.4194,12z')
+    url.searchParams.set('hl', 'en')
     url.searchParams.set('api_key', serpApiKey)
 
     const response = await fetch(url)
     if (!response.ok) continue
     const result = await response.json()
-    const imageResults = Array.isArray(result.images_results) ? result.images_results : []
+    const places = Array.isArray(result.local_results) ? result.local_results : []
 
-    for (const image of imageResults.slice(0, 6)) {
-      const imageUrl = image.original || image.thumbnail
-      if (!imageUrl || seen.has(imageUrl)) continue
-      seen.add(imageUrl)
-      photos.push({
-        title: String(image.title ?? image.source ?? 'Candidate photo'),
-        source: String(image.source ?? 'Google Images'),
-        pageUrl: String(image.link ?? image.source ?? imageUrl),
-        imageUrl: String(imageUrl),
-        thumbnailUrl: image.thumbnail ? String(image.thumbnail) : String(imageUrl),
-        query,
-      })
+    for (const place of places.slice(0, 3)) {
+      if (!place.data_id || seenPlaces.has(place.data_id)) continue
+      seenPlaces.add(place.data_id)
+
+      const photosUrl = new URL('https://serpapi.com/search.json')
+      photosUrl.searchParams.set('engine', 'google_maps_photos')
+      photosUrl.searchParams.set('data_id', String(place.data_id))
+      photosUrl.searchParams.set('hl', 'en')
+      photosUrl.searchParams.set('api_key', serpApiKey)
+
+      const photosResponse = await fetch(photosUrl)
+      if (!photosResponse.ok) continue
+      const photosResult = await photosResponse.json()
+      const mapsPhotos = Array.isArray(photosResult.photos) ? photosResult.photos : []
+
+      for (const photo of mapsPhotos.slice(0, 4)) {
+        const imageUrl = photo.image || photo.thumbnail
+        if (!imageUrl || seen.has(imageUrl)) continue
+        seen.add(imageUrl)
+        photos.push({
+          title: `${String(place.title ?? 'Google Maps place')} customer photo`,
+          source: 'Google Maps reviews/photos',
+          pageUrl: `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(
+            [place.title, place.address].filter(Boolean).join(' '),
+          )}`,
+          imageUrl: String(imageUrl),
+          thumbnailUrl: photo.thumbnail ? String(photo.thumbnail) : String(imageUrl),
+          query,
+          placeTitle: String(place.title ?? ''),
+          placeAddress: String(place.address ?? ''),
+          placeDataId: String(place.data_id),
+          placeId: place.place_id ? String(place.place_id) : undefined,
+          mapsQuery: [place.title, place.address].filter(Boolean).join(' '),
+          gpsCoordinates: place.gps_coordinates ?? null,
+        })
+        if (photos.length >= 18) return photos
+      }
     }
   }
 
@@ -430,7 +494,7 @@ async function searchSerpApiPhotos(searchQueries) {
 function createDefaultPhotoSearch() {
   return serpApiKey
     ? {
-        provider: 'serpapi-google-images',
+        provider: 'serpapi-google-maps-photos',
         search: searchSerpApiPhotos,
       }
     : null
@@ -737,7 +801,13 @@ export function createApp(options = {}) {
         webEvidence,
       })
       const result = parseModelJson(outputText)
-      const candidates = rerankCandidates(Array.isArray(result.candidates) ? result.candidates : [])
+      const photoEvidenceUrls = photoEvidence.flatMap((photo) =>
+        [photo.pageUrl, photo.imageUrl, photo.thumbnailUrl].filter(Boolean),
+      )
+      const candidates = rerankCandidates(Array.isArray(result.candidates) ? result.candidates : [], {
+        seedVenueIds: compactVenues.map((venue) => venue.id),
+        photoEvidenceUrls,
+      })
       response.json({
         ...result,
         candidates,
@@ -748,6 +818,8 @@ export function createApp(options = {}) {
           pageUrl: photo.pageUrl,
           thumbnailUrl: photo.thumbnailUrl,
           query: photo.query,
+          placeTitle: photo.placeTitle,
+          placeAddress: photo.placeAddress,
         })),
         webEvidence: webEvidence.map((page) => ({
           title: page.title,
@@ -772,7 +844,7 @@ export function createApp(options = {}) {
   return app
 }
 
-if (fileURLToPath(import.meta.url) === resolve(process.argv[1])) {
+if (process.argv[1] && fileURLToPath(import.meta.url) === resolve(process.argv[1])) {
   createApp().listen(port, '127.0.0.1', () => {
     console.log(`SF Food Guesser API running at http://127.0.0.1:${port}`)
   })

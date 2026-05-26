@@ -1,6 +1,6 @@
 import request from 'supertest'
 import { describe, expect, it, vi } from 'vitest'
-import { createApp, rerankCandidates, searchExaWeb } from './server.mjs'
+import { createApp, rerankCandidates, searchExaWeb, searchSerpApiPhotos } from './server.mjs'
 
 const pngPixel = Buffer.from(
   'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=',
@@ -346,6 +346,58 @@ describe('SF Food Guesser API', () => {
     )
   })
 
+  it('searches Google Maps places before fetching Google review photos', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch')
+    fetchMock
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            local_results: [
+              {
+                title: 'Green Tile Cafe',
+                address: '123 Valencia St, San Francisco, CA',
+                data_id: '0xabc:0x123',
+                place_id: 'place-123',
+                gps_coordinates: { latitude: 37.76, longitude: -122.42 },
+              },
+            ],
+          }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } },
+        ),
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            photos: [
+              {
+                image: 'https://lh5.googleusercontent.com/p/interior=w1200-h900-k-no',
+                thumbnail: 'https://lh5.googleusercontent.com/p/interior=w203-h152-k-no',
+              },
+            ],
+          }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } },
+        ),
+      )
+
+    const photos = await searchSerpApiPhotos(['green tile matcha counter'])
+    const firstUrl = new URL(fetchMock.mock.calls[0][0])
+    const secondUrl = new URL(fetchMock.mock.calls[1][0])
+
+    expect(firstUrl.searchParams.get('engine')).toBe('google_maps')
+    expect(firstUrl.searchParams.get('q')).toContain('green tile matcha counter')
+    expect(secondUrl.searchParams.get('engine')).toBe('google_maps_photos')
+    expect(secondUrl.searchParams.get('data_id')).toBe('0xabc:0x123')
+    expect(photos[0]).toMatchObject({
+      title: 'Green Tile Cafe customer photo',
+      source: 'Google Maps reviews/photos',
+      imageUrl: 'https://lh5.googleusercontent.com/p/interior=w1200-h900-k-no',
+      placeTitle: 'Green Tile Cafe',
+      placeAddress: '123 Valencia St, San Francisco, CA',
+    })
+
+    fetchMock.mockRestore()
+  })
+
   it('uses an Exa-style web provider to collect review pages before ranking', async () => {
     const visionClient = {
       chat: {
@@ -489,24 +541,27 @@ describe('SF Food Guesser API', () => {
   })
 
   it('reranks strong venue evidence above dish-only guesses', () => {
-    const candidates = rerankCandidates([
-      {
-        id: 'dish-only',
-        name: 'Dish Only Cafe',
-        confidence: 93,
-        evidenceCategories: ['dish_match'],
-        reasons: ['The photo shows a similar matcha drink.'],
-        sourceUrls: [],
-      },
-      {
-        id: 'interior',
-        name: 'Interior Match Cafe',
-        confidence: 72,
-        evidenceCategories: ['interior_match', 'web_source_match'],
-        reasons: ['Public photos show the same green tile wall and counter.'],
-        sourceUrls: ['https://example.com/interior-match'],
-      },
-    ])
+    const candidates = rerankCandidates(
+      [
+        {
+          id: 'dish-only',
+          name: 'Dish Only Cafe',
+          confidence: 93,
+          evidenceCategories: ['dish_match'],
+          reasons: ['The photo shows a similar matcha drink.'],
+          sourceUrls: [],
+        },
+        {
+          id: 'interior',
+          name: 'Interior Match Cafe',
+          confidence: 72,
+          evidenceCategories: ['interior_match', 'web_source_match'],
+          reasons: ['Public photos show the same green tile wall and counter.'],
+          sourceUrls: ['https://example.com/interior-match'],
+        },
+      ],
+      { seedVenueIds: ['interior'] },
+    )
 
     expect(candidates[0]).toMatchObject({
       id: 'interior',
@@ -514,6 +569,71 @@ describe('SF Food Guesser API', () => {
     })
     expect(candidates[1].rankingNotes).toContain(
       'Food/drink similarity alone is weak evidence, so this was ranked lower.',
+    )
+  })
+
+  it('caps unverified web-discovered interior claims', () => {
+    const candidates = rerankCandidates([
+      {
+        id: '',
+        name: 'Generic Matcha Cafe',
+        confidence: 90,
+        evidenceCategories: ['interior_match', 'storefront_match', 'web_source_match', 'dish_match'],
+        reasons: [
+          'The cafe has a modern interior and matcha drinks.',
+          'Search results show many matcha drinks at this venue.',
+        ],
+        sourceUrls: ['https://example.com/generic-matcha-cafe'],
+      },
+    ])
+
+    expect(candidates[0].confidence).toBeLessThanOrEqual(68)
+    expect(candidates[0].rankingNotes).toContain(
+      'Interior/storefront similarity was not verified against external photos, so confidence is capped.',
+    )
+  })
+
+  it('does not trust invented non-seed ids as verified venues', () => {
+    const candidates = rerankCandidates(
+      [
+        {
+          id: 'invented-cafe-id',
+          name: 'Invented Cafe',
+          confidence: 92,
+          evidenceCategories: ['interior_match', 'web_source_match', 'dish_match'],
+          reasons: ['The cafe has a similar interior and matcha drink.'],
+          sourceUrls: ['https://example.com/invented-cafe'],
+        },
+      ],
+      { seedVenueIds: ['real-seed-id'] },
+    )
+
+    expect(candidates[0].id).toBe('')
+    expect(candidates[0].confidence).toBeLessThanOrEqual(68)
+  })
+
+  it('does not trust model-invented comparison photos', () => {
+    const candidates = rerankCandidates([
+      {
+        id: '',
+        name: 'Invented Photo Cafe',
+        confidence: 96,
+        evidenceCategories: ['interior_match', 'web_source_match', 'dish_match'],
+        reasons: ['The interior appears similar.'],
+        sourceUrls: ['https://example.com/cafe'],
+        comparisonPhotos: [
+          {
+            title: 'Invented interior',
+            source: 'Yelp',
+            url: 'https://example.com/not-returned-by-provider.jpg',
+          },
+        ],
+      },
+    ])
+
+    expect(candidates[0].confidence).toBeLessThanOrEqual(68)
+    expect(candidates[0].rankingNotes).toContain(
+      'Interior/storefront similarity was not verified against external photos, so confidence is capped.',
     )
   })
 

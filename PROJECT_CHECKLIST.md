@@ -52,7 +52,7 @@ items were completed earlier out of order.
 - [x] Add Exa tests that verify the deep/highlights search configuration.
 - [x] Surface web evidence in the returned analysis payload.
 - [x] Defer SerpAPI unless Exa/OpenRouter evidence is not enough.
-- [ ] If a photo-search provider is added later, fetch candidate public images for likely venues and compare them visually against the upload.
+- [x] Add optional Google Maps customer/review photo search through SerpAPI and compare candidate public images visually against the upload.
 - [x] Add source-specific search query generation for Yelp photos, restaurant sites, local blogs, Instagram/TikTok captions, Eater, Infatuation, and other public pages where available.
 - [ ] Avoid unsupported scraping; use provider APIs or publicly accessible search results.
 - [ ] Add a durable provider interface so Exa, OpenRouter search, SerpAPI, and future providers are isolated.

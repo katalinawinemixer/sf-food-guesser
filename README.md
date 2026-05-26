@@ -18,11 +18,12 @@ in your local `.env`, which is ignored by git.
 
 For stronger interior/storefront matching, you can optionally add your own
 `SERPAPI_API_KEY`. With that key, the backend runs an agent-style two-pass flow:
-describe the uploaded photo, generate Google/Yelp/review-photo search queries,
-fetch candidate public photos, then compare those external photos against the
-upload before ranking places. You can also optionally add your own `EXA_API_KEY`;
-the backend uses `exa-js` with `type: "deep"` and `contents: { highlights: true }`
-to pull broader web/review-page evidence into the same comparison step.
+describe the uploaded photo, search Google Maps places, fetch Google Maps
+customer/review photos for candidate listings, then compare those external
+photos against the upload before ranking places. You can also optionally add
+your own `EXA_API_KEY`; the backend uses `exa-js` with `type: "deep"` and
+`contents: { highlights: true }` to pull broader web/review-page evidence into
+the same comparison step.
 
 ## Run
 
