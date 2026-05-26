@@ -400,10 +400,6 @@
   margin-top: 10px;
 }
 
-.empty-active {
-  margin-top: auto;
-}
-
 .action-row,
 .card-links {
   display: flex;
@@ -709,13 +705,13 @@
   font-size: 13px;
 }
 
-.empty-results {
+.waiting-results {
   display: grid;
   place-items: center;
   min-height: 260px;
-  border: 1px dashed #c9d8cd;
+  border: 1px solid #dce8df;
   border-radius: 8px;
-  background: #fbfdf9;
+  background: #ffffff;
   color: #607067;
   text-align: center;
   padding: 28px;
@@ -798,18 +794,18 @@
   font-weight: 800;
 }
 
-.empty-results svg {
+.waiting-results svg {
   color: #227355;
 }
 
-.empty-results h3 {
+.waiting-results h3 {
   margin: 12px 0 6px;
   color: #17211d;
   font-size: 22px;
   line-height: 1.15;
 }
 
-.empty-results p {
+.waiting-results p {
   max-width: 560px;
   margin: 0;
   font-size: 14px;

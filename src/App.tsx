@@ -696,15 +696,7 @@ function App() {
                 </a>
               </div>
             </section>
-          ) : (
-            <section className="active-card empty-active" aria-live="polite">
-              <div className="active-meta">
-                <span>Ready</span>
-              </div>
-              <h2>Upload a photo</h2>
-              <p>The app will analyze the image, search broadly for matching SF food spots, and return likely restaurants, cafes, bakeries, or counters.</p>
-            </section>
-          )}
+          ) : null}
         </aside>
 
         <section className="main-panel">
@@ -803,7 +795,7 @@ function App() {
                   ? `${matches.length} photo candidates`
                   : photo.coords
                   ? `${matches.length} nearby candidates`
-                  : 'Upload a photo to start'}
+                  : 'No results yet'}
               </h2>
             </div>
             <span className="freshness">
@@ -811,7 +803,7 @@ function App() {
                 ? 'Vision-ranked with live web discovery'
                 : photo.coords
                   ? 'GPS-ranked against verified venues'
-                  : 'Photo-only identification'}
+                  : 'Waiting for photo analysis'}
             </span>
           </div>
 
@@ -903,12 +895,12 @@ function App() {
               </div>
             </section>
           ) : (
-            <section className="empty-results">
+            <section className="waiting-results">
               <Camera size={26} />
-              <h3>Drop in a food photo</h3>
+              <h3>Results will appear here</h3>
               <p>
-                The app analyzes the image itself, checks any embedded GPS metadata, and returns
-                the most likely venue from live web discovery and the verified SF seed dataset.
+                Once a photo is analyzed, this area shows ranked venue matches, evidence, source
+                links, and the map view.
               </p>
             </section>
           )}

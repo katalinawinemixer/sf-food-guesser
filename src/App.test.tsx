@@ -39,6 +39,10 @@ describe('SF Food Guesser photo flow', () => {
 
     expect(screen.getByRole('heading', { name: 'Find the place from a photo' })).toBeVisible()
     expect(screen.getByText('Drop image here or choose')).toBeVisible()
+    expect(screen.getByText('No results yet')).toBeVisible()
+    expect(screen.getByText('Results will appear here')).toBeVisible()
+    expect(screen.queryByText('Upload a photo to start')).not.toBeInTheDocument()
+    expect(screen.queryByText('Drop in a food photo')).not.toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Identify restaurant' })).toBeDisabled()
     expect(screen.queryByRole('textbox')).not.toBeInTheDocument()
     expect(screen.queryByText(/Start with typed text/i)).not.toBeInTheDocument()
