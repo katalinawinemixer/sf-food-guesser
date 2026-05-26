@@ -17,7 +17,7 @@ import {
 } from 'lucide-react'
 import 'leaflet/dist/leaflet.css'
 import './App.css'
-import { categoryOptions, venues, type VenueCategory } from './venues'
+import { categoryOptions, venues, type Venue, type VenueCategory } from './venues'
 
 type VisionCandidate = {
   id: string
@@ -76,10 +76,28 @@ type PhotoState = {
   message?: string
 }
 
+type MatchVenue = Omit<Venue, 'lat' | 'lng'> & {
+  lat?: number
+  lng?: number
+  locationVerified?: boolean
+}
+
 type ApiHealth = {
   status: 'checking' | 'ready' | 'missing-key' | 'offline'
   model?: string
   message?: string
+}
+
+function hasVerifiedCoordinates(
+  venue: MatchVenue,
+): venue is MatchVenue & { lat: number; lng: number } {
+  return venue.locationVerified === true && Number.isFinite(venue.lat) && Number.isFinite(venue.lng)
+}
+
+function venueLocationLabel(venue: MatchVenue) {
+  if (hasVerifiedCoordinates(venue)) return `${venue.address} · ${venue.neighborhood}`
+  if (venue.address === 'Address not confirmed') return 'Location not confirmed'
+  return `${venue.address} · ${venue.neighborhood} · Unverified location`
 }
 
 function distanceMeters(
@@ -131,7 +149,10 @@ function getPhotoMatches(
       const distanceConfidence = confidenceFromDistance(distance)
 
       return {
-        venue,
+        venue: {
+          ...venue,
+          locationVerified: true,
+        },
         distanceMeters: distance,
         score: proximityScore,
         confidence: distanceConfidence,
@@ -168,7 +189,10 @@ function getVisionMatches(
       const visionReasons = candidate?.reasons ?? []
 
       return {
-        venue,
+        venue: {
+          ...venue,
+          locationVerified: true,
+        },
         distanceMeters: distance,
         score: (candidate?.confidence ?? 0) * 2 + gpsBoost,
         confidence,
@@ -196,8 +220,7 @@ function getVisionMatches(
           category: (candidate.category || 'Restaurant') as VenueCategory,
           neighborhood: candidate.neighborhood || 'San Francisco',
           address: candidate.address || 'Address not confirmed',
-          lat: 37.7749,
-          lng: -122.4194,
+          locationVerified: false,
           signature: [
             candidate.evidenceType ? `${candidate.evidenceType} evidence` : 'Image match',
             ...(candidate.sourceUrls?.length ? ['Web-discovered match'] : []),
@@ -688,7 +711,7 @@ function App() {
               <div className="action-row">
                 <a href={activeMatch.venue.mapsUrl} target="_blank" rel="noreferrer">
                   <MapPin size={16} />
-                  Maps
+                  {hasVerifiedCoordinates(activeMatch.venue) ? 'Maps' : 'Search Maps'}
                 </a>
                 <a href={activeMatch.venue.sourceUrl} target="_blank" rel="noreferrer">
                   <ExternalLink size={16} />
@@ -706,7 +729,7 @@ function App() {
                 <span className="eyebrow">Best match</span>
                 <h2>{activeMatch.venue.name}</h2>
                 <p>
-                  {activeMatch.venue.address} · {activeMatch.venue.neighborhood}
+                  {venueLocationLabel(activeMatch.venue)}
                 </p>
               </div>
               <div className="answer-score">
@@ -739,33 +762,37 @@ function App() {
                 attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>'
                 url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
               />
-              {matches.map((match) => (
-                <CircleMarker
-                  key={match.venue.id}
-                  center={[match.venue.lat, match.venue.lng]}
-                  radius={match.venue.id === activeMatch?.venue.id ? 10 : 7}
-                  pathOptions={{
-                    color: match.venue.id === activeMatch?.venue.id ? '#0f172a' : '#ffffff',
-                    fillColor:
-                      match.confidence >= 75
-                        ? '#0f9f78'
-                        : match.confidence >= 45
-                          ? '#ec8f2d'
-                          : '#d84f4f',
-                    fillOpacity: 0.9,
-                    weight: 2,
-                  }}
-                  eventHandlers={{
-                    click: () => setActiveVenueId(match.venue.id),
-                  }}
-                >
-                  <Popup>
-                    <strong>{match.venue.name}</strong>
-                    <br />
-                    {match.venue.address}
-                  </Popup>
-                </CircleMarker>
-              ))}
+              {matches.map((match) => {
+                if (!hasVerifiedCoordinates(match.venue)) return null
+
+                return (
+                  <CircleMarker
+                    key={match.venue.id}
+                    center={[match.venue.lat, match.venue.lng]}
+                    radius={match.venue.id === activeMatch?.venue.id ? 10 : 7}
+                    pathOptions={{
+                      color: match.venue.id === activeMatch?.venue.id ? '#0f172a' : '#ffffff',
+                      fillColor:
+                        match.confidence >= 75
+                          ? '#0f9f78'
+                          : match.confidence >= 45
+                            ? '#ec8f2d'
+                            : '#d84f4f',
+                      fillOpacity: 0.9,
+                      weight: 2,
+                    }}
+                    eventHandlers={{
+                      click: () => setActiveVenueId(match.venue.id),
+                    }}
+                  >
+                    <Popup>
+                      <strong>{match.venue.name}</strong>
+                      <br />
+                      {match.venue.address}
+                    </Popup>
+                  </CircleMarker>
+                )
+              })}
               {photo.coords ? (
                 <CircleMarker
                   center={[photo.coords.latitude, photo.coords.longitude]}
@@ -830,7 +857,7 @@ function App() {
 
                 <p className="address">
                   <MapPin size={15} />
-                  {match.venue.address} · {match.venue.neighborhood}
+                  {venueLocationLabel(match.venue)}
                 </p>
 
                 <div className="signature-list">
@@ -868,7 +895,7 @@ function App() {
                     <ArrowUpRight size={14} />
                   </a>
                   <a href={match.venue.mapsUrl} target="_blank" rel="noreferrer">
-                    Map
+                    {hasVerifiedCoordinates(match.venue) ? 'Map' : 'Search Maps'}
                     <ArrowUpRight size={14} />
                   </a>
                 </div>

@@ -248,7 +248,9 @@ describe('SF Food Guesser photo flow', () => {
       expect(screen.getByRole('heading', { name: 'Hidden Blue Cup Cafe', level: 3 })).toBeVisible()
     })
 
-    expect(screen.getAllByText('123 Valencia St · Mission')[0]).toBeVisible()
+    expect(screen.getAllByText(/123 Valencia St · Mission · Unverified location/)[0]).toBeVisible()
+    expect(screen.queryByTestId('circle-marker')).not.toBeInTheDocument()
+    expect(screen.getAllByRole('link', { name: /Search Maps/i })[0]).toBeVisible()
     expect(screen.getByText('interior evidence')).toBeVisible()
     expect(screen.getByText('Web-discovered match')).toBeVisible()
     expect(screen.getByText(/Web search matched/)).toBeVisible()
