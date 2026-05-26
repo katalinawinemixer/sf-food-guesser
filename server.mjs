@@ -26,6 +26,15 @@ const model =
 const serpApiKey = process.env.SERPAPI_API_KEY
 const exaApiKey = process.env.EXA_API_KEY
 const exaClient = exaApiKey ? new Exa(exaApiKey) : null
+const evidenceCategories = [
+  'visible_text',
+  'interior_match',
+  'storefront_match',
+  'packaging_logo',
+  'dish_match',
+  'gps_match',
+  'web_source_match',
+]
 
 function parseModelJson(outputText) {
   const jsonStart = outputText.indexOf('{')
@@ -86,6 +95,7 @@ Return strict JSON only with this shape:
       "address": "street address if found",
       "confidence": 0-100,
       "evidenceType": "interior/storefront/menu/packaging/dish/gps/mixed",
+      "evidenceCategories": ["visible_text", "interior_match", "web_source_match"],
       "reasons": ["specific image evidence", "specific web evidence or seed dataset evidence"],
       "sourceUrls": ["supporting URL"],
       "comparisonPhotos": [{"title": "photo title", "source": "Google Maps/Yelp/site/etc", "url": "page or image URL", "matchReason": "why this external photo visually matches"}],
@@ -104,6 +114,8 @@ Rules:
 - Search broadly across the internet for San Francisco-specific matches when the seed list is insufficient.
 - For interior photos, explicitly search for matching interiors and public customer/business photos; do not stop after matching the food item.
 - Prefer candidates with matching interior/storefront/photo-page evidence over candidates that only share a common dish.
+- Use evidenceCategories to make the evidence explicit. Choose from: visible_text, interior_match, storefront_match, packaging_logo, dish_match, gps_match, web_source_match.
+- Use dish_match only when the only strong overlap is the food or drink itself. Use interior_match, storefront_match, visible_text, or packaging_logo when those stronger clues are present.
 - Return 5-8 candidates when uncertainty remains, not just the top 2-3.
 - If the photo is too ambiguous, still return the best candidates but set needsMoreEvidence true and keep confidence modest.
 - Use exact ids only for seed venues. Leave id empty for web-discovered candidates.
@@ -181,6 +193,117 @@ function normalizeSearchPlan(plan) {
       ? plan.likelyVenueTypes.map(String).filter(Boolean).slice(0, 6)
       : [],
   }
+}
+
+function normalizeEvidenceCategories(candidate) {
+  const rawCategories = Array.isArray(candidate.evidenceCategories)
+    ? candidate.evidenceCategories
+    : candidate.evidenceType
+      ? [candidate.evidenceType]
+      : []
+  const text = [
+    candidate.evidenceType,
+    ...(candidate.reasons ?? []),
+    ...(candidate.sourceUrls ?? []),
+  ]
+    .join(' ')
+    .toLowerCase()
+  const categories = new Set(
+    rawCategories
+      .map((category) => String(category).toLowerCase().replace(/[^a-z0-9]+/g, '_'))
+      .filter((category) => evidenceCategories.includes(category)),
+  )
+
+  if (/\b(sign|menu|receipt|visible text|text|word|letter|logo name)\b/.test(text)) {
+    categories.add('visible_text')
+  }
+  if (/\b(interior|inside|tile|counter|wall|mural|lighting|display case|seating|decor|room)\b/.test(text)) {
+    categories.add('interior_match')
+  }
+  if (/\b(storefront|exterior|awning|window|street|facade)\b/.test(text)) {
+    categories.add('storefront_match')
+  }
+  if (/\b(packaging|logo|cup|bag|box|label|sticker|sleeve)\b/.test(text)) {
+    categories.add('packaging_logo')
+  }
+  if (/\b(dish|food|drink|matcha|coffee|latte|pastry|croissant|sandwich|pizza|noodle|dumpling|bun)\b/.test(text)) {
+    categories.add('dish_match')
+  }
+  if (/\b(gps|location metadata|exif)\b/.test(text)) {
+    categories.add('gps_match')
+  }
+  if ((candidate.sourceUrls ?? []).length || /\b(web|source|review|yelp|eater|infatuation|instagram|tiktok|maps)\b/.test(text)) {
+    categories.add('web_source_match')
+  }
+
+  return [...categories]
+}
+
+function scoreEvidenceCategories(categories) {
+  const weights = {
+    visible_text: 28,
+    packaging_logo: 24,
+    interior_match: 22,
+    storefront_match: 22,
+    gps_match: 20,
+    web_source_match: 14,
+    dish_match: 6,
+  }
+  return categories.reduce((score, category) => score + (weights[category] ?? 0), 0)
+}
+
+function evidenceNote(category) {
+  const notes = {
+    visible_text: 'Matched visible text from the photo.',
+    packaging_logo: 'Matched packaging, logo, or branded item details.',
+    interior_match: 'Matched interior details from the uploaded image.',
+    storefront_match: 'Matched storefront or exterior details.',
+    gps_match: 'Matched location metadata from the uploaded photo.',
+    web_source_match: 'Found supporting web evidence for this venue.',
+  }
+
+  return notes[category] ?? null
+}
+
+export function rerankCandidates(rawCandidates = []) {
+  return rawCandidates
+    .map((candidate, originalIndex) => {
+      const evidenceCategoriesForCandidate = normalizeEvidenceCategories(candidate)
+      const strongEvidence = evidenceCategoriesForCandidate.filter(
+        (category) => category !== 'dish_match',
+      )
+      const dishOnly =
+        evidenceCategoriesForCandidate.includes('dish_match') && strongEvidence.length === 0
+      const hasSource = Array.isArray(candidate.sourceUrls) && candidate.sourceUrls.length > 0
+      const hasReasons = Array.isArray(candidate.reasons) && candidate.reasons.length > 0
+      const baseConfidence = Math.max(0, Math.min(100, Number(candidate.confidence ?? 0)))
+      const evidenceScore = scoreEvidenceCategories(evidenceCategoriesForCandidate)
+      const sourceScore = hasSource ? 8 : -8
+      const reasonScore = hasReasons ? Math.min(8, candidate.reasons.length * 2) : -6
+      const dishOnlyPenalty = dishOnly ? -28 : 0
+      const adjustedScore = Math.max(
+        0,
+        Math.min(100, baseConfidence * 0.62 + evidenceScore + sourceScore + reasonScore + dishOnlyPenalty),
+      )
+      const adjustedConfidence = Math.round(adjustedScore)
+      const rankingNotes = [
+        ...strongEvidence.map(evidenceNote).filter(Boolean),
+        ...(dishOnly ? ['Food/drink similarity alone is weak evidence, so this was ranked lower.'] : []),
+        ...(hasSource ? ['Supporting source links were found for this venue.'] : ['No supporting source link was returned for this candidate.']),
+      ]
+
+      return {
+        ...candidate,
+        confidence: adjustedConfidence,
+        originalConfidence: baseConfidence,
+        evidenceCategories: evidenceCategoriesForCandidate,
+        rankingNotes,
+        _rankScore: adjustedScore,
+        _originalIndex: originalIndex,
+      }
+    })
+    .sort((a, b) => b._rankScore - a._rankScore || a._originalIndex - b._originalIndex)
+    .map(({ _rankScore, _originalIndex, ...candidate }) => candidate)
 }
 
 function buildSourceSearches(rawQuery) {
@@ -358,6 +481,16 @@ function createDefaultWebSearch() {
         search: searchExaWeb,
       }
     : null
+}
+
+function providerWarning(providerName, error) {
+  return {
+    provider: providerName,
+    message:
+      error instanceof Error
+        ? error.message
+        : `${providerName} was unavailable for this request.`,
+  }
 }
 
 async function analyzeWithProvider({
@@ -563,21 +696,34 @@ export function createApp(options = {}) {
       let searchPlan = null
       let photoEvidence = []
       let webEvidence = []
+      const providerWarnings = []
       if (photoSearch?.search || webSearch?.search) {
-        searchPlan = await describeForExternalPhotoSearch({
-          visionClient,
-          visionProvider,
-          visionModel,
-          imageDataUrl,
-        })
+        try {
+          searchPlan = await describeForExternalPhotoSearch({
+            visionClient,
+            visionProvider,
+            visionModel,
+            imageDataUrl,
+          })
+        } catch (error) {
+          providerWarnings.push(providerWarning('search-plan', error))
+        }
       }
 
       if (webSearch?.search && searchPlan) {
-        webEvidence = await webSearch.search(searchPlan.searchQueries)
+        try {
+          webEvidence = await webSearch.search(searchPlan.searchQueries)
+        } catch (error) {
+          providerWarnings.push(providerWarning(webSearch.provider ?? 'web-search', error))
+        }
       }
 
       if (photoSearch?.search && searchPlan) {
-        photoEvidence = await photoSearch.search(searchPlan.searchQueries)
+        try {
+          photoEvidence = await photoSearch.search(searchPlan.searchQueries)
+        } catch (error) {
+          providerWarnings.push(providerWarning(photoSearch.provider ?? 'photo-search', error))
+        }
       }
 
       const outputText = await analyzeWithProvider({
@@ -591,8 +737,10 @@ export function createApp(options = {}) {
         webEvidence,
       })
       const result = parseModelJson(outputText)
+      const candidates = rerankCandidates(Array.isArray(result.candidates) ? result.candidates : [])
       response.json({
         ...result,
+        candidates,
         searchPlan,
         photoEvidence: photoEvidence.map((photo) => ({
           title: photo.title,
@@ -611,6 +759,7 @@ export function createApp(options = {}) {
         })),
         searchProvider: photoSearch?.provider ?? null,
         webSearchProvider: webSearch?.provider ?? null,
+        providerWarnings,
       })
     } catch (error) {
       console.error(error)

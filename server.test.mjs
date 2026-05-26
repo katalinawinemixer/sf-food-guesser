@@ -1,6 +1,6 @@
 import request from 'supertest'
 import { describe, expect, it, vi } from 'vitest'
-import { createApp, searchExaWeb } from './server.mjs'
+import { createApp, rerankCandidates, searchExaWeb } from './server.mjs'
 
 const pngPixel = Buffer.from(
   'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=',
@@ -69,7 +69,9 @@ describe('SF Food Guesser API', () => {
               {
                 id: 'golden-boy',
                 confidence: 92,
+                evidenceCategories: ['dish_match', 'web_source_match'],
                 reasons: ['The slice shape matches the venue signature.'],
+                sourceUrls: ['https://www.goldenboypizza.com/'],
               },
             ],
             needsMoreEvidence: false,
@@ -107,8 +109,10 @@ describe('SF Food Guesser API', () => {
 
     expect(response.body.candidates[0]).toMatchObject({
       id: 'golden-boy',
-      confidence: 92,
+      evidenceCategories: ['dish_match', 'web_source_match'],
+      originalConfidence: 92,
     })
+    expect(response.body.candidates[0].confidence).toBeGreaterThan(45)
     expect(openAIClient.responses.create).toHaveBeenCalledWith(
       expect.objectContaining({
         model: 'test-model',
@@ -142,7 +146,9 @@ describe('SF Food Guesser API', () => {
                       {
                         id: 'golden-boy',
                         confidence: 88,
+                        evidenceCategories: ['storefront_match', 'web_source_match'],
                         reasons: ['The image includes a square pizza slice.'],
+                        sourceUrls: ['https://www.goldenboypizza.com/'],
                       },
                     ],
                     needsMoreEvidence: false,
@@ -184,8 +190,12 @@ describe('SF Food Guesser API', () => {
 
     expect(response.body.candidates[0]).toMatchObject({
       id: 'golden-boy',
-      confidence: 88,
+      originalConfidence: 88,
     })
+    expect(response.body.candidates[0].evidenceCategories).toEqual(
+      expect.arrayContaining(['storefront_match', 'web_source_match']),
+    )
+    expect(response.body.candidates[0].confidence).toBeGreaterThan(70)
     expect(visionClient.chat.completions.create).toHaveBeenCalledWith(
       expect.objectContaining({
         model: 'openai/gpt-4o-mini',
@@ -256,6 +266,7 @@ describe('SF Food Guesser API', () => {
                           address: '123 Valencia St',
                           confidence: 86,
                           evidenceType: 'interior',
+                          evidenceCategories: ['interior_match', 'web_source_match'],
                           reasons: ['External candidate photo shows the same green tile wall.'],
                           sourceUrls: ['https://example.com/green-tile-cafe'],
                           comparisonPhotos: [
@@ -371,6 +382,7 @@ describe('SF Food Guesser API', () => {
                           address: '456 Valencia St',
                           confidence: 78,
                           evidenceType: 'interior',
+                          evidenceCategories: ['interior_match', 'web_source_match'],
                           reasons: ['Exa review pages mention a matching black counter.'],
                           sourceUrls: ['https://example.com/black-counter-cafe-review'],
                         },
@@ -473,6 +485,114 @@ describe('SF Food Guesser API', () => {
       url: 'https://example.com/cafe-interior',
       searchLabel: 'broad-web',
       snippet: expect.stringContaining('Green tile wall'),
+    })
+  })
+
+  it('reranks strong venue evidence above dish-only guesses', () => {
+    const candidates = rerankCandidates([
+      {
+        id: 'dish-only',
+        name: 'Dish Only Cafe',
+        confidence: 93,
+        evidenceCategories: ['dish_match'],
+        reasons: ['The photo shows a similar matcha drink.'],
+        sourceUrls: [],
+      },
+      {
+        id: 'interior',
+        name: 'Interior Match Cafe',
+        confidence: 72,
+        evidenceCategories: ['interior_match', 'web_source_match'],
+        reasons: ['Public photos show the same green tile wall and counter.'],
+        sourceUrls: ['https://example.com/interior-match'],
+      },
+    ])
+
+    expect(candidates[0]).toMatchObject({
+      id: 'interior',
+      evidenceCategories: ['interior_match', 'web_source_match'],
+    })
+    expect(candidates[1].rankingNotes).toContain(
+      'Food/drink similarity alone is weak evidence, so this was ranked lower.',
+    )
+  })
+
+  it('continues analysis when a web evidence provider fails', async () => {
+    const visionClient = {
+      chat: {
+        completions: {
+          create: vi
+            .fn()
+            .mockResolvedValueOnce({
+              choices: [
+                {
+                  message: {
+                    content: JSON.stringify({
+                      summary: 'Cafe counter with matcha.',
+                      imageEvidence: ['matcha', 'counter'],
+                      searchQueries: ['San Francisco matcha cafe counter'],
+                      likelyVenueTypes: ['Cafe'],
+                    }),
+                  },
+                },
+              ],
+            })
+            .mockResolvedValueOnce({
+              choices: [
+                {
+                  message: {
+                    content: JSON.stringify({
+                      summary: 'A cafe counter with a matcha drink.',
+                      imageEvidence: ['matcha', 'counter'],
+                      candidates: [
+                        {
+                          id: '',
+                          name: 'Fallback Cafe',
+                          category: 'Cafe',
+                          neighborhood: 'San Francisco',
+                          address: 'Address not confirmed',
+                          confidence: 55,
+                          evidenceCategories: ['dish_match'],
+                          reasons: ['The drink visually resembles a matcha latte.'],
+                          sourceUrls: [],
+                        },
+                      ],
+                      needsMoreEvidence: true,
+                    }),
+                  },
+                },
+              ],
+            }),
+        },
+      },
+    }
+    const webSearch = {
+      provider: 'failing-exa',
+      search: vi.fn(async () => {
+        throw new Error('Exa unavailable')
+      }),
+    }
+
+    const response = await request(
+      createApp({
+        visionClient,
+        visionModel: 'openai/gpt-4o-mini',
+        visionProvider: 'openrouter',
+        webSearch,
+      }),
+    )
+      .post('/api/analyze-photo')
+      .attach('photo', pngPixel, { filename: 'food.png', contentType: 'image/png' })
+      .field('venues', '[]')
+      .expect(200)
+
+    expect(response.body.candidates[0]).toMatchObject({
+      name: 'Fallback Cafe',
+      evidenceCategories: ['dish_match'],
+    })
+    expect(response.body.providerWarnings[0]).toMatchObject({
+      provider: 'failing-exa',
+      message: 'Exa unavailable',
     })
   })
 })

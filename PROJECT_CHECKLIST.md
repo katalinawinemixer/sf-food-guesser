@@ -63,10 +63,10 @@ items were completed earlier out of order.
 - [x] Include confidence scores and evidence reasons.
 - [x] Include source URLs and map queries when available.
 - [x] Prefer interior/storefront/photo evidence over generic dish similarity in the prompt.
-- [ ] Implement deterministic reranking after the model response, using evidence strength and source quality.
-- [ ] Penalize generic food-only matches unless there is strong supporting venue evidence.
-- [ ] Add explicit evidence categories: exact text match, interior match, storefront match, packaging/logo match, dish match, GPS match, web-source match.
-- [ ] Add confidence calibration rules so scores are consistent across runs.
+- [x] Implement deterministic reranking after the model response, using evidence strength and source quality.
+- [x] Penalize generic food-only matches unless there is strong supporting venue evidence.
+- [x] Add internal evidence categories: exact text match, interior match, storefront match, packaging/logo match, dish match, GPS match, web-source match.
+- [x] Add confidence calibration rules so scores are consistent across runs.
 
 ## 7. User Experience
 
@@ -77,15 +77,16 @@ items were completed earlier out of order.
 - [x] Show candidate venues with confidence and reasons.
 - [x] Show a search trail when web/photo evidence exists.
 - [x] Add a clear “why this guess” evidence view for each candidate.
-- [ ] Add mobile layout QA for upload, preview, loading, and results.
+- [x] Keep evidence categories out of the user workflow; translate them into plain-language reasons.
+- [x] Add mobile layout QA for upload, preview, loading, and results.
 
 ## 8. Reliability And Error Handling
 
 - [x] Show missing-key/offline API health states.
 - [x] Reject requests without photos.
 - [x] Reject invalid venue payloads.
-- [ ] Add provider-specific error messages for OpenRouter, Exa, and SerpAPI.
-- [ ] Add graceful behavior when one provider fails but others work.
+- [x] Add provider-specific error messages for OpenRouter, Exa, and photo-search providers.
+- [x] Add graceful behavior when one provider fails but others work.
 - [ ] Add request size and file type messaging in the UI.
 - [ ] Add rate-limit messaging.
 

@@ -438,6 +438,83 @@
   padding: 22px;
 }
 
+.answer-panel {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 18px;
+  border: 1px solid #bad7c5;
+  border-radius: 8px;
+  background: #ffffff;
+  box-shadow: 0 14px 34px rgba(23, 33, 29, 0.08);
+  padding: 18px;
+  margin-bottom: 16px;
+}
+
+.answer-copy {
+  min-width: 0;
+}
+
+.answer-copy h2,
+.answer-copy p {
+  margin: 0;
+}
+
+.answer-copy h2 {
+  color: #17211d;
+  font-size: 28px;
+  line-height: 1.08;
+  margin-top: 7px;
+}
+
+.answer-copy p {
+  color: #607067;
+  font-size: 14px;
+  line-height: 1.4;
+  margin-top: 8px;
+}
+
+.answer-score {
+  flex: 0 0 auto;
+  min-width: 82px;
+  text-align: right;
+}
+
+.answer-score span {
+  display: block;
+  color: #66746b;
+  font-size: 11px;
+  font-weight: 850;
+  text-transform: uppercase;
+}
+
+.answer-score strong {
+  display: block;
+  color: #17211d;
+  font-size: 32px;
+  line-height: 1;
+  margin-top: 4px;
+}
+
+.provider-warning {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin-bottom: 16px;
+  border: 1px solid #f0d7a5;
+  border-radius: 8px;
+  background: #fff8ea;
+  color: #7c520e;
+  padding: 10px 12px;
+  font-size: 13px;
+  line-height: 1.35;
+}
+
+.provider-warning svg {
+  flex: 0 0 auto;
+  margin-top: 1px;
+}
+
 .map-panel {
   height: 360px;
   border: 1px solid #d7e4d9;
@@ -780,6 +857,14 @@
   .results-head {
     align-items: flex-start;
     flex-direction: column;
+  }
+
+  .answer-panel {
+    flex-direction: column;
+  }
+
+  .answer-score {
+    text-align: left;
   }
 
   .freshness {

@@ -26,8 +26,11 @@ type VisionCandidate = {
   neighborhood?: string
   address?: string
   confidence: number
+  originalConfidence?: number
   evidenceType?: string
+  evidenceCategories?: string[]
   reasons: string[]
+  rankingNotes?: string[]
   sourceUrls?: string[]
   mapsQuery?: string
   searchQueries?: string[]
@@ -54,6 +57,10 @@ type VisionAnalysis = {
     snippet?: string
     query?: string
     searchLabel?: string
+  }>
+  providerWarnings?: Array<{
+    provider: string
+    message: string
   }>
 }
 
@@ -128,7 +135,9 @@ function getPhotoMatches(
         distanceMeters: distance,
         score: proximityScore,
         confidence: distanceConfidence,
+        evidenceCategories: ['gps_match'],
         reasons: [`Photo GPS is ${formatDistance(distance)} from this venue.`],
+        rankingNotes: ['Boosted for photo GPS.'],
       }
     })
     .sort((a, b) => {
@@ -163,10 +172,12 @@ function getVisionMatches(
         distanceMeters: distance,
         score: (candidate?.confidence ?? 0) * 2 + gpsBoost,
         confidence,
+        evidenceCategories: candidate?.evidenceCategories ?? [],
         reasons: [
           ...visionReasons,
           ...(distance !== undefined ? [`Photo GPS is ${formatDistance(distance)} away.`] : []),
         ].slice(0, 4),
+        rankingNotes: candidate?.rankingNotes ?? [],
       }
     })
 
@@ -199,7 +210,9 @@ function getVisionMatches(
         distanceMeters: undefined,
         score: candidate.confidence * 2,
         confidence: Math.min(98, candidate.confidence),
+        evidenceCategories: candidate.evidenceCategories ?? [],
         reasons: candidate.reasons.slice(0, 4),
+        rankingNotes: candidate.rankingNotes ?? [],
         sourceUrls: candidate.sourceUrls ?? [],
       }
     })
@@ -271,9 +284,18 @@ async function analyzePhotoWithVision(file: File): Promise<VisionAnalysis> {
             neighborhood: candidate.neighborhood ? String(candidate.neighborhood) : undefined,
             address: candidate.address ? String(candidate.address) : undefined,
             confidence: Number(candidate.confidence ?? 0),
+            originalConfidence: candidate.originalConfidence
+              ? Number(candidate.originalConfidence)
+              : undefined,
             evidenceType: candidate.evidenceType ? String(candidate.evidenceType) : undefined,
+            evidenceCategories: Array.isArray(candidate.evidenceCategories)
+              ? candidate.evidenceCategories.map(String).slice(0, 7)
+              : [],
             reasons: Array.isArray(candidate.reasons)
               ? candidate.reasons.map(String).slice(0, 4)
+              : [],
+            rankingNotes: Array.isArray(candidate.rankingNotes)
+              ? candidate.rankingNotes.map(String).slice(0, 4)
               : [],
             sourceUrls: Array.isArray(candidate.sourceUrls)
               ? candidate.sourceUrls.map(String).slice(0, 4)
@@ -314,6 +336,14 @@ async function analyzePhotoWithVision(file: File): Promise<VisionAnalysis> {
           }))
           .filter((page: { url: string }) => page.url)
           .slice(0, 6)
+      : [],
+    providerWarnings: Array.isArray(result.providerWarnings)
+      ? result.providerWarnings
+          .map((warning: Record<string, unknown>) => ({
+            provider: String(warning.provider ?? 'provider'),
+            message: String(warning.message ?? 'Provider unavailable'),
+          }))
+          .slice(0, 4)
       : [],
   }
 }
@@ -678,6 +708,32 @@ function App() {
         </aside>
 
         <section className="main-panel">
+          {activeMatch ? (
+            <section className="answer-panel" aria-live="polite">
+              <div className="answer-copy">
+                <span className="eyebrow">Best match</span>
+                <h2>{activeMatch.venue.name}</h2>
+                <p>
+                  {activeMatch.venue.address} · {activeMatch.venue.neighborhood}
+                </p>
+              </div>
+              <div className="answer-score">
+                <span>{confidenceLabel(activeMatch.confidence)}</span>
+                <strong>{activeMatch.confidence || '--'}%</strong>
+              </div>
+            </section>
+          ) : null}
+
+          {photo.analysis?.providerWarnings?.length ? (
+            <div className="provider-warning" role="status">
+              <Search size={15} />
+              <span>
+                Some web evidence was unavailable, so the app ranked using the image and
+                remaining sources.
+              </span>
+            </div>
+          ) : null}
+
           <div className="map-panel" aria-label="Venue map">
             <MapContainer
               center={[37.7749, -122.445]}
@@ -795,6 +851,9 @@ function App() {
                   <li className="reason-heading">Why this guess</li>
                   {match.reasons.map((reason) => (
                     <li key={reason}>{reason}</li>
+                  ))}
+                  {match.rankingNotes.map((note) => (
+                    <li key={note}>{note}</li>
                   ))}
                 </ul>
 
