@@ -37,6 +37,10 @@ Replace `PASTE_YOUR_OPENROUTER_API_KEY_HERE` with your real OpenRouter key in
 `.env`. Optional keys are intentionally blank unless you have your own
 credentials for those providers. Then run:
 
+If you are using free OpenRouter vision models, set
+`OPENROUTER_FALLBACK_MODELS` to a comma-separated list of other vision model ids
+you want the backend to try when the primary model is rate-limited.
+
 ```bash
 npm install
 npm run dev

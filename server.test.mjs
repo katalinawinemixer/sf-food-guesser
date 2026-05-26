@@ -25,6 +25,7 @@ describe('SF Food Guesser API', () => {
       ok: true,
       visionEnabled: false,
       model: 'test-model',
+      fallbackModels: [],
       provider: null,
       photoSearchEnabled: false,
       photoSearchProvider: null,
@@ -167,6 +168,7 @@ describe('SF Food Guesser API', () => {
       createApp({
         visionClient,
         visionModel: 'openai/gpt-4o-mini',
+        visionFallbackModels: [],
         visionProvider: 'openrouter',
         photoSearch: null,
         webSearch: null,
@@ -218,7 +220,7 @@ describe('SF Food Guesser API', () => {
     expect(modelRequest.messages[0].content).not.toContain('use only the provided venue list')
     expect(promptText).toContain('Google Maps / Google Business Profile')
     expect(promptText).toContain('matching interiors and public customer/business photos')
-    expect(promptText).toContain('Return 5-8 candidates')
+    expect(promptText).toContain('Return 3-5 candidates')
     expect(modelRequest.tools[0].parameters).toMatchObject({
       max_results: 10,
       max_total_results: 40,
@@ -272,6 +274,7 @@ describe('SF Food Guesser API', () => {
       createApp({
         visionClient,
         visionModel: 'openai/gpt-4o-mini',
+        visionFallbackModels: [],
         visionProvider: 'openrouter',
         photoSearch: null,
         webSearch: null,
@@ -283,7 +286,7 @@ describe('SF Food Guesser API', () => {
       .expect(200)
 
     expect(response.body.providerWarnings[0]).toMatchObject({
-      provider: 'vision-analysis',
+      provider: 'vision-analysis:openai/gpt-4o-mini',
       message: 'OpenRouter 500',
     })
     expect(response.body.candidates[0].name).toBe('Unconfirmed Matcha Cafe')
@@ -307,6 +310,7 @@ describe('SF Food Guesser API', () => {
       createApp({
         visionClient,
         visionModel: 'openai/gpt-4o-mini',
+        visionFallbackModels: [],
         visionProvider: 'openrouter',
         photoSearch: null,
         webSearch: null,
@@ -320,6 +324,141 @@ describe('SF Food Guesser API', () => {
     expect(response.body.error).toContain('OpenRouter needs more credits')
     expect(response.body.error).not.toContain('clearer image')
     expect(visionClient.chat.completions.create).toHaveBeenCalledTimes(2)
+  })
+
+  it('tries configured fallback vision models when the primary model is rate-limited', async () => {
+    const rateLimitError = Object.assign(new Error('Provider returned error'), {
+      status: 429,
+    })
+    const visionClient = {
+      chat: {
+        completions: {
+          create: vi
+            .fn()
+            .mockRejectedValueOnce(rateLimitError)
+            .mockRejectedValueOnce(rateLimitError)
+            .mockResolvedValueOnce({
+              choices: [
+                {
+                  message: {
+                    content: JSON.stringify({
+                      summary: 'Fallback model analyzed the uploaded image.',
+                      imageEvidence: ['matcha drink'],
+                      candidates: [
+                        {
+                          id: '',
+                          name: 'Fallback Vision Cafe',
+                          category: 'Cafe',
+                          neighborhood: 'San Francisco',
+                          address: 'Address not confirmed',
+                          confidence: 50,
+                          evidenceCategories: ['dish_match'],
+                          reasons: ['Fallback model could inspect the image.'],
+                          sourceUrls: [],
+                        },
+                      ],
+                      needsMoreEvidence: true,
+                    }),
+                  },
+                },
+              ],
+            }),
+        },
+      },
+    }
+
+    const response = await request(
+      createApp({
+        visionClient,
+        visionModel: 'primary/free-vision',
+        visionFallbackModels: ['fallback/free-vision'],
+        visionProvider: 'openrouter',
+        photoSearch: null,
+        webSearch: null,
+      }),
+    )
+      .post('/api/analyze-photo')
+      .attach('photo', pngPixel, { filename: 'food.png', contentType: 'image/png' })
+      .field('venues', '[]')
+      .expect(200)
+
+    expect(visionClient.chat.completions.create.mock.calls.map(([requestBody]) => requestBody.model)).toEqual([
+      'primary/free-vision',
+      'primary/free-vision',
+      'fallback/free-vision',
+    ])
+    expect(response.body.visionModel).toBe('fallback/free-vision')
+    expect(response.body.providerWarnings).toEqual([
+      expect.objectContaining({ provider: 'vision-analysis:primary/free-vision' }),
+      expect.objectContaining({ provider: 'vision-analysis-fallback:primary/free-vision' }),
+    ])
+    expect(response.body.candidates[0].name).toBe('Fallback Vision Cafe')
+  })
+
+  it('repairs malformed model JSON before trying the next fallback model', async () => {
+    const visionClient = {
+      chat: {
+        completions: {
+          create: vi
+            .fn()
+            .mockResolvedValueOnce({
+              choices: [{ message: { content: 'I think this is probably a cafe.' } }],
+            })
+            .mockResolvedValueOnce({
+              choices: [
+                {
+                  message: {
+                    content: JSON.stringify({
+                      summary: 'JSON repair returned strict JSON.',
+                      imageEvidence: ['matcha drink'],
+                      candidates: [
+                        {
+                          id: '',
+                          name: 'JSON Repair Cafe',
+                          category: 'Cafe',
+                          neighborhood: 'San Francisco',
+                          address: 'Address not confirmed',
+                          confidence: 48,
+                          evidenceCategories: ['dish_match'],
+                          reasons: ['The JSON repair call returned parseable JSON.'],
+                          sourceUrls: [],
+                        },
+                      ],
+                      needsMoreEvidence: true,
+                    }),
+                  },
+                },
+              ],
+            }),
+        },
+      },
+    }
+
+    const response = await request(
+      createApp({
+        visionClient,
+        visionModel: 'primary/free-vision',
+        visionFallbackModels: ['fallback/free-vision'],
+        visionProvider: 'openrouter',
+        photoSearch: null,
+        webSearch: null,
+      }),
+    )
+      .post('/api/analyze-photo')
+      .attach('photo', pngPixel, { filename: 'food.png', contentType: 'image/png' })
+      .field('venues', '[]')
+      .expect(200)
+
+    expect(visionClient.chat.completions.create.mock.calls.map(([requestBody]) => requestBody.model)).toEqual([
+      'primary/free-vision',
+      'primary/free-vision',
+    ])
+    expect(response.body.providerWarnings[0]).toMatchObject({
+      provider: 'vision-analysis-json:primary/free-vision',
+      message: 'Model did not return JSON.',
+    })
+    expect(response.body.visionModel).toBe('primary/free-vision')
+    expect(response.body.candidates[0].name).toBe('JSON Repair Cafe')
   })
 
   it('uses a photo-search provider to compare external candidate photos', async () => {
@@ -528,7 +667,7 @@ describe('SF Food Guesser API', () => {
 
     expect(response.body.providerWarnings).toEqual([
       expect.objectContaining({
-        provider: 'vision-analysis',
+        provider: 'vision-analysis:openai/gpt-4o-mini',
         message: 'OpenRouter 500',
       }),
     ])
@@ -540,7 +679,7 @@ describe('SF Food Guesser API', () => {
     const imageHeavyExternalImages = imageHeavyRequest.messages[1].content.filter(
       (part) => part.type === 'image_url' && part.image_url.url.includes('example.com/photo-'),
     )
-    expect(imageHeavyExternalImages).toHaveLength(8)
+    expect(imageHeavyExternalImages).toHaveLength(4)
 
     const fallbackRequest = visionClient.chat.completions.create.mock.calls[2][0]
     const fallbackExternalImages = fallbackRequest.messages[1].content.filter(

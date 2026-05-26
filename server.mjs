@@ -23,10 +23,15 @@ const model =
   process.env.OPENROUTER_VISION_MODEL ??
   process.env.OPENAI_VISION_MODEL ??
   (provider === 'openrouter' ? 'openai/gpt-4o-mini' : 'gpt-4.1-mini')
+const openRouterFallbackModels = (process.env.OPENROUTER_FALLBACK_MODELS ?? '')
+  .split(',')
+  .map((fallbackModel) => fallbackModel.trim())
+  .filter(Boolean)
 const serpApiKey = process.env.SERPAPI_API_KEY
 const exaApiKey = process.env.EXA_API_KEY
 const exaClient = exaApiKey ? new Exa(exaApiKey) : null
-const maxExternalPhotoImagesForVision = 8
+const maxExternalPhotoImagesForVision = 4
+const evidenceSearchTimeoutMs = 45_000
 const evidenceCategories = [
   'visible_text',
   'interior_match',
@@ -68,6 +73,80 @@ function createDefaultClient(visionProvider) {
     : visionProvider === 'openai'
       ? new OpenAI({ apiKey: process.env.OPENAI_API_KEY })
       : null
+}
+
+function uniqueModels(models) {
+  return [...new Set(models.map(String).map((item) => item.trim()).filter(Boolean))]
+}
+
+function withTimeout(promise, timeoutMs, label) {
+  let timeoutId
+  const timeout = new Promise((_, reject) => {
+    timeoutId = setTimeout(() => {
+      reject(new Error(`${label} timed out after ${Math.round(timeoutMs / 1000)} seconds.`))
+    }, timeoutMs)
+  })
+
+  return Promise.race([promise, timeout]).finally(() => clearTimeout(timeoutId))
+}
+
+async function repairModelJson({
+  visionClient,
+  visionProvider,
+  visionModel,
+  outputText,
+}) {
+  const prompt = `Repair this model response into valid strict JSON only. Preserve the same fields and meaning. Do not add markdown, comments, or explanation.
+
+Expected top-level shape:
+{
+  "summary": "short visual summary",
+  "imageEvidence": ["specific image evidence"],
+  "candidates": [],
+  "needsMoreEvidence": true
+}
+
+Model response to repair:
+${outputText}`
+
+  if (visionProvider === 'openrouter') {
+    const result = await visionClient.chat.completions.create({
+      model: visionModel,
+      messages: [
+        {
+          role: 'system',
+          content: 'You repair malformed JSON into parseable JSON. Return JSON only.',
+        },
+        {
+          role: 'user',
+          content: prompt,
+        },
+      ],
+      response_format: { type: 'json_object' },
+      temperature: 0,
+      max_tokens: 2200,
+    })
+
+    return result.choices?.[0]?.message?.content ?? ''
+  }
+
+  const result = await visionClient.responses.create({
+    model: visionModel,
+    input: [
+      {
+        role: 'system',
+        content: 'You repair malformed JSON into parseable JSON. Return JSON only.',
+      },
+      {
+        role: 'user',
+        content: [{ type: 'input_text', text: prompt }],
+      },
+    ],
+    temperature: 0,
+    max_output_tokens: 2200,
+  })
+
+  return result.output_text ?? ''
 }
 
 function buildAnalysisPrompt(compactVenues) {
@@ -117,7 +196,9 @@ Rules:
 - Prefer candidates with matching interior/storefront/photo-page evidence over candidates that only share a common dish.
 - Use evidenceCategories to make the evidence explicit. Choose from: visible_text, interior_match, storefront_match, packaging_logo, dish_match, gps_match, web_source_match.
 - Use dish_match only when the only strong overlap is the food or drink itself. Use interior_match, storefront_match, visible_text, or packaging_logo when those stronger clues are present.
-- Return 5-8 candidates when uncertainty remains, not just the top 2-3.
+- Return 3-5 candidates when uncertainty remains.
+- Keep each candidate concise: at most 2 reasons, at most 3 sourceUrls, and at most 2 comparisonPhotos.
+- Return syntactically valid JSON only: no markdown, no comments, no trailing commas, and no truncated arrays.
 - If the photo is too ambiguous, still return the best candidates but set needsMoreEvidence true and keep confidence modest.
 - Use exact ids only for seed venues. Leave id empty for web-discovered candidates.
 
@@ -150,7 +231,7 @@ ${JSON.stringify(searchPlan)}
 
 External web/review pages collected from search providers:
 ${JSON.stringify(
-  webEvidence.map((page, index) => ({
+  webEvidence.slice(0, 12).map((page, index) => ({
     index: index + 1,
     title: page.title,
     source: page.source,
@@ -162,7 +243,7 @@ ${JSON.stringify(
 
 External candidate photos collected from search providers:
 ${JSON.stringify(
-  photoEvidence.map((photo, index) => ({
+  photoEvidence.slice(0, 10).map((photo, index) => ({
     index: index + 1,
     title: photo.title,
     source: photo.source,
@@ -178,7 +259,8 @@ Important:
 - Compare the uploaded image against the external candidate photos, especially Google Maps review/customer photos. Use visual overlap with interiors, storefronts, counters, menu boards, decor, lighting, walls, display cases, cups, plates, employee aprons, shelves, bags, bottles, and packaging.
 - Use external web/review pages to discover candidate venue names, addresses, neighborhoods, and pages likely to contain matching public photos.
 - Do not pick a candidate just because it has similar food. Similar interiors/photo-page evidence should outrank generic dish matches.
-- For every returned candidate, include comparisonPhotos showing which external candidate photos supported it.`
+- For every returned candidate, include comparisonPhotos showing which external candidate photos supported it.
+- Keep the JSON short and valid. Prefer fewer well-supported candidates over a long malformed response.`
 }
 
 function buildOpenRouterPhotoEvidenceParts(photoEvidence, includeExternalPhotoImages = true) {
@@ -545,8 +627,9 @@ export async function searchExaWeb(searchQueries, searchClient = exaClient) {
 
   if (!searchClient) return pages
 
-  for (const rawQuery of searchQueries.slice(0, 5)) {
-    for (const search of buildSourceSearches(rawQuery)) {
+  const searches = searchQueries.slice(0, 3).flatMap(buildSourceSearches)
+  const settledSearches = await Promise.allSettled(
+    searches.map(async (search) => {
       const result = await searchClient.search(search.query, {
         type: 'deep',
         numResults: search.numResults,
@@ -556,20 +639,29 @@ export async function searchExaWeb(searchQueries, searchClient = exaClient) {
         },
       })
 
-      const results = Array.isArray(result.results) ? result.results : []
-      for (const item of results) {
+      return (Array.isArray(result.results) ? result.results : []).map((item) => {
         const url = item.url || item.id
-        if (!url || seen.has(url)) continue
-        seen.add(url)
         const highlights = Array.isArray(item.highlights) ? item.highlights : []
-        pages.push({
+        return {
           title: String(item.title ?? 'Candidate page'),
           source: getSourceName(url, item.author),
           url: String(url),
           snippet: highlights.join(' ').slice(0, 900),
           query: search.query,
           searchLabel: search.label,
-        })
+        }
+      })
+    }),
+  )
+
+  for (const settledSearch of settledSearches) {
+    if (settledSearch.status !== 'fulfilled') continue
+    for (const page of settledSearch.value) {
+      if (!page.url || seen.has(page.url)) continue
+      seen.add(page.url)
+      pages.push(page)
+      if (pages.length >= 20) {
+        return pages
       }
     }
   }
@@ -690,7 +782,7 @@ async function analyzeWithProvider({
           }
         : {}),
       temperature: 0.1,
-      max_tokens: 1200,
+      max_tokens: 2200,
     })
 
     return result.choices?.[0]?.message?.content ?? ''
@@ -720,7 +812,7 @@ async function analyzeWithProvider({
       },
     ],
     temperature: 0.1,
-    max_output_tokens: 1200,
+    max_output_tokens: 2200,
   })
 
   return result.output_text ?? ''
@@ -747,6 +839,11 @@ export function createApp(options = {}) {
     : hasOpenAIClient
       ? options.openAIClient
       : createDefaultClient(visionProvider)
+  const visionFallbackModels = uniqueModels(
+    options.visionFallbackModels ??
+      (visionProvider === 'openrouter' ? openRouterFallbackModels : []),
+  ).filter((fallbackModel) => fallbackModel !== visionModel)
+  const visionModelAttempts = uniqueModels([visionModel, ...visionFallbackModels])
   const hasPhotoSearch = Object.hasOwn(options, 'photoSearch')
   const photoSearch = hasPhotoSearch ? options.photoSearch : createDefaultPhotoSearch()
   const hasWebSearch = Object.hasOwn(options, 'webSearch')
@@ -759,6 +856,7 @@ export function createApp(options = {}) {
       ok: true,
       visionEnabled: Boolean(visionClient),
       model: visionModel,
+      fallbackModels: visionFallbackModels,
       provider: visionProvider,
       photoSearchEnabled: Boolean(photoSearch),
       photoSearchProvider: photoSearch?.provider ?? null,
@@ -810,62 +908,133 @@ export function createApp(options = {}) {
       let webEvidence = []
       const providerWarnings = []
       if (photoSearch?.search || webSearch?.search) {
-        try {
-          searchPlan = await describeForExternalPhotoSearch({
-            visionClient,
-            visionProvider,
-            visionModel,
-            imageDataUrl,
+        for (const modelAttempt of visionModelAttempts) {
+          try {
+            searchPlan = await describeForExternalPhotoSearch({
+              visionClient,
+              visionProvider,
+              visionModel: modelAttempt,
+              imageDataUrl,
+            })
+            break
+          } catch (error) {
+            providerWarnings.push(providerWarning(`search-plan:${modelAttempt}`, error))
+          }
+        }
+      }
+
+      if (searchPlan) {
+        const evidenceSearches = []
+        if (webSearch?.search) {
+          evidenceSearches.push({
+            type: 'web',
+            provider: webSearch.provider ?? 'web-search',
+            run: () =>
+              withTimeout(
+                webSearch.search(searchPlan.searchQueries),
+                evidenceSearchTimeoutMs,
+                webSearch.provider ?? 'web-search',
+              ),
           })
-        } catch (error) {
-          providerWarnings.push(providerWarning('search-plan', error))
+        }
+        if (photoSearch?.search) {
+          evidenceSearches.push({
+            type: 'photo',
+            provider: photoSearch.provider ?? 'photo-search',
+            run: () =>
+              withTimeout(
+                photoSearch.search(searchPlan.searchQueries),
+                evidenceSearchTimeoutMs,
+                photoSearch.provider ?? 'photo-search',
+              ),
+          })
+        }
+
+        const settledEvidence = await Promise.all(
+          evidenceSearches.map(async (search) => {
+            try {
+              return {
+                status: 'fulfilled',
+                ...search,
+                results: await search.run(),
+              }
+            } catch (error) {
+              return {
+                status: 'rejected',
+                ...search,
+                error,
+              }
+            }
+          }),
+        )
+
+        for (const settledSearch of settledEvidence) {
+          if (settledSearch.status !== 'fulfilled') {
+            providerWarnings.push(providerWarning(settledSearch.provider, settledSearch.error))
+            continue
+          }
+          if (settledSearch.type === 'web') webEvidence = settledSearch.results
+          if (settledSearch.type === 'photo') photoEvidence = settledSearch.results
         }
       }
 
-      if (webSearch?.search && searchPlan) {
-        try {
-          webEvidence = await webSearch.search(searchPlan.searchQueries)
-        } catch (error) {
-          providerWarnings.push(providerWarning(webSearch.provider ?? 'web-search', error))
-        }
-      }
-
-      if (photoSearch?.search && searchPlan) {
-        try {
-          photoEvidence = await photoSearch.search(searchPlan.searchQueries)
-        } catch (error) {
-          providerWarnings.push(providerWarning(photoSearch.provider ?? 'photo-search', error))
-        }
-      }
-
-      let outputText = ''
-      try {
-        outputText = await analyzeWithProvider({
-          visionClient,
-          visionProvider,
-          visionModel,
-          imageDataUrl,
-          compactVenues,
-          searchPlan,
-          photoEvidence,
-          webEvidence,
-        })
-      } catch (error) {
-        providerWarnings.push(providerWarning('vision-analysis', error))
-        outputText = await analyzeWithProvider({
-          visionClient,
-          visionProvider,
-          visionModel,
-          imageDataUrl,
-          compactVenues,
-          searchPlan,
-          photoEvidence,
-          webEvidence,
+      let result = null
+      let visionModelUsed = visionModel
+      let lastVisionError = null
+      const analysisAttempts = [
+        {
+          label: 'vision-analysis',
+          includeExternalPhotoImages: true,
+          includeOpenRouterWebSearch: true,
+        },
+        {
+          label: 'vision-analysis-fallback',
           includeExternalPhotoImages: false,
           includeOpenRouterWebSearch: false,
-        })
+        },
+      ]
+      for (const modelAttempt of visionModelAttempts) {
+        for (const attempt of analysisAttempts) {
+          try {
+            const outputText = await analyzeWithProvider({
+              visionClient,
+              visionProvider,
+              visionModel: modelAttempt,
+              imageDataUrl,
+              compactVenues,
+              searchPlan,
+              photoEvidence,
+              webEvidence,
+              includeExternalPhotoImages: attempt.includeExternalPhotoImages,
+              includeOpenRouterWebSearch: attempt.includeOpenRouterWebSearch,
+            })
+            try {
+              result = parseModelJson(outputText)
+            } catch (parseError) {
+              providerWarnings.push(
+                providerWarning(`${attempt.label}-json:${modelAttempt}`, parseError),
+              )
+              const repairedOutputText = await repairModelJson({
+                visionClient,
+                visionProvider,
+                visionModel: modelAttempt,
+                outputText,
+              })
+              result = parseModelJson(repairedOutputText)
+            }
+            visionModelUsed = modelAttempt
+            break
+          } catch (error) {
+            providerWarnings.push(providerWarning(`${attempt.label}:${modelAttempt}`, error))
+            lastVisionError = error
+            if (error instanceof Error && error.message === 'Model did not return JSON.') {
+              break
+            }
+          }
+        }
+        if (result) break
       }
-      const result = parseModelJson(outputText)
+      if (!result) throw lastVisionError ?? new Error('No vision model returned an analysis.')
       const photoEvidenceUrls = photoEvidence.flatMap((photo) =>
         [photo.pageUrl, photo.imageUrl, photo.thumbnailUrl].filter(Boolean),
       )
@@ -896,6 +1065,7 @@ export function createApp(options = {}) {
         })),
         searchProvider: photoSearch?.provider ?? null,
         webSearchProvider: webSearch?.provider ?? null,
+        visionModel: visionModelUsed,
         providerWarnings,
       })
     } catch (error) {
