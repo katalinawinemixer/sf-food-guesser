@@ -553,6 +553,13 @@
   white-space: nowrap;
 }
 
+.guess-disclaimer {
+  margin: -6px 0 14px;
+  color: #607067;
+  font-size: 13px;
+  line-height: 1.4;
+}
+
 .results-grid {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));

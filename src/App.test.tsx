@@ -102,6 +102,8 @@ describe('SF Food Guesser photo flow', () => {
     expect(photoForm.has('description')).toBe(false)
 
     expect(screen.getByText(/Analyzed photo: A square slice/i)).toBeVisible()
+    expect(screen.getByText('Guesses to confirm')).toBeVisible()
+    expect(screen.getByText('Confirm the name/location before trusting it')).toBeVisible()
     expect(screen.getByText('square pizza')).toBeVisible()
     expect(screen.getAllByText('91%')[0]).toBeVisible()
     expect(screen.getByText(/The image shows a square focaccia-style pizza slice/i)).toBeVisible()

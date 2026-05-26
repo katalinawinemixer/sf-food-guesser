@@ -337,7 +337,16 @@ function normalizeEvidenceCategories(candidate) {
       .filter((category) => evidenceCategories.includes(category)),
   )
 
-  if (/\b(sign|menu|receipt|visible text|text|word|letter|logo name)\b/.test(text)) {
+  const hasReliableVisibleText =
+    /\b(readable|reads|says|spells|venue name|store name|sign says|label says|logo says|menu says|receipt says|visible sign)\b/.test(
+      text,
+    ) && !/\b(blurred|unreadable|blank|white label|no readable)\b/.test(text)
+
+  if (categories.has('visible_text') && !hasReliableVisibleText) {
+    categories.delete('visible_text')
+  }
+
+  if (hasReliableVisibleText) {
     categories.add('visible_text')
   }
   if (/\b(interior|inside|tile|counter|wall|mural|lighting|display case|seating|decor|room)\b/.test(text)) {
@@ -346,7 +355,7 @@ function normalizeEvidenceCategories(candidate) {
   if (/\b(storefront|exterior|awning|window|street|facade)\b/.test(text)) {
     categories.add('storefront_match')
   }
-  if (/\b(packaging|logo|cup|bag|box|label|sticker|sleeve)\b/.test(text)) {
+  if (/\b(packaging|branded|logo|bag|box|sticker|sleeve)\b/.test(text)) {
     categories.add('packaging_logo')
   }
   if (/\b(dish|food|drink|matcha|coffee|latte|pastry|croissant|sandwich|pizza|noodle|dumpling|bun)\b/.test(text)) {
@@ -403,12 +412,16 @@ export function rerankCandidates(rawCandidates = [], options = {}) {
         Array.isArray(candidate.comparisonPhotos) &&
         candidate.comparisonPhotos.some((photo) => trustedPhotoUrls.has(photo.url))
       const hasSeedMatch = Boolean(candidate.id) && seedVenueIds.has(candidate.id)
+      const hasIdentityEvidence = evidenceCategoriesForCandidate.some((category) =>
+        ['visible_text', 'gps_match'].includes(category),
+      )
+      const hasLogoEvidence = evidenceCategoriesForCandidate.includes('packaging_logo')
+      const isWebDiscovered = !hasSeedMatch
       const hasHardVenueEvidence =
         hasSeedMatch ||
         hasExternalPhotoMatch ||
-        evidenceCategoriesForCandidate.some((category) =>
-          ['visible_text', 'packaging_logo', 'gps_match'].includes(category),
-        )
+        hasIdentityEvidence ||
+        hasLogoEvidence
       const hasUnverifiedVisualClaim =
         !hasExternalPhotoMatch &&
         evidenceCategoriesForCandidate.some((category) =>
@@ -432,11 +445,19 @@ export function rerankCandidates(rawCandidates = [], options = {}) {
       const confidenceCap =
         dishOnly
           ? 42
-          : !hasHardVenueEvidence && hasUnverifiedVisualClaim
-            ? 68
-            : !hasHardVenueEvidence
-              ? 74
-              : 100
+          : isWebDiscovered && !hasIdentityEvidence && !hasExternalPhotoMatch
+            ? 58
+            : isWebDiscovered && !hasIdentityEvidence && hasUnverifiedVisualClaim
+              ? 68
+              : isWebDiscovered && !hasIdentityEvidence
+                ? hasLogoEvidence
+                  ? 78
+                  : 72
+                : !hasHardVenueEvidence && hasUnverifiedVisualClaim
+                  ? 68
+                  : !hasHardVenueEvidence
+                    ? 74
+                    : 100
       const adjustedScore = Math.min(rawAdjustedScore, confidenceCap)
       const adjustedConfidence = Math.round(adjustedScore)
       const rankingNotes = [
@@ -444,6 +465,11 @@ export function rerankCandidates(rawCandidates = [], options = {}) {
         ...(dishOnly ? ['Food/drink similarity alone is weak evidence, so this was ranked lower.'] : []),
         ...(hasUnverifiedVisualClaim
           ? ['Interior/storefront similarity was not verified against external photos, so confidence is capped.']
+          : []),
+        ...(isWebDiscovered && !hasIdentityEvidence
+          ? [
+              'No readable venue name, GPS, or unique identity clue was verified, so this web-discovered guess is capped.',
+            ]
           : []),
         ...(hasSource ? ['Supporting source links were found for this venue.'] : ['No supporting source link was returned for this candidate.']),
       ]
@@ -1042,9 +1068,19 @@ export function createApp(options = {}) {
         seedVenueIds: compactVenues.map((venue) => venue.id),
         photoEvidenceUrls,
       })
+      const topConfidence = candidates[0]?.confidence ?? 0
+      const closeCandidateCount = candidates.filter(
+        (candidate) => topConfidence - candidate.confidence <= 6,
+      ).length
+      const needsMoreEvidence =
+        Boolean(result.needsMoreEvidence) ||
+        candidates.length === 0 ||
+        topConfidence < 80 ||
+        closeCandidateCount > 1
       response.json({
         ...result,
         candidates,
+        needsMoreEvidence,
         searchPlan,
         photoEvidence: photoEvidence.map((photo) => ({
           title: photo.title,

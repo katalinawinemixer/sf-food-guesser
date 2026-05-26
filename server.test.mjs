@@ -941,6 +941,62 @@ describe('SF Food Guesser API', () => {
     )
   })
 
+  it('caps web-discovered photo matches without readable identity evidence', () => {
+    const candidates = rerankCandidates(
+      [
+        {
+          id: '',
+          name: 'Generic Industrial Cafe',
+          confidence: 100,
+          evidenceCategories: ['interior_match', 'web_source_match', 'dish_match'],
+          reasons: ['External photos show a similar stainless counter and brown bags.'],
+          sourceUrls: ['https://example.com/generic-industrial-cafe'],
+          comparisonPhotos: [
+            {
+              title: 'Generic Industrial Cafe customer photo',
+              source: 'Google Maps reviews/photos',
+              url: 'https://example.com/returned-photo.jpg',
+            },
+          ],
+        },
+      ],
+      { photoEvidenceUrls: ['https://example.com/returned-photo.jpg'] },
+    )
+
+    expect(candidates[0].confidence).toBeLessThanOrEqual(72)
+    expect(candidates[0].rankingNotes).toContain(
+      'No readable venue name, GPS, or unique identity clue was verified, so this web-discovered guess is capped.',
+    )
+  })
+
+  it('does not treat a blank or blurred label as readable venue text', () => {
+    const candidates = rerankCandidates(
+      [
+        {
+          id: '',
+          name: 'Blank Label Cafe',
+          confidence: 100,
+          evidenceCategories: ['visible_text', 'interior_match', 'web_source_match', 'dish_match'],
+          reasons: [
+            'The image shows a green drink with a blank white label and similar stainless counter.',
+          ],
+          sourceUrls: ['https://example.com/blank-label-cafe'],
+          comparisonPhotos: [
+            {
+              title: 'Blank Label Cafe customer photo',
+              source: 'Google Maps reviews/photos',
+              url: 'https://example.com/returned-photo.jpg',
+            },
+          ],
+        },
+      ],
+      { photoEvidenceUrls: ['https://example.com/returned-photo.jpg'] },
+    )
+
+    expect(candidates[0].evidenceCategories).not.toContain('visible_text')
+    expect(candidates[0].confidence).toBeLessThanOrEqual(72)
+  })
+
   it('does not trust invented non-seed ids as verified venues', () => {
     const candidates = rerankCandidates(
       [

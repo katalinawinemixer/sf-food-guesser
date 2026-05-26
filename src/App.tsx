@@ -730,7 +730,7 @@ function App() {
           {activeMatch ? (
             <section className="answer-panel" aria-live="polite">
               <div className="answer-copy">
-                <span className="eyebrow">Best match</span>
+                <span className="eyebrow">Best guess to confirm</span>
                 <h2>{activeMatch.venue.name}</h2>
                 <p>
                   {venueLocationLabel(activeMatch.venue)}
@@ -820,10 +820,10 @@ function App() {
 
           <div className="results-head">
             <div>
-              <span className="eyebrow">Photo results</span>
+              <span className="eyebrow">Guesses to confirm</span>
               <h2>
                 {photo.analysis
-                  ? `${matches.length} photo candidates`
+                  ? `${matches.length} venue guesses`
                   : photo.coords
                   ? `${matches.length} nearby candidates`
                   : 'No results yet'}
@@ -831,12 +831,19 @@ function App() {
             </div>
             <span className="freshness">
               {photo.analysis
-                ? 'Vision-ranked with live web discovery'
+                ? 'Confirm the name/location before trusting it'
                 : photo.coords
                   ? 'GPS-ranked against verified venues'
                   : 'Waiting for photo analysis'}
             </span>
           </div>
+
+          {photo.analysis && matches.length ? (
+            <p className="guess-disclaimer">
+              These are guesses from the uploaded photo and public evidence. If the top venue is
+              wrong, use this list to confirm which candidates were tried.
+            </p>
+          ) : null}
 
           {matches.length ? (
             <div className="results-grid">
