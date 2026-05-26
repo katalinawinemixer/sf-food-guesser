@@ -13,12 +13,15 @@ extract image evidence, search broadly for San Francisco-specific matches, and
 rank likely venues. If the image still has GPS EXIF metadata, that is used as an
 extra ranking signal.
 
-For stronger interior/storefront matching, add `SERPAPI_API_KEY`. With that key,
-the backend runs an agent-style two-pass flow: describe the uploaded photo,
-generate Google/Yelp/review-photo search queries, fetch candidate public photos,
-then compare those external photos against the upload before ranking places. You
-can also add `EXA_API_KEY` to pull broader web/review-page evidence into the
-same comparison step.
+The repository only includes placeholder environment variables. Real keys stay
+in your local `.env`, which is ignored by git.
+
+For stronger interior/storefront matching, you can optionally add your own
+`SERPAPI_API_KEY`. With that key, the backend runs an agent-style two-pass flow:
+describe the uploaded photo, generate Google/Yelp/review-photo search queries,
+fetch candidate public photos, then compare those external photos against the
+upload before ranking places. You can also optionally add your own `EXA_API_KEY`
+to pull broader web/review-page evidence into the same comparison step.
 
 ## Run
 
@@ -28,9 +31,9 @@ Create a local `.env` first:
 cp .env.example .env
 ```
 
-Add either `OPENROUTER_API_KEY` or `OPENAI_API_KEY` to `.env`. Add
-`SERPAPI_API_KEY` for candidate photo comparison and `EXA_API_KEY` for broader
-web/review-page evidence, then run:
+Replace `PASTE_YOUR_OPENROUTER_API_KEY_HERE` with your real OpenRouter key in
+`.env`. Optional keys are intentionally blank unless you have your own
+credentials for those providers. Then run:
 
 ```bash
 npm install
