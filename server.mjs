@@ -26,6 +26,7 @@ const model =
 const serpApiKey = process.env.SERPAPI_API_KEY
 const exaApiKey = process.env.EXA_API_KEY
 const exaClient = exaApiKey ? new Exa(exaApiKey) : null
+const maxExternalPhotoImagesForVision = 8
 const evidenceCategories = [
   'visible_text',
   'interior_match',
@@ -178,6 +179,44 @@ Important:
 - Use external web/review pages to discover candidate venue names, addresses, neighborhoods, and pages likely to contain matching public photos.
 - Do not pick a candidate just because it has similar food. Similar interiors/photo-page evidence should outrank generic dish matches.
 - For every returned candidate, include comparisonPhotos showing which external candidate photos supported it.`
+}
+
+function buildOpenRouterPhotoEvidenceParts(photoEvidence, includeExternalPhotoImages = true) {
+  return photoEvidence.flatMap((photo, index) => [
+    {
+      type: 'text',
+      text: `External candidate photo ${index + 1}: ${photo.title} | ${photo.source} | ${photo.pageUrl}`,
+    },
+    ...(includeExternalPhotoImages && index < maxExternalPhotoImagesForVision && photo.imageUrl
+      ? [
+          {
+            type: 'image_url',
+            image_url: {
+              url: photo.imageUrl,
+              detail: 'low',
+            },
+          },
+        ]
+      : []),
+  ])
+}
+
+function buildOpenAIPhotoEvidenceParts(photoEvidence, includeExternalPhotoImages = true) {
+  return photoEvidence.flatMap((photo, index) => [
+    {
+      type: 'input_text',
+      text: `External candidate photo ${index + 1}: ${photo.title} | ${photo.source} | ${photo.pageUrl}`,
+    },
+    ...(includeExternalPhotoImages && index < maxExternalPhotoImagesForVision && photo.imageUrl
+      ? [
+          {
+            type: 'input_image',
+            image_url: photo.imageUrl,
+            detail: 'low',
+          },
+        ]
+      : []),
+  ])
 }
 
 function normalizeSearchPlan(plan) {
@@ -557,6 +596,31 @@ function providerWarning(providerName, error) {
   }
 }
 
+function analysisFailureMessage(error, visionProvider) {
+  const providerName = visionProvider === 'openrouter' ? 'OpenRouter' : 'OpenAI'
+  const status = Number(error?.status ?? error?.code ?? 0)
+  const message =
+    error instanceof Error
+      ? error.message
+      : typeof error?.message === 'string'
+        ? error.message
+        : ''
+
+  if (status === 401 || /api key|unauthorized|authentication/i.test(message)) {
+    return `${providerName} rejected the API key. Check the local .env key, then restart npm run dev.`
+  }
+
+  if (status === 402 || /more credits|billing|quota|can only afford/i.test(message)) {
+    return `${providerName} needs more credits for photo analysis. Add credits or switch to a direct OpenAI key in the local .env, then restart npm run dev.`
+  }
+
+  if (status === 429 || /rate limit/i.test(message)) {
+    return `${providerName} is rate limiting photo analysis. Wait a bit, then try the upload again.`
+  }
+
+  return 'The photo analysis failed. Try again in a moment or restart the dev server.'
+}
+
 async function analyzeWithProvider({
   visionClient,
   visionProvider,
@@ -566,6 +630,8 @@ async function analyzeWithProvider({
   searchPlan = null,
   photoEvidence = [],
   webEvidence = [],
+  includeExternalPhotoImages = true,
+  includeOpenRouterWebSearch = true,
 }) {
   const systemPrompt =
     'You identify likely San Francisco food venues from uploaded food, interior, storefront, menu, receipt, or street-context images. Use the uploaded image itself as the source of evidence, be honest about uncertainty, and use the provided venue list only as seed data. You may return web-discovered San Francisco venues outside the seed list when supported by web evidence.'
@@ -596,41 +662,33 @@ async function analyzeWithProvider({
                 detail: 'high',
               },
             },
-            ...photoEvidence.flatMap((photo, index) => [
-              {
-                type: 'text',
-                text: `External candidate photo ${index + 1}: ${photo.title} | ${photo.source} | ${photo.pageUrl}`,
-              },
-              {
-                type: 'image_url',
-                image_url: {
-                  url: photo.imageUrl,
-                  detail: 'low',
-                },
-              },
-            ]),
+            ...buildOpenRouterPhotoEvidenceParts(photoEvidence, includeExternalPhotoImages),
           ],
         },
       ],
       response_format: { type: 'json_object' },
-      tools: [
-        {
-          type: 'openrouter:web_search',
-          parameters: {
-            engine: 'auto',
-            max_results: 10,
-            max_total_results: 40,
-            search_context_size: 'high',
-            user_location: {
-              type: 'approximate',
-              city: 'San Francisco',
-              region: 'California',
-              country: 'US',
-              timezone: 'America/Los_Angeles',
-            },
-          },
-        },
-      ],
+      ...(includeOpenRouterWebSearch
+        ? {
+            tools: [
+              {
+                type: 'openrouter:web_search',
+                parameters: {
+                  engine: 'auto',
+                  max_results: 10,
+                  max_total_results: 40,
+                  search_context_size: 'high',
+                  user_location: {
+                    type: 'approximate',
+                    city: 'San Francisco',
+                    region: 'California',
+                    country: 'US',
+                    timezone: 'America/Los_Angeles',
+                  },
+                },
+              },
+            ],
+          }
+        : {}),
       temperature: 0.1,
       max_tokens: 1200,
     })
@@ -657,17 +715,7 @@ async function analyzeWithProvider({
             image_url: imageDataUrl,
             detail: 'high',
           },
-          ...photoEvidence.flatMap((photo, index) => [
-            {
-              type: 'input_text',
-              text: `External candidate photo ${index + 1}: ${photo.title} | ${photo.source} | ${photo.pageUrl}`,
-            },
-            {
-              type: 'input_image',
-              image_url: photo.imageUrl,
-              detail: 'low',
-            },
-          ]),
+          ...buildOpenAIPhotoEvidenceParts(photoEvidence, includeExternalPhotoImages),
         ],
       },
     ],
@@ -790,16 +838,33 @@ export function createApp(options = {}) {
         }
       }
 
-      const outputText = await analyzeWithProvider({
-        visionClient,
-        visionProvider,
-        visionModel,
-        imageDataUrl,
-        compactVenues,
-        searchPlan,
-        photoEvidence,
-        webEvidence,
-      })
+      let outputText = ''
+      try {
+        outputText = await analyzeWithProvider({
+          visionClient,
+          visionProvider,
+          visionModel,
+          imageDataUrl,
+          compactVenues,
+          searchPlan,
+          photoEvidence,
+          webEvidence,
+        })
+      } catch (error) {
+        providerWarnings.push(providerWarning('vision-analysis', error))
+        outputText = await analyzeWithProvider({
+          visionClient,
+          visionProvider,
+          visionModel,
+          imageDataUrl,
+          compactVenues,
+          searchPlan,
+          photoEvidence,
+          webEvidence,
+          includeExternalPhotoImages: false,
+          includeOpenRouterWebSearch: false,
+        })
+      }
       const result = parseModelJson(outputText)
       const photoEvidenceUrls = photoEvidence.flatMap((photo) =>
         [photo.pageUrl, photo.imageUrl, photo.thumbnailUrl].filter(Boolean),
@@ -836,7 +901,7 @@ export function createApp(options = {}) {
     } catch (error) {
       console.error(error)
       response.status(500).json({
-        error: 'The photo analysis failed. Try a clearer image or restart the dev server.',
+        error: analysisFailureMessage(error, visionProvider),
       })
     }
   })

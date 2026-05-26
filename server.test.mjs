@@ -14,6 +14,7 @@ describe('SF Food Guesser API', () => {
         openAIClient: null,
         visionModel: 'test-model',
         visionProvider: null,
+        photoSearch: null,
         webSearch: null,
       }),
     )
@@ -33,7 +34,7 @@ describe('SF Food Guesser API', () => {
   })
 
   it('rejects photo analysis without a vision client', async () => {
-    const response = await request(createApp({ openAIClient: null }))
+    const response = await request(createApp({ openAIClient: null, photoSearch: null }))
       .post('/api/analyze-photo')
       .attach('photo', pngPixel, { filename: 'food.png', contentType: 'image/png' })
       .field('venues', '[]')
@@ -49,7 +50,7 @@ describe('SF Food Guesser API', () => {
       },
     }
 
-    const response = await request(createApp({ openAIClient }))
+    const response = await request(createApp({ openAIClient, photoSearch: null }))
       .post('/api/analyze-photo')
       .field('venues', '[]')
       .expect(400)
@@ -85,6 +86,7 @@ describe('SF Food Guesser API', () => {
         openAIClient,
         visionModel: 'test-model',
         visionProvider: 'openai',
+        photoSearch: null,
         webSearch: null,
       }),
     )
@@ -166,6 +168,7 @@ describe('SF Food Guesser API', () => {
         visionClient,
         visionModel: 'openai/gpt-4o-mini',
         visionProvider: 'openrouter',
+        photoSearch: null,
         webSearch: null,
       }),
     )
@@ -226,6 +229,97 @@ describe('SF Food Guesser API', () => {
         expect.objectContaining({ type: 'image_url' }),
       ]),
     )
+  })
+
+  it('retries OpenRouter analysis without the web-search tool when the first analysis call fails', async () => {
+    const visionClient = {
+      chat: {
+        completions: {
+          create: vi
+            .fn()
+            .mockRejectedValueOnce(new Error('OpenRouter 500'))
+            .mockResolvedValueOnce({
+              choices: [
+                {
+                  message: {
+                    content: JSON.stringify({
+                      summary: 'A matcha drink without enough venue evidence.',
+                      imageEvidence: ['matcha drink'],
+                      candidates: [
+                        {
+                          id: '',
+                          name: 'Unconfirmed Matcha Cafe',
+                          category: 'Cafe',
+                          neighborhood: 'San Francisco',
+                          address: 'Address not confirmed',
+                          confidence: 45,
+                          evidenceCategories: ['dish_match'],
+                          reasons: ['Only the drink is clearly visible.'],
+                          sourceUrls: [],
+                        },
+                      ],
+                      needsMoreEvidence: true,
+                    }),
+                  },
+                },
+              ],
+            }),
+        },
+      },
+    }
+
+    const response = await request(
+      createApp({
+        visionClient,
+        visionModel: 'openai/gpt-4o-mini',
+        visionProvider: 'openrouter',
+        photoSearch: null,
+        webSearch: null,
+      }),
+    )
+      .post('/api/analyze-photo')
+      .attach('photo', pngPixel, { filename: 'food.png', contentType: 'image/png' })
+      .field('venues', '[]')
+      .expect(200)
+
+    expect(response.body.providerWarnings[0]).toMatchObject({
+      provider: 'vision-analysis',
+      message: 'OpenRouter 500',
+    })
+    expect(response.body.candidates[0].name).toBe('Unconfirmed Matcha Cafe')
+    expect(visionClient.chat.completions.create.mock.calls[0][0].tools).toBeDefined()
+    expect(visionClient.chat.completions.create.mock.calls[1][0].tools).toBeUndefined()
+  })
+
+  it('returns a specific message when OpenRouter lacks credits', async () => {
+    const creditError = Object.assign(new Error('This request requires more credits.'), {
+      status: 402,
+    })
+    const visionClient = {
+      chat: {
+        completions: {
+          create: vi.fn().mockRejectedValue(creditError),
+        },
+      },
+    }
+
+    const response = await request(
+      createApp({
+        visionClient,
+        visionModel: 'openai/gpt-4o-mini',
+        visionProvider: 'openrouter',
+        photoSearch: null,
+        webSearch: null,
+      }),
+    )
+      .post('/api/analyze-photo')
+      .attach('photo', pngPixel, { filename: 'food.png', contentType: 'image/png' })
+      .field('venues', '[]')
+      .expect(500)
+
+    expect(response.body.error).toContain('OpenRouter needs more credits')
+    expect(response.body.error).not.toContain('clearer image')
+    expect(visionClient.chat.completions.create).toHaveBeenCalledTimes(2)
   })
 
   it('uses a photo-search provider to compare external candidate photos', async () => {
@@ -344,6 +438,120 @@ describe('SF Food Guesser API', () => {
         }),
       ]),
     )
+  })
+
+  it('retries comparison without external image URLs when the image-heavy request fails', async () => {
+    const visionClient = {
+      chat: {
+        completions: {
+          create: vi
+            .fn()
+            .mockResolvedValueOnce({
+              choices: [
+                {
+                  message: {
+                    content: JSON.stringify({
+                      summary: 'Matcha drink in a cafe prep area.',
+                      imageEvidence: ['matcha drink', 'brown bags on shelves'],
+                      searchQueries: ['San Francisco matcha cafe brown bags shelves photos'],
+                      likelyVenueTypes: ['Cafe'],
+                    }),
+                  },
+                },
+              ],
+            })
+            .mockRejectedValueOnce(new Error('OpenRouter 500'))
+            .mockResolvedValueOnce({
+              choices: [
+                {
+                  message: {
+                    content: JSON.stringify({
+                      summary: 'Fallback comparison used photo metadata and web evidence.',
+                      imageEvidence: ['matcha drink', 'brown bags on shelves'],
+                      candidates: [
+                        {
+                          id: '',
+                          name: 'Photo Metadata Cafe',
+                          category: 'Cafe',
+                          neighborhood: 'Mission',
+                          address: '100 Example St',
+                          confidence: 76,
+                          evidenceType: 'interior',
+                          evidenceCategories: ['interior_match', 'web_source_match'],
+                          reasons: ['A returned Google Maps photo page names the same cafe.'],
+                          sourceUrls: ['https://example.com/page-1'],
+                          comparisonPhotos: [
+                            {
+                              title: 'Photo Metadata Cafe customer photo',
+                              source: 'Google Maps reviews/photos',
+                              url: 'https://example.com/page-1',
+                              matchReason: 'Same prep shelf context.',
+                            },
+                          ],
+                        },
+                      ],
+                      needsMoreEvidence: true,
+                    }),
+                  },
+                },
+              ],
+            }),
+        },
+      },
+    }
+    const photoEvidence = Array.from({ length: 10 }, (_, index) => ({
+      title: `Candidate ${index + 1}`,
+      source: 'Google Maps reviews/photos',
+      pageUrl: `https://example.com/page-${index + 1}`,
+      imageUrl: `https://example.com/photo-${index + 1}.jpg`,
+      thumbnailUrl: `https://example.com/thumb-${index + 1}.jpg`,
+      query: 'San Francisco matcha cafe brown bags shelves photos',
+    }))
+    const photoSearch = {
+      provider: 'mock-photo-search',
+      search: vi.fn(async () => photoEvidence),
+    }
+
+    const response = await request(
+      createApp({
+        visionClient,
+        visionModel: 'openai/gpt-4o-mini',
+        visionProvider: 'openrouter',
+        photoSearch,
+        webSearch: null,
+      }),
+    )
+      .post('/api/analyze-photo')
+      .attach('photo', pngPixel, { filename: 'food.png', contentType: 'image/png' })
+      .field('venues', '[]')
+      .expect(200)
+
+    expect(response.body.providerWarnings).toEqual([
+      expect.objectContaining({
+        provider: 'vision-analysis',
+        message: 'OpenRouter 500',
+      }),
+    ])
+    expect(response.body.candidates[0]).toMatchObject({
+      name: 'Photo Metadata Cafe',
+    })
+
+    const imageHeavyRequest = visionClient.chat.completions.create.mock.calls[1][0]
+    const imageHeavyExternalImages = imageHeavyRequest.messages[1].content.filter(
+      (part) => part.type === 'image_url' && part.image_url.url.includes('example.com/photo-'),
+    )
+    expect(imageHeavyExternalImages).toHaveLength(8)
+
+    const fallbackRequest = visionClient.chat.completions.create.mock.calls[2][0]
+    const fallbackExternalImages = fallbackRequest.messages[1].content.filter(
+      (part) => part.type === 'image_url' && part.image_url.url.includes('example.com/photo-'),
+    )
+    const fallbackUploadedImages = fallbackRequest.messages[1].content.filter(
+      (part) => part.type === 'image_url' && part.image_url.url.startsWith('data:image/png'),
+    )
+    expect(fallbackExternalImages).toHaveLength(0)
+    expect(fallbackUploadedImages).toHaveLength(1)
+    expect(fallbackRequest.tools).toBeUndefined()
   })
 
   it('searches Google Maps places before fetching Google review photos', async () => {
@@ -466,6 +674,7 @@ describe('SF Food Guesser API', () => {
         visionClient,
         visionModel: 'openai/gpt-4o-mini',
         visionProvider: 'openrouter',
+        photoSearch: null,
         webSearch,
       }),
     )
@@ -698,6 +907,7 @@ describe('SF Food Guesser API', () => {
         visionClient,
         visionModel: 'openai/gpt-4o-mini',
         visionProvider: 'openrouter',
+        photoSearch: null,
         webSearch,
       }),
     )
