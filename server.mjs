@@ -183,6 +183,37 @@ function normalizeSearchPlan(plan) {
   }
 }
 
+function buildSourceSearches(rawQuery) {
+  const query = String(rawQuery).trim()
+  if (!query) return []
+
+  return [
+    {
+      query: `${query} San Francisco cafe restaurant interior reviews photos Yelp Google Maps`,
+      label: 'broad-web',
+      numResults: 8,
+    },
+    {
+      query: `${query} San Francisco Yelp photos reviews cafe restaurant interior`,
+      label: 'yelp-photos',
+      numResults: 5,
+      includeDomains: ['yelp.com'],
+    },
+    {
+      query: `${query} San Francisco Eater Infatuation food blog restaurant cafe interior`,
+      label: 'editorial-guides',
+      numResults: 5,
+      includeDomains: ['eater.com', 'theinfatuation.com', 'sf.eater.com'],
+    },
+    {
+      query: `${query} San Francisco Instagram TikTok cafe restaurant matcha coffee pastry interior`,
+      label: 'social-captions',
+      numResults: 5,
+      includeDomains: ['instagram.com', 'tiktok.com'],
+    },
+  ]
+}
+
 async function describeForExternalPhotoSearch({
   visionClient,
   visionProvider,
@@ -289,28 +320,31 @@ export async function searchExaWeb(searchQueries, searchClient = exaClient) {
   if (!searchClient) return pages
 
   for (const rawQuery of searchQueries.slice(0, 5)) {
-    const query = `${rawQuery} San Francisco cafe restaurant interior reviews photos Yelp Google Maps`
-    const result = await searchClient.search(query, {
-      type: 'deep',
-      numResults: 10,
-      contents: {
-        highlights: true,
-      },
-    })
-
-    const results = Array.isArray(result.results) ? result.results : []
-    for (const item of results) {
-      const url = item.url || item.id
-      if (!url || seen.has(url)) continue
-      seen.add(url)
-      const highlights = Array.isArray(item.highlights) ? item.highlights : []
-      pages.push({
-        title: String(item.title ?? 'Candidate page'),
-        source: getSourceName(url, item.author),
-        url: String(url),
-        snippet: highlights.join(' ').slice(0, 900),
-        query,
+    for (const search of buildSourceSearches(rawQuery)) {
+      const result = await searchClient.search(search.query, {
+        type: 'deep',
+        numResults: search.numResults,
+        ...(search.includeDomains ? { includeDomains: search.includeDomains } : {}),
+        contents: {
+          highlights: true,
+        },
       })
+
+      const results = Array.isArray(result.results) ? result.results : []
+      for (const item of results) {
+        const url = item.url || item.id
+        if (!url || seen.has(url)) continue
+        seen.add(url)
+        const highlights = Array.isArray(item.highlights) ? item.highlights : []
+        pages.push({
+          title: String(item.title ?? 'Candidate page'),
+          source: getSourceName(url, item.author),
+          url: String(url),
+          snippet: highlights.join(' ').slice(0, 900),
+          query: search.query,
+          searchLabel: search.label,
+        })
+      }
     }
   }
 
@@ -573,6 +607,7 @@ export function createApp(options = {}) {
           url: page.url,
           snippet: page.snippet,
           query: page.query,
+          searchLabel: page.searchLabel,
         })),
         searchProvider: photoSearch?.provider ?? null,
         webSearchProvider: webSearch?.provider ?? null,

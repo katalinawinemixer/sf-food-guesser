@@ -588,6 +588,40 @@
   margin-top: 5px;
 }
 
+.reason-heading {
+  margin-left: -18px;
+  list-style: none;
+  color: #17211d;
+  font-weight: 850;
+}
+
+.evidence-sources {
+  display: grid;
+  gap: 7px;
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid #eef2ee;
+}
+
+.evidence-sources span {
+  color: #617069;
+  font-size: 11px;
+  line-height: 1;
+  font-weight: 850;
+  text-transform: uppercase;
+}
+
+.evidence-sources a {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  width: fit-content;
+  color: #145b3b;
+  font-size: 12px;
+  font-weight: 800;
+  text-decoration: none;
+}
+
 .card-links {
   margin-top: 14px;
 }

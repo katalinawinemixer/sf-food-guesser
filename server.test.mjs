@@ -444,20 +444,34 @@ describe('SF Food Guesser API', () => {
 
     const pages = await searchExaWeb(['San Francisco cafe green tile interior'], exaClient)
 
-    expect(exaClient.search).toHaveBeenCalledWith(
+    expect(exaClient.search).toHaveBeenNthCalledWith(
+      1,
       expect.stringContaining('San Francisco cafe green tile interior'),
       {
         type: 'deep',
-        numResults: 10,
+        numResults: 8,
         contents: {
           highlights: true,
         },
       },
     )
+    expect(exaClient.search).toHaveBeenCalledWith(
+      expect.stringContaining('Yelp photos'),
+      expect.objectContaining({
+        includeDomains: ['yelp.com'],
+      }),
+    )
+    expect(exaClient.search).toHaveBeenCalledWith(
+      expect.stringContaining('Instagram TikTok'),
+      expect.objectContaining({
+        includeDomains: ['instagram.com', 'tiktok.com'],
+      }),
+    )
     expect(pages[0]).toMatchObject({
       title: 'Cafe interior photos',
       source: 'example.com',
       url: 'https://example.com/cafe-interior',
+      searchLabel: 'broad-web',
       snippet: expect.stringContaining('Green tile wall'),
     })
   })

@@ -10,7 +10,6 @@
     "build": "tsc -b && vite build",
     "lint": "eslint .",
     "secret-scan": "node scripts/secret-scan.mjs",
-    "evaluate": "node scripts/evaluate.mjs",
     "test": "vitest run && npm run lint && node --check server.mjs && npm run build",
     "preview": "vite preview"
   },

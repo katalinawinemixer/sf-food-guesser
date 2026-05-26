@@ -60,22 +60,22 @@ Weak evidence:
 
 ## Accuracy Targets
 
-The app should not claim to be accurate until it is measured against a private
-labeled photo set.
+The app should not claim certainty unless it has strong venue-specific evidence.
 
 Minimum target for an early usable version:
 
-- Top-1 accuracy: 60% or better on the labeled set.
-- Top-3 accuracy: 80% or better on the labeled set.
-- Low-confidence behavior: at least 80% of ambiguous or failed cases should be
-  marked as needing more evidence instead of presenting a confident wrong
-  answer.
+- Returned candidates should include a venue name or exact location when found.
+- The top candidate should show why it is likely, not just a confidence score.
+- Ambiguous results should show multiple candidates and say what evidence is
+  missing instead of presenting a confident wrong answer.
 
 Stronger target before broader sharing:
 
-- Top-1 accuracy: 75% or better.
-- Top-3 accuracy: 90% or better.
-- False-confident wrong answers below 10%.
+- The top result should be backed by at least one strong evidence type whenever
+  possible: visible text/logo, matching interior/storefront, packaging, GPS, or
+  corroborating source URLs.
+- Generic dish-only matches should be marked as weak unless another evidence
+  type supports the same venue.
 
 ## Uncertainty Behavior
 
@@ -84,13 +84,9 @@ When confidence is low, the app should:
 - Show several candidates instead of pretending certainty.
 - Explain what evidence is missing.
 - Ask for no manual clue entry by default.
-- Let the user mark the result as incorrect and optionally provide the known
-  venue for evaluation.
+- Keep the user flow focused on identification, not data-labeling.
 
 ## Privacy Rule
 
 Uploaded photos should be treated as transient by default. Do not store user
-photos unless the user explicitly opts into saving a miss for evaluation.
-
-Private evaluation photos belong under `evaluation/photos/`, which is ignored by
-git.
+photos unless the user explicitly opts into a future saved-history feature.

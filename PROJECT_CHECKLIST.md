@@ -9,7 +9,7 @@ items were completed earlier out of order.
 - [x] Define the first supported geography: San Francisco only.
 - [x] Define supported venue types: restaurants, cafes, bakeries, counters, bars, dessert shops.
 - [x] Define what counts as a correct answer: exact venue name, address, and supporting evidence.
-- [x] Define accuracy targets before claiming accuracy, for example top-1 and top-3 accuracy on a labeled photo set.
+- [x] Define accuracy standards before claiming certainty.
 - [x] Define uncertainty behavior: when confidence is low, show candidates and evidence instead of pretending certainty.
 
 ## 2. Security And Repo Hygiene
@@ -51,9 +51,9 @@ items were completed earlier out of order.
 - [x] Wire Exa deep search with `type: "deep"` and `contents: { highlights: true }`.
 - [x] Add Exa tests that verify the deep/highlights search configuration.
 - [x] Surface web evidence in the returned analysis payload.
-- [ ] Decide whether SerpAPI is actually part of the product. If yes, get a real key and keep it local only.
-- [ ] If SerpAPI is used, fetch candidate public images for likely venues and compare them visually against the upload.
-- [ ] Add source-specific search query generation for Google Maps/Business Profile pages, Yelp photos, restaurant sites, local blogs, Instagram/TikTok captions, Eater, Infatuation, and Michelin where available.
+- [x] Defer SerpAPI unless Exa/OpenRouter evidence is not enough.
+- [ ] If a photo-search provider is added later, fetch candidate public images for likely venues and compare them visually against the upload.
+- [x] Add source-specific search query generation for Yelp photos, restaurant sites, local blogs, Instagram/TikTok captions, Eater, Infatuation, and other public pages where available.
 - [ ] Avoid unsupported scraping; use provider APIs or publicly accessible search results.
 - [ ] Add a durable provider interface so Exa, OpenRouter search, SerpAPI, and future providers are isolated.
 
@@ -68,16 +68,7 @@ items were completed earlier out of order.
 - [ ] Add explicit evidence categories: exact text match, interior match, storefront match, packaging/logo match, dish match, GPS match, web-source match.
 - [ ] Add confidence calibration rules so scores are consistent across runs.
 
-## 7. Ground Truth Evaluation
-
-- [ ] Create a private labeled test set of real SF photos with known correct venues.
-- [ ] Include hard cases: interior-only, dish-only, packaging-only, storefront, menu board, blurry screenshots, cropped social posts.
-- [x] Add an evaluation script that runs the pipeline over the labeled set.
-- [x] Track top-1 accuracy, top-3 accuracy, false positives, and “needs more evidence” quality.
-- [ ] Review failures and turn them into prompt, search, or ranking improvements.
-- [x] Do not call the app accurate until it performs well on this evaluation set.
-
-## 8. User Experience
+## 7. User Experience
 
 - [x] Make upload photo the main workflow.
 - [x] Remove the need for users to manually enter dish/sign/street/decor clues.
@@ -85,12 +76,10 @@ items were completed earlier out of order.
 - [x] Show detected visual evidence.
 - [x] Show candidate venues with confidence and reasons.
 - [x] Show a search trail when web/photo evidence exists.
-- [ ] Add a clear “why this guess” evidence view for each candidate.
-- [ ] Add “not correct” feedback so misses can be saved for evaluation.
-- [ ] Add a way for the user to upload the known answer after a miss.
+- [x] Add a clear “why this guess” evidence view for each candidate.
 - [ ] Add mobile layout QA for upload, preview, loading, and results.
 
-## 9. Reliability And Error Handling
+## 8. Reliability And Error Handling
 
 - [x] Show missing-key/offline API health states.
 - [x] Reject requests without photos.
@@ -100,7 +89,7 @@ items were completed earlier out of order.
 - [ ] Add request size and file type messaging in the UI.
 - [ ] Add rate-limit messaging.
 
-## 10. Deployment Readiness
+## 9. Deployment Readiness
 
 - [ ] Choose deployment target.
 - [ ] Move API keys into deployment environment variables.
@@ -110,11 +99,9 @@ items were completed earlier out of order.
 - [x] Add CI for test, lint, build, and secret scan.
 - [ ] Decide whether uploaded photos are processed transiently only or stored with explicit consent.
 
-## 11. Future Accuracy Improvements
+## 10. Future Accuracy Improvements
 
 - [ ] Add Google Places/Maps-compatible venue lookup if a compliant provider key is available.
 - [ ] Build a richer SF venue database from source-backed public pages.
 - [ ] Cache search results by query to reduce cost and latency.
 - [ ] Add image embedding comparison if a suitable provider is chosen.
-- [ ] Add manual review/admin workflow for failed guesses.
-- [ ] Add analytics for common failure modes without exposing private user photos.

@@ -7,8 +7,6 @@ const ignoredDirs = new Set([
   'node_modules',
   'dist',
   'dist-ssr',
-  'evaluation/photos',
-  'evaluation/results',
 ])
 const ignoredFiles = new Set(['.env'])
 

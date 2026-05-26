@@ -53,6 +53,7 @@ type VisionAnalysis = {
     url: string
     snippet?: string
     query?: string
+    searchLabel?: string
   }>
 }
 
@@ -309,6 +310,7 @@ async function analyzePhotoWithVision(file: File): Promise<VisionAnalysis> {
             url: String(page.url ?? ''),
             snippet: page.snippet ? String(page.snippet) : undefined,
             query: page.query ? String(page.query) : undefined,
+            searchLabel: page.searchLabel ? String(page.searchLabel) : undefined,
           }))
           .filter((page: { url: string }) => page.url)
           .slice(0, 6)
@@ -790,10 +792,24 @@ function App() {
                 </div>
 
                 <ul className="reason-list">
+                  <li className="reason-heading">Why this guess</li>
                   {match.reasons.map((reason) => (
                     <li key={reason}>{reason}</li>
                   ))}
                 </ul>
+
+                {photo.analysis?.webEvidence?.length ? (
+                  <div className="evidence-sources" aria-label="Supporting web evidence">
+                    <span>Evidence checked</span>
+                    {photo.analysis.webEvidence.slice(0, 3).map((page) => (
+                      <a key={page.url} href={page.url} target="_blank" rel="noreferrer">
+                        {page.searchLabel ? `${page.searchLabel}: ` : ''}
+                        {page.source}
+                        <ArrowUpRight size={12} />
+                      </a>
+                    ))}
+                  </div>
+                ) : null}
 
                 <div className="card-links">
                   <a href={match.venue.sourceUrl} target="_blank" rel="noreferrer">
