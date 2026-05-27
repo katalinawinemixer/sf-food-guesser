@@ -1472,7 +1472,10 @@ export async function searchHasDataPhotos(searchQueries, apiKey = process.env.HA
   const photos = []
   const seen = new Set()
   const seenPlaces = new Set()
-  const mapSearches = searchQueries.slice(0, 5).map(async (rawQuery, queryIndex) => {
+  const mapSearches = []
+  const queries = searchQueries.slice(0, 3)
+  for (let queryIndex = 0; queryIndex < queries.length; queryIndex += 1) {
+    const rawQuery = queries[queryIndex]
     const query = `${rawQuery} San Francisco cafe restaurant`
     const url = new URL('https://api.hasdata.com/scrape/google-maps/search')
     url.searchParams.set('q', query)
@@ -1486,23 +1489,25 @@ export async function searchHasDataPhotos(searchQueries, apiKey = process.env.HA
         'x-api-key': String(apiKey ?? ''),
       },
     })
-    if (!response.ok) return []
+    if (!response.ok) {
+      mapSearches.push([])
+      continue
+    }
     const result = await response.json()
     const places = normalizeMapPlaces(result)
 
-    return places.slice(0, 3).map((place, placeIndex) => ({
+    const search = places.slice(0, 3).map((place, placeIndex) => ({
       place,
       query,
       queryIndex,
       placeIndex,
     }))
-  })
+    mapSearches.push(search)
+    if (search.length && queryIndex === 0) break
+  }
 
-  const settledMapSearches = await Promise.allSettled(mapSearches)
-  const places = settledMapSearches
-    .flatMap((settledSearch) =>
-      settledSearch.status === 'fulfilled' ? settledSearch.value : [],
-    )
+  const places = mapSearches
+    .flat()
     .sort((a, b) => a.queryIndex - b.queryIndex || a.placeIndex - b.placeIndex)
     .filter(({ place }) => {
       const placeKey = normalizePlaceDataId(place) ?? normalizePlaceId(place)

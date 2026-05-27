@@ -412,10 +412,12 @@ export async function searchHasDataPhotoEvidence(searchPlan, env, fetchImpl = fe
   if (!env.HASDATA_API_KEY) return []
   const queries = (searchPlan?.searchQueries ?? [])
     .filter(Boolean)
-    .slice(0, 5)
+    .slice(0, 3)
   if (!queries.length) return []
 
-  const mapSearches = queries.map(async (rawQuery, queryIndex) => {
+  const mapSearches = []
+  for (let queryIndex = 0; queryIndex < queries.length; queryIndex += 1) {
+    const rawQuery = queries[queryIndex]
     const query = `${rawQuery} San Francisco cafe restaurant`
     const url = new URL('https://api.hasdata.com/scrape/google-maps/search')
     url.searchParams.set('q', query)
@@ -442,13 +444,18 @@ export async function searchHasDataPhotoEvidence(searchPlan, env, fetchImpl = fe
         placeResultsType: Array.isArray(result?.placeResults) ? 'array' : typeof result?.placeResults,
         localResultsType: Array.isArray(result?.localResults) ? 'array' : typeof result?.localResults,
       })
-      if (!response.ok) return []
-      return places.slice(0, 3).map((place, placeIndex) => ({
+      if (!response.ok) {
+        mapSearches.push([])
+        continue
+      }
+      const search = places.slice(0, 3).map((place, placeIndex) => ({
         place,
         query,
         queryIndex,
         placeIndex,
       }))
+      mapSearches.push(search)
+      if (search.length && queryIndex === 0) break
     } catch (error) {
       debug?.searches?.push?.({
         status: 0,
@@ -458,16 +465,13 @@ export async function searchHasDataPhotoEvidence(searchPlan, env, fetchImpl = fe
         topLevelKeys: [],
         error: String(error?.message ?? error),
       })
-      return []
+      mapSearches.push([])
     }
-  })
+  }
 
   const seenPlaces = new Set()
-  const settledMapSearches = await Promise.allSettled(mapSearches)
-  const places = settledMapSearches
-    .flatMap((settledSearch) =>
-      settledSearch.status === 'fulfilled' ? settledSearch.value : [],
-    )
+  const places = mapSearches
+    .flat()
     .sort((a, b) => a.queryIndex - b.queryIndex || a.placeIndex - b.placeIndex)
     .filter(({ place }) => {
       const key = hasDataPlaceKey(place)
@@ -619,7 +623,7 @@ function seedVenueCandidates(seedVenues = [], options = {}) {
       const sourceHit = webEvidence.some((page) =>
         normalizeMatchText([page.title, page.snippet, page.url].join(' ')).includes(venueName),
       )
-      if (matchedHints.length < 3 && !nameHit && !sourceHit) return null
+      if (matchedHints.length < 1 && !nameHit && !sourceHit) return null
 
       const confidence = Math.min(94, 62 + matchedHints.length * 6 + (nameHit ? 10 : 0) + (sourceHit ? 8 : 0))
       return normalizeCandidate({

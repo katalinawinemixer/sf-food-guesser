@@ -324,7 +324,7 @@ describe('Cloudflare Pages Functions API', () => {
     const hasDataSearchCalls = fetchMock.mock.calls.filter(([url]) =>
       String(url).includes('api.hasdata.com/scrape/google-maps/search'),
     )
-    expect(hasDataSearchCalls.length).toBeGreaterThanOrEqual(3)
+    expect(hasDataSearchCalls).toHaveLength(1)
     const firstHasDataSearchUrl = new URL(
       String(
         hasDataSearchCalls[0]?.[0],

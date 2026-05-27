@@ -1320,6 +1320,43 @@ describe('SF Food Guesser API', () => {
     fetchMock.mockRestore()
   })
 
+  it('does not fan out HasData Maps searches after the seed query returns places', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch')
+    fetchMock
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            placeResults: {
+              title: 'Kissaten HiFi',
+              address: '189 6th Ave, San Francisco, CA',
+              dataId: 'kissaten-data-id',
+            },
+          }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } },
+        ),
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ photos: [] }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        }),
+      )
+
+    await searchHasDataPhotos([
+      'Kissaten HiFi 189 6th Ave San Francisco Google Maps reviews photos interior',
+      'San Francisco layered matcha brown bags cafe',
+      'San Francisco new Richmond matcha cafe vinyl',
+    ])
+
+    const mapSearchCalls = fetchMock.mock.calls.filter(([url]) =>
+      String(url).includes('/scrape/google-maps/search'),
+    )
+    expect(mapSearchCalls).toHaveLength(1)
+    expect(new URL(String(mapSearchCalls[0][0])).searchParams.get('q')).toContain('Kissaten HiFi')
+
+    fetchMock.mockRestore()
+  })
+
   it('uses an Exa-style web provider to collect review pages before ranking', async () => {
     const visionClient = {
       chat: {
