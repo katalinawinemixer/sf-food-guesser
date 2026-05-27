@@ -386,6 +386,28 @@ function hasDataPhotoThumbnail(photo) {
   return photo?.thumbnail ?? photo?.thumb ?? photo?.image ?? photo?.url ?? ''
 }
 
+function mapHasDataPhoto({ photo, place, query, queryIndex, placeIndex, photoIndex }) {
+  const imageUrl = hasDataPhotoUrl(photo)
+  const thumbnailUrl = hasDataPhotoThumbnail(photo)
+  const placeTitle = String(place?.title ?? place?.name ?? 'Google Maps place')
+  const placeAddress = String(place?.address ?? place?.fullAddress ?? '')
+  return {
+    title: `${placeTitle} customer photo`,
+    source: 'Google Maps reviews/photos',
+    pageUrl: `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(
+      [placeTitle, placeAddress].filter(Boolean).join(' '),
+    )}`,
+    imageUrl: imageUrl ? String(imageUrl) : '',
+    thumbnailUrl: thumbnailUrl ? String(thumbnailUrl) : String(imageUrl),
+    query,
+    placeTitle,
+    placeAddress,
+    queryIndex,
+    placeIndex,
+    photoIndex,
+  }
+}
+
 export async function searchHasDataPhotoEvidence(searchPlan, env, fetchImpl = fetch) {
   if (!env.HASDATA_API_KEY) return []
   const queries = (searchPlan?.searchQueries ?? [])
@@ -432,6 +454,12 @@ export async function searchHasDataPhotoEvidence(searchPlan, env, fetchImpl = fe
     })
     .slice(0, 8)
 
+  const inlinePlacePhotos = places.flatMap(({ place, query, queryIndex, placeIndex }) =>
+    normalizeHasDataPhotos(place).slice(0, 4).map((photo, photoIndex) =>
+      mapHasDataPhoto({ photo, place, query, queryIndex, placeIndex, photoIndex }),
+    ),
+  )
+
   const photoSearches = places.map(async ({ place, query, queryIndex, placeIndex }) => {
     const dataId = place?.dataId ?? place?.data_id
     const placeId = place?.placeId ?? place?.place_id
@@ -452,33 +480,19 @@ export async function searchHasDataPhotoEvidence(searchPlan, env, fetchImpl = fe
     const placeTitle = String(place?.title ?? place?.name ?? 'Google Maps place')
     const placeAddress = String(place?.address ?? place?.fullAddress ?? '')
 
-    return photos.slice(0, 4).map((photo, photoIndex) => {
-      const imageUrl = hasDataPhotoUrl(photo)
-      const thumbnailUrl = hasDataPhotoThumbnail(photo)
-      return {
-        title: `${placeTitle} customer photo`,
-        source: 'Google Maps reviews/photos',
-        pageUrl: `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(
-          [placeTitle, placeAddress].filter(Boolean).join(' '),
-        )}`,
-        imageUrl: imageUrl ? String(imageUrl) : '',
-        thumbnailUrl: thumbnailUrl ? String(thumbnailUrl) : String(imageUrl),
-        query,
-        placeTitle,
-        placeAddress,
-        queryIndex,
-        placeIndex,
-        photoIndex,
-      }
-    })
+    return photos.slice(0, 4).map((photo, photoIndex) =>
+      mapHasDataPhoto({ photo, place, query, queryIndex, placeIndex, photoIndex }),
+    )
   })
 
   const seenPhotos = new Set()
   const settledPhotoSearches = await Promise.allSettled(photoSearches)
-  return settledPhotoSearches
-    .flatMap((settledSearch) =>
+  return [
+    ...inlinePlacePhotos,
+    ...settledPhotoSearches.flatMap((settledSearch) =>
       settledSearch.status === 'fulfilled' ? settledSearch.value : [],
-    )
+    ),
+  ]
     .sort(
       (a, b) =>
         a.queryIndex - b.queryIndex ||
