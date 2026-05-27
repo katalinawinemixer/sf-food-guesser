@@ -408,7 +408,7 @@ function mapHasDataPhoto({ photo, place, query, queryIndex, placeIndex, photoInd
   }
 }
 
-export async function searchHasDataPhotoEvidence(searchPlan, env, fetchImpl = fetch) {
+export async function searchHasDataPhotoEvidence(searchPlan, env, fetchImpl = fetch, debug = null) {
   if (!env.HASDATA_API_KEY) return []
   const queries = (searchPlan?.searchQueries ?? [])
     .filter(Boolean)
@@ -431,7 +431,16 @@ export async function searchHasDataPhotoEvidence(searchPlan, env, fetchImpl = fe
     })
     if (!response.ok) return []
     const result = await response.json().catch(() => ({}))
-    return normalizeHasDataPlaces(result).slice(0, 3).map((place, placeIndex) => ({
+    const places = normalizeHasDataPlaces(result)
+    debug?.searches?.push?.({
+      status: response.status,
+      queryIndex,
+      placeCount: places.length,
+      topLevelKeys: Object.keys(result).slice(0, 8),
+      placeResultsType: Array.isArray(result?.placeResults) ? 'array' : typeof result?.placeResults,
+      localResultsType: Array.isArray(result?.localResults) ? 'array' : typeof result?.localResults,
+    })
+    return places.slice(0, 3).map((place, placeIndex) => ({
       place,
       query,
       queryIndex,
@@ -459,6 +468,10 @@ export async function searchHasDataPhotoEvidence(searchPlan, env, fetchImpl = fe
       mapHasDataPhoto({ photo, place, query, queryIndex, placeIndex, photoIndex }),
     ),
   )
+  if (debug) {
+    debug.placeCount = places.length
+    debug.inlinePhotoCount = inlinePlacePhotos.length
+  }
 
   const photoSearches = places.map(async ({ place, query, queryIndex, placeIndex }) => {
     const dataId = place?.dataId ?? place?.data_id
@@ -477,6 +490,10 @@ export async function searchHasDataPhotoEvidence(searchPlan, env, fetchImpl = fe
     if (!response.ok) return []
     const result = await response.json().catch(() => ({}))
     const photos = normalizeHasDataPhotos(result)
+    if (debug) {
+      debug.photoEndpointStatuses.push(response.status)
+      debug.endpointPhotoCount += photos.length
+    }
     const placeTitle = String(place?.title ?? place?.name ?? 'Google Maps place')
     const placeAddress = String(place?.address ?? place?.fullAddress ?? '')
 

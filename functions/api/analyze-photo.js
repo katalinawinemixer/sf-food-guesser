@@ -175,9 +175,16 @@ export async function onRequestPost({ request, env }) {
         ...(Array.isArray(searchPlan.searchQueries) ? searchPlan.searchQueries : []),
       ],
     }
+    const hasDataDebug = {
+      searches: [],
+      placeCount: 0,
+      inlinePhotoCount: 0,
+      endpointPhotoCount: 0,
+      photoEndpointStatuses: [],
+    }
     const [exaResult, photoResult] = await Promise.allSettled([
       searchExaEvidence(searchPlan, env),
-      searchHasDataPhotoEvidence(photoSearchPlan, env),
+      searchHasDataPhotoEvidence(photoSearchPlan, env, fetch, hasDataDebug),
     ])
     if (exaResult.status === 'fulfilled') {
       webEvidence = exaResult.value
@@ -200,6 +207,7 @@ export async function onRequestPost({ request, env }) {
       totalQueryCount: photoSearchPlan.searchQueries.length,
       resultCount: photoEvidence.length,
       firstSeededQuery: seededPhotoQueries[0] ?? null,
+      hasData: hasDataDebug,
     }
   }
 
