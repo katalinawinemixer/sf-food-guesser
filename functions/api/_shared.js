@@ -303,7 +303,75 @@ export function normalizeCandidate(candidate) {
   }
 }
 
-export function normalizeAnalysis(result) {
+const evidenceWeights = {
+  visible_text: 32,
+  packaging_logo: 26,
+  gps_match: 24,
+  storefront_match: 18,
+  interior_match: 16,
+  web_source_match: 10,
+  dish_match: 4,
+}
+
+function candidateKey(candidate) {
+  return `${candidate.id || candidate.name}:${candidate.address}`.toLowerCase()
+}
+
+function rankCandidates(candidates, seedVenueIds = []) {
+  const seedIds = new Set(seedVenueIds.filter(Boolean))
+
+  return candidates
+    .map((candidate, originalIndex) => {
+      const categories = new Set(candidate.evidenceCategories)
+      const hasSeedMatch = Boolean(candidate.id) && seedIds.has(candidate.id)
+      const hasIdentityEvidence = ['visible_text', 'packaging_logo', 'gps_match'].some((category) =>
+        categories.has(category),
+      )
+      const hasInteriorOrStorefront = ['interior_match', 'storefront_match'].some((category) =>
+        categories.has(category),
+      )
+      const dishOnly = categories.has('dish_match') && !hasInteriorOrStorefront && !hasIdentityEvidence
+      const hasSource = candidate.sourceUrls.length > 0
+      const evidenceScore = [...categories].reduce(
+        (score, category) => score + (evidenceWeights[category] ?? 0),
+        0,
+      )
+      const seedBoost = hasSeedMatch ? 18 : 0
+      const unsupportedWebPenalty = !hasSeedMatch && !hasIdentityEvidence ? 24 : 0
+      const dishOnlyPenalty = dishOnly ? 28 : 0
+      const sourceScore = hasSource ? 6 : -8
+      const rawScore = Math.max(
+        0,
+        Math.min(
+          100,
+          candidate.confidence * 0.55 + evidenceScore + seedBoost + sourceScore - unsupportedWebPenalty - dishOnlyPenalty,
+        ),
+      )
+      const confidenceCap =
+        dishOnly
+          ? 42
+          : !hasSeedMatch && !hasIdentityEvidence
+            ? hasInteriorOrStorefront
+              ? 62
+              : 54
+            : 100
+
+      return {
+        ...candidate,
+        confidence: Math.round(Math.min(rawScore, confidenceCap)),
+        _rankScore: Math.min(rawScore, confidenceCap),
+        _originalIndex: originalIndex,
+      }
+    })
+    .sort((a, b) => b._rankScore - a._rankScore || a._originalIndex - b._originalIndex)
+    .filter((candidate, index, rankedCandidates) => {
+      const key = candidateKey(candidate)
+      return key && rankedCandidates.findIndex((item) => candidateKey(item) === key) === index
+    })
+    .map(({ _rankScore, _originalIndex, ...candidate }) => candidate)
+}
+
+export function normalizeAnalysis(result, options = {}) {
   const candidates = Array.isArray(result?.candidates)
     ? result.candidates.map(normalizeCandidate).filter((candidate) => candidate.name)
     : []
@@ -313,7 +381,7 @@ export function normalizeAnalysis(result) {
     imageEvidence: Array.isArray(result?.imageEvidence)
       ? result.imageEvidence.map(String).slice(0, 8)
       : [],
-    candidates: candidates.slice(0, 3),
+    candidates: rankCandidates(candidates, options.seedVenueIds).slice(0, 3),
     needsMoreEvidence: Boolean(result?.needsMoreEvidence),
   }
 }

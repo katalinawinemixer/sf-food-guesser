@@ -122,7 +122,7 @@ describe('Cloudflare Pages Functions API', () => {
       candidates: [
         {
           name: 'Kissaten Hifi',
-          confidence: 77,
+          confidence: 50,
         },
       ],
       webSearchProvider: 'openrouter-web-search',
@@ -230,7 +230,7 @@ describe('Cloudflare Pages Functions API', () => {
         {
           id: 'kissaten-hifi',
           name: 'Kissaten HiFi',
-          confidence: 84,
+          confidence: 96,
           category: 'Cafe',
           neighborhood: 'Inner Richmond',
           address: '189 6th Ave',
@@ -243,6 +243,96 @@ describe('Cloudflare Pages Functions API', () => {
     })
 
     fetchMock.mockRestore()
+  })
+
+  it('reranks seeded venue matches above generic web-discovered lookalikes', async () => {
+    vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            choices: [
+              {
+                message: {
+                  content: JSON.stringify({
+                    summary: 'Iced matcha with brown bags and tan aprons.',
+                    imageEvidence: ['iced matcha', 'brown bags', 'tan aprons'],
+                    visibleText: [],
+                    searchQueries: ['San Francisco iced matcha brown bags tan aprons cafe'],
+                    likelyVenueTypes: ['cafe'],
+                  }),
+                },
+              },
+            ],
+          }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } },
+        ),
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            choices: [
+              {
+                message: {
+                  content: JSON.stringify({
+                    summary: 'Iced matcha with brown bags and tan aprons.',
+                    imageEvidence: ['iced matcha', 'brown bags', 'tan aprons'],
+                    candidates: [
+                      {
+                        id: '',
+                        name: 'Matcha Cafe Maiko',
+                        category: 'Cafe',
+                        neighborhood: 'Japantown',
+                        address: '1581 Webster St',
+                        confidence: 80,
+                        evidenceCategories: ['dish_match', 'web_source_match'],
+                        reasons: ['It serves matcha drinks.'],
+                        sourceUrls: ['https://example.com/maiko'],
+                      },
+                      {
+                        id: 'kissaten-hifi',
+                        name: 'Kissaten HiFi',
+                        category: 'Cafe',
+                        neighborhood: 'Inner Richmond',
+                        address: '189 6th Ave',
+                        confidence: 60,
+                        evidenceCategories: ['interior_match', 'web_source_match'],
+                        reasons: ['Seed interior hints and public evidence match brown bags and tan aprons.'],
+                        sourceUrls: ['https://example.com/kissaten'],
+                      },
+                    ],
+                    needsMoreEvidence: false,
+                  }),
+                },
+              },
+            ],
+          }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } },
+        ),
+      )
+    const formData = new FormData()
+    formData.set('photo', new File([pngPixel], 'matcha.png', { type: 'image/png' }))
+    formData.set('venues', JSON.stringify([{ id: 'kissaten-hifi', name: 'Kissaten HiFi' }]))
+
+    const response = await analyzePhotoPost({
+      request: {
+        formData: async () => formData,
+        headers: {
+          get: () => 'https://spotted-in-sf.pages.dev',
+        },
+      },
+      env: {
+        OPENROUTER_API_KEY: 'test-openrouter-key',
+      },
+    })
+    const body = await json(response)
+
+    expect(response.status).toBe(200)
+    expect(body.candidates.map((candidate) => candidate.name)).toEqual([
+      'Kissaten HiFi',
+      'Matcha Cafe Maiko',
+    ])
+
+    globalThis.fetch.mockRestore()
   })
 
   it('rejects unsupported Cloudflare photo uploads before provider calls', async () => {

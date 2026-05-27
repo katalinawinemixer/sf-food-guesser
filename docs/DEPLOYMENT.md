@@ -137,8 +137,14 @@ Run:
 ```bash
 npm test
 npm run secret-scan
+npm run check:production
 ```
 
 The local `data/` directory stores feedback and run logs and is intentionally
 ignored by git. A production deployment should move that data to a durable store
 before relying on it for long-term learning.
+
+`npm run check:production` verifies the Pages URL, the custom domains, public
+DNS, security headers, `/api/health`, and whether all production URLs serve the
+same app asset fingerprint. It is expected to fail while custom-domain DNS is
+still pending.

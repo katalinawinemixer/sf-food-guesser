@@ -107,7 +107,8 @@ items were completed earlier out of order.
 - [x] Attach `spotted-in-sf.com` and `www.spotted-in-sf.com` to the same Cloudflare Pages project.
 - [x] Add HTTPS/security headers for the deployed app and API.
 - [x] Connect the Cloudflare Pages project to the `katalinawinemixer/sf-food-guesser` GitHub repo.
-- [ ] Validate DNS for `spotted-in-sf.com` and `www.spotted-in-sf.com` so both resolve to the Pages project.
+- [x] Add a repeatable production check for HTTPS headers, API health, DNS, and same-app fingerprints.
+- [x] Validate DNS for `spotted-in-sf.com` and `www.spotted-in-sf.com` so both resolve to the Pages project.
 - [ ] Re-test production photo analysis on the custom domains after DNS validates.
 
 ## 10. Future Accuracy Improvements

@@ -11,6 +11,7 @@
     "build": "tsc -b && vite build",
     "deploy:cloudflare": "npm run build && wrangler pages deploy dist --project-name spotted-in-sf",
     "lint": "eslint .",
+    "check:production": "node scripts/production-check.mjs",
     "secret-scan": "node scripts/secret-scan.mjs",
     "test": "vitest run && npm run lint && node --check server.mjs && npm run build",
     "preview": "vite preview"
