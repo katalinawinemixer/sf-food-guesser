@@ -50,6 +50,9 @@ const upload = multer({
 const port = Number(process.env.SF_FOOD_GUESSER_API_PORT ?? 5174)
 const defaultFeedbackLogPath = resolve(process.cwd(), 'data', 'feedback.jsonl')
 const defaultRunLogPath = resolve(process.cwd(), 'data', 'runs.jsonl')
+const freeUploadCookieName = 'sf_food_free_photo_used'
+const freeUploadCookieMaxAge = 60 * 60 * 24 * 365
+const signupRequiredMessage = 'Create a free account to keep identifying photos.'
 const maxExternalPhotoImagesForVision = 4
 const evidenceSearchTimeoutMs = 45_000
 const visionRequestTimeoutMs = 60_000
@@ -80,6 +83,30 @@ function isAllowedOrigin(origin, allowedOrigins) {
   if (!origin) return true
   const normalizedOrigin = origin.replace(/\/$/, '')
   return allowedOrigins.includes('*') || allowedOrigins.includes(normalizedOrigin)
+}
+
+function hasUsedFreeUpload(request) {
+  const cookieHeader = String(request.headers.cookie ?? '')
+  return cookieHeader
+    .split(';')
+    .map((cookie) => cookie.trim())
+    .some((cookie) => cookie === `${freeUploadCookieName}=1`)
+}
+
+function createFreeUploadCookie({ secure = false } = {}) {
+  return `${freeUploadCookieName}=1; Max-Age=${freeUploadCookieMaxAge}; Path=/; SameSite=Lax${secure ? '; Secure' : ''}`
+}
+
+function enforceFreeUploadLimit(request, response, next) {
+  if (!hasUsedFreeUpload(request)) {
+    next()
+    return
+  }
+
+  response.status(402).json({
+    code: 'signup_required',
+    error: signupRequiredMessage,
+  })
 }
 
 function applyCors(app, allowedOrigins) {
@@ -1870,7 +1897,7 @@ export function createApp(options = {}) {
     }
   })
 
-  app.post('/api/analyze-photo', upload.single('photo'), async (request, response) => {
+  app.post('/api/analyze-photo', enforceFreeUploadLimit, upload.single('photo'), async (request, response) => {
     if (!visionClient) {
       response.status(503).json({
         error:
@@ -2253,6 +2280,7 @@ export function createApp(options = {}) {
           message: cleanText(warning.message, 800),
         })),
       })
+      response.setHeader('Set-Cookie', createFreeUploadCookie())
       response.json(responseBody)
     } catch (error) {
       console.error(error)

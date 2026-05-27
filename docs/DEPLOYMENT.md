@@ -127,6 +127,14 @@ Production feedback uses the `SF_FOOD_FEEDBACK_KV` KV binding configured in
 uploaded image data. If the KV binding is missing, feedback is accepted but only
 logged to Cloudflare logs with `persisted: false`.
 
+## Anonymous Upload Limit
+
+Anonymous users get one successful photo analysis before the API returns
+`402 signup_required`. The Cloudflare Pages Function sets the
+`sf_food_free_photo_used` cookie after a successful analysis and checks that
+cookie before parsing later uploads or calling model/search providers. This is
+a lightweight public-abuse guard until real account authentication is added.
+
 Provider selection for local development is centralized in
 `backend/providers.mjs`. The backend chooses the vision provider, fallback
 models, photo-search provider, web-search provider, and article-search provider

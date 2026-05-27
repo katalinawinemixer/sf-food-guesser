@@ -21,6 +21,8 @@ vi.mock('react-leaflet', () => ({
 describe('SF Food Guesser photo flow', () => {
   beforeEach(() => {
     vi.restoreAllMocks()
+    window.localStorage.clear()
+    document.cookie = 'sf_food_free_photo_used=; Max-Age=0; Path=/'
   })
 
   afterEach(() => {
@@ -218,6 +220,55 @@ describe('SF Food Guesser photo flow', () => {
         name: 'Golden Boy Pizza',
       },
     })
+  })
+
+  it('prompts for signup instead of allowing a second free photo analysis', async () => {
+    const fetchMock = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ ok: true, visionEnabled: true, model: 'test-model' }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        }),
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            runId: 'run-1',
+            summary: 'An iced matcha in a cafe.',
+            imageEvidence: ['iced matcha'],
+            candidates: [
+              {
+                id: 'kissaten-hifi',
+                confidence: 88,
+                reasons: ['The drink and interior match.'],
+              },
+            ],
+            needsMoreEvidence: false,
+          }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } },
+        ),
+      )
+
+    render(<App />)
+
+    const file = new File(['fake image bytes'], 'matcha.png', { type: 'image/png' })
+    fireEvent.change(screen.getByLabelText(/Drop image here or choose/i), {
+      target: { files: [file] },
+    })
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Identify restaurant' }))
+
+    await waitFor(() => {
+      expect(screen.getByRole('heading', { name: 'Kissaten HiFi', level: 3 })).toBeVisible()
+    })
+    expect(screen.getByText('One free photo included')).toBeVisible()
+    expect(window.localStorage.getItem('sf-food-free-upload-used')).toBe('1')
+
+    fireEvent.click(screen.getByRole('button', { name: 'Sign up to keep guessing' }))
+
+    expect(await screen.findByText('Create a free account to keep identifying photos.')).toBeVisible()
+    expect(fetchMock).toHaveBeenCalledTimes(2)
   })
 
   it('accepts an image dropped directly onto the upload zone', async () => {

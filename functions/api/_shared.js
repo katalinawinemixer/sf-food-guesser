@@ -1,4 +1,7 @@
 const maxUploadBytes = 12 * 1024 * 1024
+const freeUploadCookieName = 'sf_food_free_photo_used'
+const freeUploadCookieMaxAge = 60 * 60 * 24 * 365
+const signupRequiredMessage = 'Create a free account to keep identifying photos.'
 const allowedImageMimeTypes = new Set([
   'image/jpeg',
   'image/jpg',
@@ -30,6 +33,29 @@ export function jsonResponse(body, status = 200, headers = {}) {
       ...headers,
     },
   })
+}
+
+export function hasUsedFreeUpload(request) {
+  const cookieHeader = String(request?.headers?.get?.('cookie') ?? '')
+  return cookieHeader
+    .split(';')
+    .map((cookie) => cookie.trim())
+    .some((cookie) => cookie === `${freeUploadCookieName}=1`)
+}
+
+export function freeUploadLimitResponse(runId) {
+  return jsonResponse(
+    {
+      runId,
+      code: 'signup_required',
+      error: signupRequiredMessage,
+    },
+    402,
+  )
+}
+
+export function freeUploadCookie() {
+  return `${freeUploadCookieName}=1; Max-Age=${freeUploadCookieMaxAge}; Path=/; SameSite=Lax; Secure`
 }
 
 export function methodNotAllowed() {

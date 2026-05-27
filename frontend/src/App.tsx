@@ -21,6 +21,9 @@ import { categoryOptions, venues, type Venue, type VenueCategory } from './venue
 
 const apiBaseUrl = import.meta.env.VITE_API_BASE_URL?.replace(/\/$/, '') ?? ''
 const maxUploadBytes = 12 * 1024 * 1024
+const freeUploadStorageKey = 'sf-food-free-upload-used'
+const freeUploadCookieName = 'sf_food_free_photo_used'
+const signupRequiredMessage = 'Create a free account to keep identifying photos.'
 const allowedImageMimeTypes = new Set([
   'image/jpeg',
   'image/jpg',
@@ -35,6 +38,22 @@ const allowedImageExtensions = /\.(avif|gif|heic|heif|jpe?g|png|webp)$/i
 
 function apiUrl(path: string) {
   return `${apiBaseUrl}${path}`
+}
+
+function browserHasUsedFreeUpload() {
+  if (typeof window === 'undefined') return false
+  return (
+    window.localStorage.getItem(freeUploadStorageKey) === '1' ||
+    document.cookie
+      .split(';')
+      .map((cookie) => cookie.trim())
+      .includes(`${freeUploadCookieName}=1`)
+  )
+}
+
+function rememberFreeUploadUsed() {
+  if (typeof window === 'undefined') return
+  window.localStorage.setItem(freeUploadStorageKey, '1')
 }
 
 function formatMegabytes(bytes: number) {
@@ -70,6 +89,7 @@ async function readApiError(response: Response) {
   if (response.status === 429) {
     return 'The AI provider is rate limiting photo analysis. Wait a bit, then try the upload again.'
   }
+  if (response.status === 402) return signupRequiredMessage
 
   return 'Photo analysis failed.'
 }
@@ -496,6 +516,8 @@ function App() {
   const [isDraggingPhoto, setIsDraggingPhoto] = useState(false)
   const [apiHealth, setApiHealth] = useState<ApiHealth>({ status: 'checking' })
   const [feedbackByVenueId, setFeedbackByVenueId] = useState<Record<string, FeedbackState>>({})
+  const [hasUsedFreePhoto, setHasUsedFreePhoto] = useState(browserHasUsedFreeUpload)
+  const [showSignupPrompt, setShowSignupPrompt] = useState(browserHasUsedFreeUpload)
 
   const matches = useMemo(
     () =>
@@ -611,6 +633,16 @@ function App() {
 
   async function submitPhoto() {
     if (!photoFile || !photo.previewUrl) return
+    if (hasUsedFreePhoto) {
+      setShowSignupPrompt(true)
+      setPhoto({
+        status: 'error',
+        name: photoFile.name,
+        previewUrl: photo.previewUrl,
+        message: signupRequiredMessage,
+      })
+      return
+    }
 
     setPhoto({
       status: 'reading',
@@ -626,6 +658,9 @@ function App() {
         gps(photoFile).catch(() => undefined),
         analyzePhotoWithVision(photoFile),
       ])
+      rememberFreeUploadUsed()
+      setHasUsedFreePhoto(true)
+      setShowSignupPrompt(true)
       const coords =
         location &&
         Number.isFinite(location.latitude) &&
@@ -660,14 +695,20 @@ function App() {
         message: `The image was analyzed, but it was too ambiguous to rank a venue: ${analysis.summary}`,
       })
     } catch (error) {
+      const message =
+        error instanceof Error
+          ? error.message
+          : 'Could not analyze this image. Try again with a clearer image.'
+      if (/account|sign up/i.test(message)) {
+        rememberFreeUploadUsed()
+        setHasUsedFreePhoto(true)
+        setShowSignupPrompt(true)
+      }
       setPhoto({
         status: 'error',
         name: photoFile.name,
         previewUrl,
-        message:
-          error instanceof Error
-            ? error.message
-            : 'Could not analyze this image. Try again with a clearer image.',
+        message,
       })
     }
   }
@@ -978,10 +1019,23 @@ function App() {
                   <LoaderCircle size={17} />
                   Identifying...
                 </>
+              ) : hasUsedFreePhoto ? (
+                'Sign up to keep guessing'
               ) : (
                 'Identify restaurant'
               )}
             </button>
+            {hasUsedFreePhoto || showSignupPrompt ? (
+              <div className="signup-gate" role="status">
+                <div>
+                  <strong>One free photo included</strong>
+                  <p>Sign up for an account to keep identifying gatekept SF spots.</p>
+                </div>
+                <button type="button" onClick={() => setShowSignupPrompt(true)}>
+                  Sign up
+                </button>
+              </div>
+            ) : null}
           </section>
 
           <div className="filter-head">

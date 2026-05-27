@@ -115,6 +115,7 @@ describe('Cloudflare Pages Functions API', () => {
     const payload = JSON.parse(String(requestInit.body))
 
     expect(response.status).toBe(200)
+    expect(response.headers.get('Set-Cookie')).toContain('sf_food_free_photo_used=1')
     expect(fetchMock).toHaveBeenCalledTimes(2)
     expect(payload.tools[0].type).toBe('openrouter:web_search')
     expect(body).toMatchObject({
@@ -130,6 +131,35 @@ describe('Cloudflare Pages Functions API', () => {
         searchQueries: ['San Francisco matcha brown coffee bags tan aprons cafe'],
       },
     })
+
+    fetchMock.mockRestore()
+  })
+
+  it('blocks Cloudflare photo analysis after the anonymous free upload is used', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch')
+    const formData = vi.fn(async () => new FormData())
+
+    const response = await analyzePhotoPost({
+      request: {
+        formData,
+        headers: {
+          get: (name) =>
+            name.toLowerCase() === 'cookie' ? 'sf_food_free_photo_used=1' : null,
+        },
+      },
+      env: {
+        OPENROUTER_API_KEY: 'test-openrouter-key',
+      },
+    })
+    const body = await json(response)
+
+    expect(response.status).toBe(402)
+    expect(body).toMatchObject({
+      code: 'signup_required',
+      error: 'Create a free account to keep identifying photos.',
+    })
+    expect(formData).not.toHaveBeenCalled()
+    expect(fetchMock).not.toHaveBeenCalled()
 
     fetchMock.mockRestore()
   })

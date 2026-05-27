@@ -419,6 +419,59 @@ describe('SF Food Guesser API', () => {
     expect(userContent[0].text).not.toContain('"manual"')
   })
 
+  it('requires signup after one anonymous local photo analysis', async () => {
+    const openAIClient = {
+      responses: {
+        create: vi.fn(async () => ({
+          output_text: JSON.stringify({
+            summary: 'A focaccia-style pizza slice.',
+            imageEvidence: ['square slice'],
+            candidates: [
+              {
+                id: 'golden-boy',
+                confidence: 92,
+                evidenceCategories: ['dish_match', 'web_source_match'],
+                reasons: ['The slice shape matches the venue signature.'],
+                sourceUrls: ['https://www.goldenboypizza.com/'],
+              },
+            ],
+            needsMoreEvidence: false,
+          }),
+        })),
+      },
+    }
+    const app = createApp({
+      openAIClient,
+      visionModel: 'test-model',
+      visionProvider: 'openai',
+      photoSearch: null,
+      webSearch: null,
+    })
+    const agent = request.agent(app)
+
+    const firstResponse = await agent
+      .post('/api/analyze-photo')
+      .attach('photo', pngPixel, { filename: 'food.png', contentType: 'image/png' })
+      .field('venues', '[]')
+      .expect(200)
+
+    expect(firstResponse.headers['set-cookie']?.join(';')).toContain(
+      'sf_food_free_photo_used=1',
+    )
+
+    const secondResponse = await agent
+      .post('/api/analyze-photo')
+      .attach('photo', pngPixel, { filename: 'food.png', contentType: 'image/png' })
+      .field('venues', '[]')
+      .expect(402)
+
+    expect(secondResponse.body).toMatchObject({
+      code: 'signup_required',
+      error: 'Create a free account to keep identifying photos.',
+    })
+    expect(openAIClient.responses.create).toHaveBeenCalledTimes(1)
+  })
+
   it('sends OpenRouter-compatible chat completion requests when configured', async () => {
     const visionClient = {
       chat: {

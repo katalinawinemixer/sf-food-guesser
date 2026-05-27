@@ -313,6 +313,49 @@
   animation: spin 900ms linear infinite;
 }
 
+.signup-gate {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 10px;
+  padding: 12px;
+  border: 1px solid #f3bfd0;
+  border-radius: 8px;
+  background: #fff3f7;
+  color: #6f1d3a;
+}
+
+.signup-gate strong {
+  display: block;
+  margin-bottom: 3px;
+  font-size: 13px;
+}
+
+.signup-gate p {
+  margin: 0;
+  color: #8d3c58;
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+.signup-gate button {
+  flex: 0 0 auto;
+  border: 1px solid #d94f82;
+  border-radius: 8px;
+  background: #d94f82;
+  color: #ffffff;
+  cursor: pointer;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 850;
+  padding: 8px 11px;
+}
+
+.signup-gate button:hover {
+  background: #c83f73;
+}
+
 .vision-evidence {
   display: flex;
   flex-wrap: wrap;

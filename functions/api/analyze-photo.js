@@ -2,6 +2,9 @@ import {
   buildCloudflarePrompt,
   buildSearchPlanPrompt,
   fileToDataUrl,
+  freeUploadCookie,
+  freeUploadLimitResponse,
+  hasUsedFreeUpload,
   jsonResponse,
   methodNotAllowed,
   normalizeAnalysis,
@@ -21,6 +24,10 @@ export function onRequestOptions() {
 export async function onRequestPost({ request, env }) {
   const provider = providerFromEnv(env)
   const runId = crypto.randomUUID()
+
+  if (hasUsedFreeUpload(request)) {
+    return freeUploadLimitResponse(runId)
+  }
 
   if (!provider) {
     return jsonResponse(
@@ -212,6 +219,8 @@ export async function onRequestPost({ request, env }) {
         webEvidence,
         searchPlan,
         providerWarnings,
+      }, 200, {
+        'Set-Cookie': freeUploadCookie(),
       })
     } catch (error) {
       lastError = error

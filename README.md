@@ -31,6 +31,13 @@ data/              Ignored local run logs and feedback records
 `functions/` stays at the repo root because Cloudflare Pages expects that
 convention for Pages Functions.
 
+## Anonymous Upload Limit
+
+Anonymous visitors get one photo analysis before the app prompts them to sign
+up. The API sets a `sf_food_free_photo_used` cookie after the first successful
+analysis and blocks later anonymous analysis requests before model/search
+providers are called.
+
 For stronger interior/storefront matching, add optional provider keys locally.
 `HASDATA_API_KEY` is the cost-optimized Google Maps/photo provider: the backend
 uses it to search Google Maps places and fetch customer/review photos before
