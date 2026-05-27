@@ -19,6 +19,12 @@ import 'leaflet/dist/leaflet.css'
 import './App.css'
 import { categoryOptions, venues, type Venue, type VenueCategory } from './venues'
 
+const apiBaseUrl = import.meta.env.VITE_API_BASE_URL?.replace(/\/$/, '') ?? ''
+
+function apiUrl(path: string) {
+  return `${apiBaseUrl}${path}`
+}
+
 type VisionCandidate = {
   id: string
   name?: string
@@ -37,12 +43,23 @@ type VisionCandidate = {
 }
 
 type VisionAnalysis = {
+  runId?: string
   summary: string
   imageEvidence: string[]
   candidates: VisionCandidate[]
   needsMoreEvidence: boolean
   searchProvider?: string | null
   webSearchProvider?: string | null
+  articleSearchProvider?: string | null
+  articleCandidates?: Array<{
+    name: string
+    category?: string
+    neighborhood?: string
+    address?: string
+    whyRelevant?: string
+    openingContext?: string
+    sourceUrls?: string[]
+  }>
   photoEvidence?: Array<{
     title: string
     source: string
@@ -88,6 +105,15 @@ type ApiHealth = {
   status: 'checking' | 'ready' | 'missing-key' | 'offline'
   model?: string
   message?: string
+}
+
+type FeedbackSelection = 'correct' | 'incorrect'
+type FeedbackVote = FeedbackSelection | 'undo'
+
+type FeedbackState = {
+  vote: FeedbackSelection
+  status: 'saving' | 'saved' | 'error'
+  automatic?: boolean
 }
 
 function hasVerifiedCoordinates(
@@ -258,8 +284,16 @@ function confidenceLabel(confidence: number) {
   return 'Ready'
 }
 
+function feedbackLabel(feedback: FeedbackState) {
+  if (feedback.status === 'saving') return 'Saving feedback...'
+  if (feedback.status === 'error') return 'Could not save feedback'
+  if (feedback.vote === 'correct') return 'Marked correct'
+  return feedback.automatic ? 'Auto-marked incorrect' : 'Marked incorrect'
+}
+
 const analysisSteps = [
   'Reading image details',
+  'Searching new cafe articles',
   'Searching interiors and photo pages',
   'Ranking likely SF matches',
 ]
@@ -283,7 +317,7 @@ async function analyzePhotoWithVision(file: File): Promise<VisionAnalysis> {
     ),
   )
 
-  const response = await fetch('/api/analyze-photo', {
+  const response = await fetch(apiUrl('/api/analyze-photo'), {
     method: 'POST',
     body: payload,
   })
@@ -294,6 +328,7 @@ async function analyzePhotoWithVision(file: File): Promise<VisionAnalysis> {
   }
 
   return {
+    runId: result.runId ? String(result.runId) : undefined,
     summary: String(result.summary ?? 'No visual summary returned.'),
     imageEvidence: Array.isArray(result.imageEvidence)
       ? result.imageEvidence.map(String).slice(0, 8)
@@ -338,6 +373,27 @@ async function analyzePhotoWithVision(file: File): Promise<VisionAnalysis> {
     needsMoreEvidence: Boolean(result.needsMoreEvidence),
     searchProvider: result.searchProvider ? String(result.searchProvider) : null,
     webSearchProvider: result.webSearchProvider ? String(result.webSearchProvider) : null,
+    articleSearchProvider: result.articleSearchProvider
+      ? String(result.articleSearchProvider)
+      : null,
+    articleCandidates: Array.isArray(result.articleCandidates)
+      ? result.articleCandidates
+          .map((candidate: Record<string, unknown>) => ({
+            name: String(candidate.name ?? ''),
+            category: candidate.category ? String(candidate.category) : undefined,
+            neighborhood: candidate.neighborhood ? String(candidate.neighborhood) : undefined,
+            address: candidate.address ? String(candidate.address) : undefined,
+            whyRelevant: candidate.whyRelevant ? String(candidate.whyRelevant) : undefined,
+            openingContext: candidate.openingContext
+              ? String(candidate.openingContext)
+              : undefined,
+            sourceUrls: Array.isArray(candidate.sourceUrls)
+              ? candidate.sourceUrls.map(String).slice(0, 4)
+              : [],
+          }))
+          .filter((candidate: { name: string }) => candidate.name)
+          .slice(0, 8)
+      : [],
     photoEvidence: Array.isArray(result.photoEvidence)
       ? result.photoEvidence
           .map((photo: Record<string, unknown>) => ({
@@ -382,6 +438,7 @@ function App() {
   const [photoFile, setPhotoFile] = useState<File | null>(null)
   const [isDraggingPhoto, setIsDraggingPhoto] = useState(false)
   const [apiHealth, setApiHealth] = useState<ApiHealth>({ status: 'checking' })
+  const [feedbackByVenueId, setFeedbackByVenueId] = useState<Record<string, FeedbackState>>({})
 
   const matches = useMemo(
     () =>
@@ -406,7 +463,7 @@ function App() {
 
     async function checkApiHealth() {
       try {
-        const response = await fetch('/api/health')
+        const response = await fetch(apiUrl('/api/health'))
         const result = await response.json()
         if (shouldIgnore) return
 
@@ -450,6 +507,7 @@ function App() {
 
     const previewUrl = URL.createObjectURL(file)
     setPhotoFile(file)
+    setFeedbackByVenueId({})
     setPhoto({
       status: 'ready',
       name: file.name,
@@ -477,6 +535,7 @@ function App() {
       previewUrl: photo.previewUrl,
       message: 'Analyzing this photo for image evidence...',
     })
+    setFeedbackByVenueId({})
 
     const previewUrl = photo.previewUrl
     try {
@@ -534,6 +593,153 @@ function App() {
     setPhoto({ status: 'empty' })
     setPhotoFile(null)
     setActiveVenueId(null)
+    setFeedbackByVenueId({})
+  }
+
+  async function recordGuessFeedback(
+    match: ReturnType<typeof getVisionMatches>[number] | ReturnType<typeof getPhotoMatches>[number],
+    vote: FeedbackVote,
+    rank: number,
+  ) {
+    const response = await fetch(apiUrl('/api/feedback'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        runId: photo.analysis?.runId,
+        vote,
+        rank,
+        candidate: {
+          id: match.venue.id,
+          name: match.venue.name,
+          category: match.venue.category,
+          neighborhood: match.venue.neighborhood,
+          address: match.venue.address,
+          confidence: match.confidence,
+          locationVerified: match.venue.locationVerified === true,
+          evidenceCategories: match.evidenceCategories,
+          reasons: match.reasons,
+          rankingNotes: match.rankingNotes,
+          sourceUrls: [
+            match.venue.sourceUrl,
+            ...('sourceUrls' in match && Array.isArray(match.sourceUrls) ? match.sourceUrls : []),
+          ],
+        },
+        analysis: {
+          summary: photo.analysis?.summary ?? '',
+          imageEvidence: photo.analysis?.imageEvidence ?? [],
+          needsMoreEvidence: photo.analysis?.needsMoreEvidence ?? false,
+        },
+        providers: {
+          searchProvider: photo.analysis?.searchProvider,
+          webSearchProvider: photo.analysis?.webSearchProvider,
+          articleSearchProvider: photo.analysis?.articleSearchProvider,
+        },
+      }),
+    })
+
+    if (!response.ok) throw new Error('Feedback was not saved.')
+  }
+
+  async function submitGuessFeedback(
+    match: ReturnType<typeof getVisionMatches>[number] | ReturnType<typeof getPhotoMatches>[number],
+    vote: FeedbackSelection,
+    rank: number,
+  ) {
+    if (vote === 'correct') {
+      const nextFeedback = matches.reduce<Record<string, FeedbackState>>((state, candidate) => {
+        state[candidate.venue.id] = {
+          vote: candidate.venue.id === match.venue.id ? 'correct' : 'incorrect',
+          status: 'saving',
+          automatic: candidate.venue.id !== match.venue.id,
+        }
+        return state
+      }, {})
+      setFeedbackByVenueId((current) => ({ ...current, ...nextFeedback }))
+
+      const results = await Promise.allSettled(
+        matches.map((candidate, index) =>
+          recordGuessFeedback(
+            candidate,
+            candidate.venue.id === match.venue.id ? 'correct' : 'incorrect',
+            index + 1,
+          ),
+        ),
+      )
+
+      setFeedbackByVenueId((current) => {
+        const updated = { ...current }
+        matches.forEach((candidate, index) => {
+          const intended = nextFeedback[candidate.venue.id]
+          updated[candidate.venue.id] = {
+            ...intended,
+            status: results[index].status === 'fulfilled' ? 'saved' : 'error',
+          }
+        })
+        return updated
+      })
+      return
+    }
+
+    const venueId = match.venue.id
+    const nextState: FeedbackState = { vote, status: 'saving' }
+    setFeedbackByVenueId((current) => ({ ...current, [venueId]: nextState }))
+
+    try {
+      await recordGuessFeedback(match, vote, rank)
+      setFeedbackByVenueId((current) => ({
+        ...current,
+        [venueId]: { vote, status: 'saved' },
+      }))
+    } catch {
+      setFeedbackByVenueId((current) => ({
+        ...current,
+        [venueId]: { vote, status: 'error' },
+      }))
+    }
+  }
+
+  async function undoGuessFeedback(
+    match: ReturnType<typeof getVisionMatches>[number] | ReturnType<typeof getPhotoMatches>[number],
+    rank: number,
+  ) {
+    const feedback = feedbackByVenueId[match.venue.id]
+    if (!feedback) return
+
+    const affectedMatches =
+      feedback.vote === 'correct'
+        ? matches.filter((candidate) => feedbackByVenueId[candidate.venue.id])
+        : [match]
+    setFeedbackByVenueId((current) => {
+      const updated = { ...current }
+      affectedMatches.forEach((candidate) => {
+        const existing = updated[candidate.venue.id]
+        if (existing) updated[candidate.venue.id] = { ...existing, status: 'saving' }
+      })
+      return updated
+    })
+
+    const results = await Promise.allSettled(
+      affectedMatches.map((candidate) =>
+        recordGuessFeedback(
+          candidate,
+          'undo',
+          matches.findIndex((item) => item.venue.id === candidate.venue.id) + 1 || rank,
+        ),
+      ),
+    )
+
+    setFeedbackByVenueId((current) => {
+      const updated = { ...current }
+      affectedMatches.forEach((candidate, index) => {
+        if (results[index].status === 'fulfilled') {
+          delete updated[candidate.venue.id]
+          return
+        }
+        const existing = updated[candidate.venue.id]
+        if (existing) updated[candidate.venue.id] = { ...existing, status: 'error' }
+      })
+      return updated
+    })
   }
 
   return (
@@ -576,9 +782,11 @@ function App() {
             </div>
 
             <label
-              className={`upload-zone ${photo.previewUrl ? 'has-image' : ''} ${
-                isDraggingPhoto ? 'dragging' : ''
-              }`}
+              className={[
+                'upload-zone',
+                photo.previewUrl ? 'has-image' : '',
+                isDraggingPhoto ? 'dragging' : '',
+              ].join(' ').trim()}
               onDragEnter={(event) => {
                 event.preventDefault()
                 setIsDraggingPhoto(true)
@@ -646,12 +854,21 @@ function App() {
               </div>
             ) : null}
 
-            {photo.analysis && (photo.analysis.webEvidence?.length || photo.analysis.photoEvidence?.length) ? (
+            {photo.analysis &&
+            (photo.analysis.articleCandidates?.length ||
+              photo.analysis.webEvidence?.length ||
+              photo.analysis.photoEvidence?.length) ? (
               <div className="search-trail" aria-label="Search evidence trail">
                 <div className="search-trail-head">
                   <Search size={15} />
                   <span>Search trail</span>
                 </div>
+                {photo.analysis.articleCandidates?.length ? (
+                  <p>
+                    {photo.analysis.articleSearchProvider ?? 'Article search'} found{' '}
+                    {photo.analysis.articleCandidates.length} article-backed venue candidates.
+                  </p>
+                ) : null}
                 {photo.analysis.webEvidence?.length ? (
                   <p>
                     {photo.analysis.webSearchProvider ?? 'Web search'} checked{' '}
@@ -847,11 +1064,16 @@ function App() {
 
           {matches.length ? (
             <div className="results-grid">
-              {matches.map((match) => (
+              {matches.map((match, index) => {
+                const feedback = feedbackByVenueId[match.venue.id]
+
+                return (
               <article
-                className={`result-card ${
-                  match.venue.id === activeMatch?.venue.id ? 'active' : ''
-                }`}
+                className={[
+                  'result-card',
+                  match.venue.id === activeMatch?.venue.id ? 'active' : '',
+                  feedback?.vote ? `feedback-${feedback.vote}` : '',
+                ].join(' ').trim()}
                 key={match.venue.id}
                 onClick={() => setActiveVenueId(match.venue.id)}
               >
@@ -875,6 +1097,60 @@ function App() {
                   {match.venue.signature.map((item) => (
                     <span key={item}>{item}</span>
                   ))}
+                </div>
+
+                <div className="feedback-panel" aria-label={`Feedback for ${match.venue.name}`}>
+                  <span>
+                    {feedback ? feedbackLabel(feedback) : 'Was this it?'}
+                  </span>
+                  <div className="feedback-buttons">
+                    <button
+                      className={[
+                        'heart-button',
+                        'heart-correct',
+                        feedback?.vote === 'correct' ? 'selected' : '',
+                      ].join(' ').trim()}
+                      type="button"
+                      aria-label={`Mark ${match.venue.name} correct`}
+                      disabled={feedback?.status === 'saving'}
+                      onClick={(event) => {
+                        event.stopPropagation()
+                        void submitGuessFeedback(match, 'correct', index + 1)
+                      }}
+                    >
+                      <span aria-hidden="true">💗</span>
+                    </button>
+                    <button
+                      className={[
+                        'heart-button',
+                        'heart-wrong',
+                        feedback?.vote === 'incorrect' ? 'selected broken' : '',
+                      ].join(' ').trim()}
+                      type="button"
+                      aria-label={`Mark ${match.venue.name} incorrect`}
+                      disabled={feedback?.status === 'saving'}
+                      onClick={(event) => {
+                        event.stopPropagation()
+                        void submitGuessFeedback(match, 'incorrect', index + 1)
+                      }}
+                    >
+                      <span aria-hidden="true">💔</span>
+                    </button>
+                    {feedback ? (
+                      <button
+                        className="undo-feedback"
+                        type="button"
+                        aria-label={`Undo feedback for ${match.venue.name}`}
+                        disabled={feedback.status === 'saving'}
+                        onClick={(event) => {
+                          event.stopPropagation()
+                          void undoGuessFeedback(match, index + 1)
+                        }}
+                      >
+                        Undo
+                      </button>
+                    ) : null}
+                  </div>
                 </div>
 
                 <ul className="reason-list">
@@ -911,7 +1187,8 @@ function App() {
                   </a>
                 </div>
               </article>
-              ))}
+                )
+              })}
             </div>
           ) : photo.status === 'reading' ? (
             <section className="analysis-panel" aria-live="polite" aria-label="Analysis in progress">

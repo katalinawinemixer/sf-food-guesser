@@ -22,9 +22,6 @@ body {
 
 button {
   letter-spacing: 0;
-}
-
-button {
   -webkit-tap-highlight-color: transparent;
 }
 
