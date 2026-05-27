@@ -134,6 +134,7 @@ describe('Cloudflare Pages Functions API', () => {
     expect(response.status).toBe(200)
     expect(response.headers.get('Set-Cookie')).toBeNull()
     expect(fetchMock).toHaveBeenCalledTimes(2)
+    expect(requestInit.signal).toBeInstanceOf(AbortSignal)
     expect(payload.tools[0].type).toBe('openrouter:web_search')
     expect(body).toMatchObject({
       summary: 'Iced matcha in a small cafe prep area.',

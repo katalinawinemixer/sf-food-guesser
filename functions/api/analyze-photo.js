@@ -18,6 +18,9 @@ import {
   validateImageFile,
 } from './_shared.js'
 
+const providerFetchTimeoutMs = 18_000
+const requestDeadlineMs = 82_000
+
 export function onRequestOptions() {
   return optionsResponse()
 }
@@ -61,9 +64,36 @@ function shouldTryNextProviderAttempt(error) {
   return status !== 401 && status !== 402
 }
 
+function remainingProviderTimeout(deadline) {
+  return Math.max(1, Math.min(providerFetchTimeoutMs, deadline - Date.now()))
+}
+
+async function fetchJsonWithTimeout(url, init, timeoutMs, label) {
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), timeoutMs)
+  try {
+    const response = await fetch(url, {
+      ...init,
+      signal: controller.signal,
+    })
+    const result = await response.json().catch(() => ({}))
+    return { response, result }
+  } catch (error) {
+    if (controller.signal.aborted) {
+      const timeoutError = new Error(`${label} timed out.`)
+      timeoutError.status = 504
+      throw timeoutError
+    }
+    throw error
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
 export async function onRequestPost({ request, env }) {
   const provider = providerFromEnv(env)
   const runId = crypto.randomUUID()
+  const deadline = Date.now() + requestDeadlineMs
 
   const originResponse = disallowedOriginResponse(request, env)
   if (originResponse) return originResponse
@@ -121,7 +151,7 @@ export async function onRequestPost({ request, env }) {
 
   for (const model of models) {
     try {
-      const response = await fetch(provider.endpoint, {
+      const { response, result } = await fetchJsonWithTimeout(provider.endpoint, {
         method: 'POST',
         headers: {
           Authorization: `Bearer ${provider.apiKey}`,
@@ -153,8 +183,7 @@ export async function onRequestPost({ request, env }) {
           temperature: 0,
           max_tokens: 1200,
         }),
-      })
-      const result = await response.json().catch(() => ({}))
+      }, remainingProviderTimeout(deadline), `Search planning with ${model}`)
       if (!response.ok) {
         const error = new Error(result?.error?.message || result?.message || response.statusText)
         error.status = response.status
@@ -170,6 +199,7 @@ export async function onRequestPost({ request, env }) {
       lastError = error
       if (!shouldTryNextProviderAttempt(error)) break
     }
+    if (Date.now() >= deadline) break
   }
 
   if (searchPlan) {
@@ -236,7 +266,7 @@ export async function onRequestPost({ request, env }) {
   for (const model of models) {
     for (const attempt of analysisAttempts) {
       try {
-        const response = await fetch(provider.endpoint, {
+        const { response, result } = await fetchJsonWithTimeout(provider.endpoint, {
           method: 'POST',
           headers: {
             Authorization: `Bearer ${provider.apiKey}`,
@@ -296,9 +326,7 @@ export async function onRequestPost({ request, env }) {
             temperature: 0.1,
             max_tokens: 2200,
           }),
-        })
-
-        const result = await response.json().catch(() => ({}))
+        }, remainingProviderTimeout(deadline), `${attempt.label} with ${model}`)
         if (!response.ok) {
           const error = new Error(result?.error?.message || result?.message || response.statusText)
           error.status = response.status
@@ -336,8 +364,10 @@ export async function onRequestPost({ request, env }) {
         lastError = error
         if (!shouldTryNextProviderAttempt(error)) break
       }
+      if (Date.now() >= deadline) break
     }
     if (!shouldTryNextProviderAttempt(lastError)) break
+    if (Date.now() >= deadline) break
   }
 
   return jsonResponse(
