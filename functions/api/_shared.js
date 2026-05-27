@@ -70,6 +70,28 @@ export function optionsResponse() {
   return new Response(null, { status: 204, headers: securityHeaders })
 }
 
+function searchCacheKey(scope, value) {
+  return `search-cache:${scope}:${encodeURIComponent(JSON.stringify(value)).slice(0, 900)}`
+}
+
+async function cachedSearchJson(env, key, compute, ttlSeconds = 1800) {
+  const store = env.SF_FOOD_SEARCH_CACHE_KV
+  if (!store?.get || !store?.put) return compute()
+
+  const cached = await store.get(key).catch(() => null)
+  if (cached) {
+    try {
+      return JSON.parse(cached)
+    } catch {
+      // Refresh corrupt rows below.
+    }
+  }
+
+  const value = await compute()
+  await store.put(key, JSON.stringify(value), { expirationTtl: ttlSeconds }).catch(() => undefined)
+  return value
+}
+
 export function isSupportedImage(file) {
   const mimeType = String(file?.type ?? '').toLowerCase()
   const fileName = String(file?.name ?? '')
@@ -529,7 +551,10 @@ export async function searchExaEvidence(searchPlan, env, fetchImpl = fetch) {
   if (!queries.length) return []
 
   const responses = await Promise.all(
-    queries.map(async (query) => {
+    queries.map((query) => cachedSearchJson(
+      env,
+      searchCacheKey('exa-evidence', query),
+      async () => {
       const response = await fetchImpl('https://api.exa.ai/search', {
         method: 'POST',
         headers: {
@@ -553,7 +578,9 @@ export async function searchExaEvidence(searchPlan, env, fetchImpl = fetch) {
         throw error
       }
       return { query, results: Array.isArray(body.results) ? body.results : [] }
-    }),
+      },
+      Number(env.SF_FOOD_SEARCH_CACHE_TTL_SECONDS || 1800),
+    )),
   )
 
   const seen = new Set()
@@ -634,6 +661,123 @@ function mapHasDataPhoto({ photo, place, query, queryIndex, placeIndex, photoInd
   }
 }
 
+function mapGooglePlacesPhoto({ photoUri, place, query, queryIndex, placeIndex, photoIndex }) {
+  const placeTitle = String(place?.displayName?.text ?? 'Google Places result')
+  const placeAddress = String(place?.formattedAddress ?? '')
+  return {
+    title: `${placeTitle} Google Places photo`,
+    source: 'Google Places photos',
+    pageUrl: `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(
+      [placeTitle, placeAddress].filter(Boolean).join(' '),
+    )}`,
+    imageUrl: String(photoUri || ''),
+    thumbnailUrl: String(photoUri || ''),
+    query,
+    placeTitle,
+    placeAddress,
+    placeId: String(place?.id ?? ''),
+    mapsQuery: [placeTitle, placeAddress].filter(Boolean).join(' '),
+    gpsCoordinates: place?.location ?? null,
+    queryIndex,
+    placeIndex,
+    photoIndex,
+  }
+}
+
+export async function searchGooglePlacesPhotoEvidence(searchPlan, env, fetchImpl = fetch) {
+  if (!env.GOOGLE_PLACES_API_KEY) return []
+  const queries = (searchPlan?.searchQueries ?? [])
+    .filter(Boolean)
+    .slice(0, Number(env.GOOGLE_PLACES_MAX_PARALLEL_QUERIES || 3))
+  if (!queries.length) return []
+
+  const placeSearches = queries.map(async (rawQuery, queryIndex) => {
+    const query = `${rawQuery} San Francisco cafe restaurant`
+    const response = await fetchImpl('https://places.googleapis.com/v1/places:searchText', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Goog-Api-Key': String(env.GOOGLE_PLACES_API_KEY),
+        'X-Goog-FieldMask':
+          'places.id,places.displayName,places.formattedAddress,places.location,places.photos',
+      },
+      body: JSON.stringify({
+        textQuery: query,
+        includedType: 'restaurant',
+        locationBias: {
+          circle: {
+            center: { latitude: 37.7749, longitude: -122.4194 },
+            radius: 16000,
+          },
+        },
+        pageSize: 5,
+      }),
+    })
+    if (!response.ok) return []
+    const result = await response.json().catch(() => ({}))
+    return (Array.isArray(result.places) ? result.places : [])
+      .slice(0, 3)
+      .map((place, placeIndex) => ({ place, query, queryIndex, placeIndex }))
+  })
+
+  const settledPlaceSearches = await Promise.allSettled(placeSearches)
+  const seenPlaces = new Set()
+  const places = settledPlaceSearches
+    .flatMap((settledSearch) =>
+      settledSearch.status === 'fulfilled' ? settledSearch.value : [],
+    )
+    .sort((a, b) => a.queryIndex - b.queryIndex || a.placeIndex - b.placeIndex)
+    .filter(({ place }) => {
+      if (!place?.id || seenPlaces.has(place.id)) return false
+      seenPlaces.add(place.id)
+      return true
+    })
+    .slice(0, 8)
+
+  const photoLookups = places.flatMap(({ place, query, queryIndex, placeIndex }) =>
+    (Array.isArray(place.photos) ? place.photos.slice(0, 4) : []).map(async (photo, photoIndex) => {
+      if (!photo.name) return null
+      const photoUrl = new URL(`https://places.googleapis.com/v1/${photo.name}/media`)
+      photoUrl.searchParams.set('maxWidthPx', '900')
+      photoUrl.searchParams.set('skipHttpRedirect', 'true')
+      photoUrl.searchParams.set('key', String(env.GOOGLE_PLACES_API_KEY))
+      const response = await fetchImpl(photoUrl)
+      if (!response.ok) return null
+      const result = await response.json().catch(() => ({}))
+      return mapGooglePlacesPhoto({
+        photoUri: result.photoUri,
+        place,
+        query,
+        queryIndex,
+        placeIndex,
+        photoIndex,
+      })
+    }),
+  )
+  const settledPhotoLookups = await Promise.allSettled(photoLookups)
+  const seenPhotos = new Set()
+  const photos = []
+
+  for (const photo of settledPhotoLookups
+    .flatMap((settledLookup) =>
+      settledLookup.status === 'fulfilled' && settledLookup.value ? [settledLookup.value] : [],
+    )
+    .sort(
+      (a, b) =>
+        a.queryIndex - b.queryIndex ||
+        a.placeIndex - b.placeIndex ||
+        a.photoIndex - b.photoIndex,
+    )) {
+    if (!photo.imageUrl || seenPhotos.has(photo.imageUrl)) continue
+    seenPhotos.add(photo.imageUrl)
+    const { queryIndex, placeIndex, photoIndex, ...publicPhoto } = photo
+    photos.push(publicPhoto)
+    if (photos.length >= 18) return photos
+  }
+
+  return photos.slice(0, 18)
+}
+
 export async function searchHasDataPhotoEvidence(searchPlan, env, fetchImpl = fetch, debug = null) {
   if (!env.HASDATA_API_KEY) return []
   const queries = (searchPlan?.searchQueries ?? [])
@@ -652,29 +796,41 @@ export async function searchHasDataPhotoEvidence(searchPlan, env, fetchImpl = fe
     url.searchParams.set('gl', 'us')
 
     try {
-      const response = await fetchImpl(url, {
-        headers: {
-          'Content-Type': 'application/json',
-          'x-api-key': env.HASDATA_API_KEY,
+      const cachedSearch = await cachedSearchJson(
+        env,
+        searchCacheKey('hasdata-map-search', query),
+        async () => {
+          const response = await fetchImpl(url, {
+            headers: {
+              'Content-Type': 'application/json',
+              'x-api-key': env.HASDATA_API_KEY,
+            },
+          })
+          const result = await response.json().catch(() => ({}))
+          return {
+            status: response.status,
+            ok: response.ok,
+            result,
+            places: response.ok ? normalizeHasDataPlaces(result) : [],
+          }
         },
-      })
-      const result = await response.json().catch(() => ({}))
-      const places = response.ok ? normalizeHasDataPlaces(result) : []
+        Number(env.SF_FOOD_SEARCH_CACHE_TTL_SECONDS || 1800),
+      )
       debug?.searches?.push?.({
-        status: response.status,
-        ok: response.ok,
+        status: cachedSearch.status,
+        ok: cachedSearch.ok,
         queryIndex,
-        placeCount: places.length,
-        topLevelKeys: Object.keys(result).slice(0, 8),
-        error: result?.message || result?.error || null,
-        placeResultsType: Array.isArray(result?.placeResults) ? 'array' : typeof result?.placeResults,
-        localResultsType: Array.isArray(result?.localResults) ? 'array' : typeof result?.localResults,
+        placeCount: cachedSearch.places.length,
+        topLevelKeys: Object.keys(cachedSearch.result).slice(0, 8),
+        error: cachedSearch.result?.message || cachedSearch.result?.error || null,
+        placeResultsType: Array.isArray(cachedSearch.result?.placeResults) ? 'array' : typeof cachedSearch.result?.placeResults,
+        localResultsType: Array.isArray(cachedSearch.result?.localResults) ? 'array' : typeof cachedSearch.result?.localResults,
       })
-      if (!response.ok) {
+      if (!cachedSearch.ok) {
         mapSearches.push([])
         continue
       }
-      const search = places.slice(0, 3).map((place, placeIndex) => ({
+      const search = cachedSearch.places.slice(0, 3).map((place, placeIndex) => ({
         place,
         query,
         queryIndex,
@@ -725,17 +881,25 @@ export async function searchHasDataPhotoEvidence(searchPlan, env, fetchImpl = fe
     if (!dataId && placeId) photosUrl.searchParams.set('placeId', String(placeId))
     photosUrl.searchParams.set('hl', 'en')
 
-    const response = await fetchImpl(photosUrl, {
-      headers: {
-        'Content-Type': 'application/json',
-        'x-api-key': env.HASDATA_API_KEY,
+    const cachedPhotos = await cachedSearchJson(
+      env,
+      searchCacheKey('hasdata-photos', dataId || placeId || query),
+      async () => {
+        const response = await fetchImpl(photosUrl, {
+          headers: {
+            'Content-Type': 'application/json',
+            'x-api-key': env.HASDATA_API_KEY,
+          },
+        })
+        if (!response.ok) return { status: response.status, photos: [] }
+        const result = await response.json().catch(() => ({}))
+        return { status: response.status, photos: normalizeHasDataPhotos(result) }
       },
-    })
-    if (!response.ok) return []
-    const result = await response.json().catch(() => ({}))
-    const photos = normalizeHasDataPhotos(result)
+      Number(env.SF_FOOD_SEARCH_CACHE_TTL_SECONDS || 1800),
+    )
+    const photos = cachedPhotos.photos
     if (debug) {
-      debug.photoEndpointStatuses.push(response.status)
+      debug.photoEndpointStatuses.push(cachedPhotos.status)
       debug.endpointPhotoCount += photos.length
     }
     const placeTitle = String(place?.title ?? place?.name ?? 'Google Maps place')

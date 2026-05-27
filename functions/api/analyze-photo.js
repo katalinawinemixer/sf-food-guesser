@@ -17,6 +17,7 @@ import {
   providerErrorMessage,
   providerFromEnv,
   searchExaEvidence,
+  searchGooglePlacesPhotoEvidence,
   searchHasDataPhotoEvidence,
   validateImageBytes,
   validateImageFile,
@@ -306,9 +307,15 @@ export async function onRequestPost({ request, env }) {
           photoEndpointStatuses: [],
         }
       : null
+    const photoEvidenceSearch = env.GOOGLE_PLACES_API_KEY
+      ? searchGooglePlacesPhotoEvidence(photoSearchPlan, env, fetch)
+      : searchHasDataPhotoEvidence(photoSearchPlan, env, fetch, hasDataDebug)
+    const photoProviderName = env.GOOGLE_PLACES_API_KEY
+      ? 'google-places-new-photos'
+      : 'hasdata-google-maps-photos'
     const [exaResult, photoResult] = await Promise.allSettled([
       searchExaEvidence(searchPlan, env),
-      searchHasDataPhotoEvidence(photoSearchPlan, env, fetch, hasDataDebug),
+      photoEvidenceSearch,
     ])
     if (exaResult.status === 'fulfilled') {
       webEvidence = exaResult.value
@@ -322,8 +329,8 @@ export async function onRequestPost({ request, env }) {
       photoEvidence = photoResult.value
     } else {
       providerWarnings.push({
-        provider: 'hasdata-google-maps-photos',
-        message: String(photoResult.reason?.message ?? 'HasData photo evidence search failed.'),
+        provider: photoProviderName,
+        message: String(photoResult.reason?.message ?? `${photoProviderName} evidence search failed.`),
       })
     }
     if (shouldDebugPhotoEvidence) {
@@ -431,7 +438,11 @@ export async function onRequestPost({ request, env }) {
         return jsonResponse({
           runId,
           ...analysis,
-          searchProvider: env.HASDATA_API_KEY ? 'hasdata-google-maps-photos' : null,
+          searchProvider: env.GOOGLE_PLACES_API_KEY
+            ? 'google-places-new-photos'
+            : env.HASDATA_API_KEY
+              ? 'hasdata-google-maps-photos'
+              : null,
           webSearchProvider:
             provider.provider === 'openrouter' && attempt.includeOpenRouterWebSearch
               ? 'openrouter-web-search'

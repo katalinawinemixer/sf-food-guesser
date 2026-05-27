@@ -14,6 +14,7 @@
     "check:production": "node scripts/production-check.mjs",
     "benchmark": "node scripts/benchmark-runner.mjs",
     "review:feedback": "node scripts/feedback-review.mjs",
+    "review:venues": "node scripts/venue-database-report.mjs",
     "secret-scan": "node scripts/secret-scan.mjs",
     "test": "vitest run --config frontend/vite.config.ts && npm run lint && node --check backend/server.mjs && npm run build",
     "preview": "vite preview --config frontend/vite.config.ts"

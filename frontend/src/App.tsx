@@ -396,6 +396,23 @@ type CorrectionDraft = {
   note: string
 }
 
+type AdminReview = {
+  recordCount: number
+  runCount: number
+  counts: Record<string, number>
+  runs: Array<{
+    runId: string
+    classification: {
+      type: string
+      summary: string
+    }
+    recordCount: number
+    lastFeedbackAt?: string | null
+    lastVote?: string | null
+    lastCandidate?: string | null
+  }>
+}
+
 const feedbackSessionStorageKey = 'sf-food-guesser-feedback-session'
 
 function createAnonymousSessionId() {
@@ -656,6 +673,95 @@ function resultStateLabel(analysis: VisionAnalysis | undefined, matches: MatchRe
   return 'Best supported match'
 }
 
+function AdminReviewPage() {
+  const [token, setToken] = useState('')
+  const [review, setReview] = useState<AdminReview | null>(null)
+  const [status, setStatus] = useState<'idle' | 'loading' | 'error'>('idle')
+  const [message, setMessage] = useState('')
+
+  async function loadReview(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    setStatus('loading')
+    setMessage('')
+    try {
+      const response = await fetch(apiUrl('/api/admin/feedback-review'), {
+        headers: {
+          'x-admin-token': token,
+        },
+        credentials: 'include',
+      })
+      if (!response.ok) throw new Error(await readApiError(response))
+      const result = await response.json()
+      setReview({
+        recordCount: Number(result.recordCount ?? 0),
+        runCount: Number(result.runCount ?? 0),
+        counts: result.counts && typeof result.counts === 'object' ? result.counts : {},
+        runs: Array.isArray(result.runs) ? result.runs.slice(0, 50) : [],
+      })
+      setStatus('idle')
+    } catch (error) {
+      setStatus('error')
+      setMessage(error instanceof Error ? error.message : 'Could not load feedback review.')
+    }
+  }
+
+  return (
+    <main className="app-shell admin-shell">
+      <header className="topbar">
+        <div className="brand">
+          <span className="brand-mark">
+            <BadgeCheck size={20} strokeWidth={2.4} />
+          </span>
+          <div>
+            <h1>Feedback Review</h1>
+            <p>Admin-only accuracy review. No uploaded photos are stored here.</p>
+          </div>
+        </div>
+      </header>
+      <section className="admin-panel">
+        <form className="admin-token-form" onSubmit={loadReview}>
+          <label>
+            Admin token
+            <input
+              value={token}
+              type="password"
+              autoComplete="off"
+              onChange={(event) => setToken(event.target.value)}
+            />
+          </label>
+          <button type="submit" disabled={!token || status === 'loading'}>
+            {status === 'loading' ? 'Loading...' : 'Load review'}
+          </button>
+        </form>
+        {status === 'error' ? <p className="admin-error">{message}</p> : null}
+        {review ? (
+          <div className="admin-review">
+            <div className="admin-summary">
+              <span>{review.recordCount} records</span>
+              <span>{review.runCount} runs</span>
+              {Object.entries(review.counts).map(([type, count]) => (
+                <span key={type}>{type}: {count}</span>
+              ))}
+            </div>
+            <div className="admin-runs">
+              {review.runs.map((run) => (
+                <article key={run.runId} className="admin-run-card">
+                  <div>
+                    <span className="category">{run.classification.type}</span>
+                    <h3>{run.lastCandidate || 'Unknown candidate'}</h3>
+                  </div>
+                  <p>{run.classification.summary}</p>
+                  <small>{run.recordCount} records · {run.lastVote || 'unknown'} · {run.runId}</small>
+                </article>
+              ))}
+            </div>
+          </div>
+        ) : null}
+      </section>
+    </main>
+  )
+}
+
 function feedbackLabel(feedback: FeedbackState) {
   if (feedback.status === 'saving') return 'Saving feedback...'
   if (feedback.status === 'error') return 'Could not save feedback'
@@ -808,7 +914,7 @@ async function analyzePhotoWithVision(file: File): Promise<VisionAnalysis> {
   }
 }
 
-function App() {
+function MainApp() {
   const [category, setCategory] = useState<'All' | VenueCategory>('All')
   const [activeVenueId, setActiveVenueId] = useState<string | null>(null)
   const [photo, setPhoto] = useState<PhotoState>({ status: 'empty' })
@@ -1700,6 +1806,13 @@ function App() {
       </div>
     </main>
   )
+}
+
+function App() {
+  const isAdminReviewRoute =
+    window.location.pathname === '/admin' || new URLSearchParams(window.location.search).has('admin')
+
+  return isAdminReviewRoute ? <AdminReviewPage /> : <MainApp />
 }
 
 export default App

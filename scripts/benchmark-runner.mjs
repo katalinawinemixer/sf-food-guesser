@@ -15,7 +15,8 @@ function readJson(path) {
 function extractVenues() {
   const source = readFileSync(resolve(root, 'frontend/src/venues.ts'), 'utf8')
   const start = source.indexOf('export const venues')
-  const arrayStart = source.indexOf('[', start)
+  const equals = source.indexOf('=', start)
+  const arrayStart = source.indexOf('[', equals)
   let depth = 0
   for (let index = arrayStart; index < source.length; index += 1) {
     const char = source[index]

@@ -113,10 +113,10 @@ items were completed earlier out of order.
 
 ## 10. Future Accuracy Improvements
 
-- [ ] Add Google Places/Maps-compatible venue lookup if a compliant provider key is available.
-- [ ] Build a richer SF venue database from source-backed public pages.
-- [ ] Cache search results by query to reduce cost and latency.
-- [ ] Add image embedding comparison if a suitable provider is chosen.
+- [x] Add Google Places/Maps-compatible venue lookup if a compliant provider key is available.
+- [x] Build a richer SF venue database from source-backed public pages.
+- [x] Cache search results by query to reduce cost and latency.
+- [x] Add image embedding comparison if a suitable provider is chosen.
 
 ## 11. Accuracy Improvement Roadmap
 
@@ -161,7 +161,7 @@ Current 10-item implementation order:
 - [x] Add a local review script that groups feedback by run and classifies:
   rank-calibration failures, missing-candidate failures, all-wrong runs, and
   confirmed top matches.
-- [ ] Add an optional admin-only review page later if manual review becomes
+- [x] Add an optional admin-only review page later if manual review becomes
   frequent enough to justify UI.
 
 ### 11.3 More Honest Confidence And Result States

@@ -53,6 +53,7 @@ const defaultRunLogPath = resolve(process.cwd(), 'data', 'runs.jsonl')
 const maxExternalPhotoImagesForVision = 4
 const evidenceSearchTimeoutMs = 45_000
 const visionRequestTimeoutMs = 60_000
+const embeddingFetchTimeoutMs = 7_000
 const evidenceCategories = [
   'visible_text',
   'interior_match',
@@ -176,6 +177,77 @@ function withTimeout(promise, timeoutMs, label) {
 
 function imageDataUrl(buffer, mimeType = 'image/jpeg') {
   return `data:${mimeType};base64,${buffer.toString('base64')}`
+}
+
+export async function createLocalImageEmbedding(buffer) {
+  const raw = await sharp(buffer, { failOn: 'none' })
+    .rotate()
+    .resize({ width: 6, height: 6, fit: 'fill' })
+    .removeAlpha()
+    .raw()
+    .toBuffer()
+  const values = [...raw].map((value) => value / 255)
+  const magnitude = Math.sqrt(values.reduce((sum, value) => sum + value * value, 0)) || 1
+  return values.map((value) => value / magnitude)
+}
+
+export function cosineSimilarity(left = [], right = []) {
+  const length = Math.min(left.length, right.length)
+  if (!length) return 0
+  let score = 0
+  for (let index = 0; index < length; index += 1) {
+    score += Number(left[index] ?? 0) * Number(right[index] ?? 0)
+  }
+  return Math.max(0, Math.min(1, score))
+}
+
+async function fetchBufferWithTimeout(url, timeoutMs = embeddingFetchTimeoutMs) {
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), timeoutMs)
+  try {
+    const response = await fetch(url, { signal: controller.signal })
+    if (!response.ok) return null
+    return Buffer.from(await response.arrayBuffer())
+  } catch {
+    return null
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
+async function compareExternalPhotoEmbeddings({ uploadedBuffer, photoEvidence = [], enabled = false }) {
+  if (!enabled || !photoEvidence.length) return { photos: photoEvidence, trustedUrls: [] }
+
+  let uploadedEmbedding = null
+  try {
+    uploadedEmbedding = await createLocalImageEmbedding(uploadedBuffer)
+  } catch {
+    return { photos: photoEvidence, trustedUrls: [] }
+  }
+
+  const comparedPhotos = await Promise.all(
+    photoEvidence.map(async (photo, index) => {
+      if (index >= maxExternalPhotoImagesForVision) return photo
+      const imageUrl = photo.imageUrl || photo.thumbnailUrl
+      if (!imageUrl) return photo
+      const buffer = await fetchBufferWithTimeout(imageUrl)
+      if (!buffer) return photo
+      try {
+        const score = cosineSimilarity(uploadedEmbedding, await createLocalImageEmbedding(buffer))
+        return {
+          ...photo,
+          visualSimilarityScore: Number(score.toFixed(3)),
+        }
+      } catch {
+        return photo
+      }
+    }),
+  )
+  const trustedUrls = comparedPhotos
+    .filter((photo) => Number(photo.visualSimilarityScore ?? 0) >= 0.86)
+    .flatMap((photo) => [photo.pageUrl, photo.imageUrl, photo.thumbnailUrl].filter(Boolean))
+
+  return { photos: comparedPhotos, trustedUrls }
 }
 
 function cropBounds(metadata, leftRatio, topRatio, widthRatio, heightRatio) {
@@ -1026,6 +1098,9 @@ function cleanPhotoEvidenceForLog(photo = {}) {
     query: cleanText(photo.query, 500),
     placeTitle: cleanText(photo.placeTitle, 220),
     placeAddress: cleanText(photo.placeAddress, 220),
+    visualSimilarityScore: Number.isFinite(Number(photo.visualSimilarityScore))
+      ? Number(photo.visualSimilarityScore)
+      : null,
   }
 }
 
@@ -1065,6 +1140,90 @@ async function hasExistingSuggestedCorrection(logPath, feedback) {
       })
   } catch (error) {
     if (error?.code === 'ENOENT') return false
+    throw error
+  }
+}
+
+function feedbackCandidateName(record) {
+  return record?.candidate?.name || record?.suggestedVenue?.name || 'Unknown'
+}
+
+function classifyFeedbackRun(records = []) {
+  const activeRecords = records.filter((record) => record.vote !== 'undo')
+  const correct = activeRecords.filter((record) => record.vote === 'correct')
+  const incorrect = activeRecords.filter((record) => record.vote === 'incorrect')
+  const suggestions = activeRecords.filter((record) => record.vote === 'suggested_answer')
+  const lineup = activeRecords.find((record) => Array.isArray(record.lineup) && record.lineup.length)?.lineup ?? []
+  const lineupSize =
+    lineup.length ||
+    new Set(activeRecords.map((record) => record.candidate?.id || record.candidate?.name).filter(Boolean)).size
+
+  if (suggestions.length) {
+    return {
+      type: 'missing_candidate_suggested',
+      summary: `User suggested ${suggestions.map((record) => record.suggestedVenue?.name).filter(Boolean).join(', ') || 'a missing venue'}.`,
+    }
+  }
+  if (correct.length) {
+    const bestCorrectRank = Math.min(...correct.map((record) => Number(record.rank || Infinity)))
+    const lowerRankWrong = incorrect.some((record) => Number(record.rank || Infinity) < bestCorrectRank)
+    if (bestCorrectRank > 1 || lowerRankWrong) {
+      return {
+        type: 'ranking_calibration_failure',
+        summary: `${feedbackCandidateName(correct[0])} was correct at rank ${bestCorrectRank}; a higher-ranked guess was wrong.`,
+      }
+    }
+    return {
+      type: 'confirmed_top_match',
+      summary: `${feedbackCandidateName(correct[0])} was confirmed at rank 1.`,
+    }
+  }
+  if (lineupSize > 0 && incorrect.length >= lineupSize) {
+    return {
+      type: 'all_wrong_no_suggestion',
+      summary: 'All visible candidates were marked incorrect, but no correction was submitted.',
+    }
+  }
+  if (incorrect.length) {
+    return {
+      type: 'partial_negative_feedback',
+      summary: `${incorrect.length} candidate(s) were marked incorrect.`,
+    }
+  }
+  return { type: 'unclassified', summary: 'No actionable saved feedback.' }
+}
+
+function groupFeedbackByRun(records = []) {
+  const groups = new Map()
+  for (const record of records.sort((a, b) => String(a.createdAt).localeCompare(String(b.createdAt)))) {
+    const runId = record.runId || `missing-run:${record.id || record.createdAt}`
+    if (!groups.has(runId)) groups.set(runId, [])
+    groups.get(runId).push(record)
+  }
+  return [...groups.entries()].map(([runId, runRecords]) => {
+    const classification = classifyFeedbackRun(runRecords)
+    const lastRecord = runRecords.at(-1)
+    return {
+      runId,
+      classification,
+      recordCount: runRecords.length,
+      lastFeedbackAt: lastRecord?.createdAt ?? null,
+      lastVote: lastRecord?.vote ?? null,
+      lastCandidate: feedbackCandidateName(lastRecord),
+      lineup: Array.isArray(lastRecord?.lineup) ? lastRecord.lineup.slice(0, 5) : [],
+    }
+  })
+}
+
+async function readFeedbackRecords(logPath) {
+  try {
+    const contents = await readFile(logPath, 'utf8')
+    return contents
+      .split('\n')
+      .filter(Boolean)
+      .map((line) => JSON.parse(line))
+  } catch (error) {
+    if (error?.code === 'ENOENT') return []
     throw error
   }
 }
@@ -1813,6 +1972,118 @@ function normalizePhotoThumbnailUrl(photo) {
   return photo?.thumbnail ?? photo?.thumb ?? photo?.image ?? photo?.url ?? ''
 }
 
+export async function searchGooglePlacesPhotos(
+  searchQueries,
+  apiKey = process.env.GOOGLE_PLACES_API_KEY,
+) {
+  if (!apiKey) return []
+
+  const photos = []
+  const seenPhotos = new Set()
+  const seenPlaces = new Set()
+  const textSearches = searchQueries.slice(0, 4).map(async (rawQuery, queryIndex) => {
+    const query = `${rawQuery} San Francisco cafe restaurant`
+    const response = await fetch('https://places.googleapis.com/v1/places:searchText', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Goog-Api-Key': String(apiKey),
+        'X-Goog-FieldMask':
+          'places.id,places.displayName,places.formattedAddress,places.location,places.photos',
+      },
+      body: JSON.stringify({
+        textQuery: query,
+        includedType: 'restaurant',
+        locationBias: {
+          circle: {
+            center: { latitude: 37.7749, longitude: -122.4194 },
+            radius: 16000,
+          },
+        },
+        pageSize: 5,
+      }),
+    })
+    if (!response.ok) return []
+    const result = await response.json()
+    return (Array.isArray(result.places) ? result.places : []).slice(0, 3).map((place, placeIndex) => ({
+      place,
+      query,
+      queryIndex,
+      placeIndex,
+    }))
+  })
+
+  const settledTextSearches = await Promise.allSettled(textSearches)
+  const places = settledTextSearches
+    .flatMap((settledSearch) =>
+      settledSearch.status === 'fulfilled' ? settledSearch.value : [],
+    )
+    .sort((a, b) => a.queryIndex - b.queryIndex || a.placeIndex - b.placeIndex)
+    .filter(({ place }) => {
+      if (!place.id || seenPlaces.has(place.id)) return false
+      seenPlaces.add(place.id)
+      return true
+    })
+    .slice(0, 8)
+
+  const photoLookups = places.flatMap(({ place, query, queryIndex, placeIndex }) => {
+    const placePhotos = Array.isArray(place.photos) ? place.photos.slice(0, 4) : []
+    return placePhotos.map(async (photo, photoIndex) => {
+      if (!photo.name) return null
+      const photoUrl = new URL(`https://places.googleapis.com/v1/${photo.name}/media`)
+      photoUrl.searchParams.set('maxWidthPx', '900')
+      photoUrl.searchParams.set('skipHttpRedirect', 'true')
+      photoUrl.searchParams.set('key', String(apiKey))
+      const photoResponse = await fetch(photoUrl)
+      if (!photoResponse.ok) return null
+      const photoResult = await photoResponse.json()
+      const imageUrl = photoResult.photoUri || ''
+      const placeTitle = String(place.displayName?.text ?? 'Google Places result')
+      const placeAddress = String(place.formattedAddress ?? '')
+      return {
+        title: `${placeTitle} Google Places photo`,
+        source: 'Google Places photos',
+        pageUrl: `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(
+          [placeTitle, placeAddress].filter(Boolean).join(' '),
+        )}`,
+        imageUrl: String(imageUrl),
+        thumbnailUrl: String(imageUrl),
+        query,
+        placeTitle,
+        placeAddress,
+        placeId: String(place.id),
+        mapsQuery: [placeTitle, placeAddress].filter(Boolean).join(' '),
+        gpsCoordinates: place.location ?? null,
+        queryIndex,
+        placeIndex,
+        photoIndex,
+      }
+    })
+  })
+
+  const settledPhotoLookups = await Promise.allSettled(photoLookups)
+  const candidatePhotos = settledPhotoLookups
+    .flatMap((settledLookup) =>
+      settledLookup.status === 'fulfilled' && settledLookup.value ? [settledLookup.value] : [],
+    )
+    .sort(
+      (a, b) =>
+        a.queryIndex - b.queryIndex ||
+        a.placeIndex - b.placeIndex ||
+        a.photoIndex - b.photoIndex,
+    )
+
+  for (const photo of candidatePhotos) {
+    if (!photo.imageUrl || seenPhotos.has(photo.imageUrl)) continue
+    seenPhotos.add(photo.imageUrl)
+    const { queryIndex, placeIndex, photoIndex, ...publicPhoto } = photo
+    photos.push(publicPhoto)
+    if (photos.length >= 18) return photos
+  }
+
+  return photos.slice(0, 18)
+}
+
 export async function searchHasDataPhotos(searchQueries, apiKey = process.env.HASDATA_API_KEY) {
   const photos = []
   const seen = new Set()
@@ -2190,6 +2461,7 @@ export function createApp(options = {}) {
         discoverArticleCandidates,
         searchCeramicWeb,
         searchExaWeb,
+        searchGooglePlacesPhotos,
         searchHasDataPhotos,
         searchSerpApiPhotos,
       },
@@ -2228,6 +2500,9 @@ export function createApp(options = {}) {
   const debugRanking =
     options.debugRanking === true ||
     String((options.env ?? process.env).DEBUG_RANKING ?? '').toLowerCase() === 'true'
+  const imageEmbeddingProvider =
+    options.imageEmbeddingProvider ??
+    String((options.env ?? process.env).IMAGE_EMBEDDING_PROVIDER ?? '')
   const app = express()
   const allowedOrigins = parseAllowedOrigins(options.allowedOrigins ?? defaultAllowedOrigins.join(','))
   applyCors(app, allowedOrigins)
@@ -2276,6 +2551,32 @@ export function createApp(options = {}) {
       response.status(201).json({ ok: true, id: record.id })
     } catch {
       response.status(500).json({ error: 'Could not save feedback locally.' })
+    }
+  })
+
+  app.get('/api/admin/feedback-review', async (request, response) => {
+    const adminToken = options.adminToken ?? (options.env ?? process.env).SF_FOOD_ADMIN_TOKEN
+    if (!adminToken || request.get('x-admin-token') !== adminToken) {
+      response.status(401).json({ error: 'Admin token required.' })
+      return
+    }
+
+    try {
+      const records = await readFeedbackRecords(options.feedbackLogPath ?? defaultFeedbackLogPath)
+      const runs = groupFeedbackByRun(records)
+      const counts = runs.reduce((state, run) => {
+        state[run.classification.type] = (state[run.classification.type] ?? 0) + 1
+        return state
+      }, {})
+      response.json({
+        ok: true,
+        recordCount: records.length,
+        runCount: runs.length,
+        counts,
+        runs: runs.slice(-50).reverse(),
+      })
+    } catch {
+      response.status(500).json({ error: 'Could not read feedback review data.' })
     }
   })
 
@@ -2586,9 +2887,18 @@ export function createApp(options = {}) {
           throw lastVisionError ?? new Error('No vision model returned an analysis.')
         }
       }
-      const photoEvidenceUrls = photoEvidence.flatMap((photo) =>
+      const embeddingComparison = await compareExternalPhotoEmbeddings({
+        uploadedBuffer: request.file.buffer,
+        photoEvidence,
+        enabled: imageEmbeddingProvider === 'local-signature',
+      })
+      photoEvidence = embeddingComparison.photos
+      const photoEvidenceUrls = [
+        ...photoEvidence.flatMap((photo) =>
         [photo.pageUrl, photo.imageUrl, photo.thumbnailUrl].filter(Boolean),
-      )
+        ),
+        ...embeddingComparison.trustedUrls,
+      ]
       const modelCandidates = Array.isArray(result.candidates) ? result.candidates : []
       const rawCandidates = modelCandidates.length
         ? correctCandidatesFromVisibleText(modelCandidates, result.imageEvidence)
@@ -2629,6 +2939,7 @@ export function createApp(options = {}) {
           source: photo.source,
           pageUrl: photo.pageUrl,
           thumbnailUrl: photo.thumbnailUrl,
+          visualSimilarityScore: photo.visualSimilarityScore,
           query: photo.query,
           placeTitle: photo.placeTitle,
           placeAddress: photo.placeAddress,

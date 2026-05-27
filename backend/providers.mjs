@@ -47,18 +47,29 @@ export function createProviderConfig({
     ? createVisionClient({ env, visionProvider })
     : null
   const exaClient = env.EXA_API_KEY ? new Exa(env.EXA_API_KEY) : null
+  const cacheStore = new Map()
 
   const photoSearch = createPhotoSearchProvider({
+    googlePlacesApiKey: env.GOOGLE_PLACES_API_KEY,
     hasDataApiKey: env.HASDATA_API_KEY,
     serpApiKey: env.SERPAPI_API_KEY,
     searchFns,
+    cacheStore,
+    cacheTtlMs: Number(env.SF_FOOD_SEARCH_CACHE_TTL_MS || 1000 * 60 * 30),
   })
   const webSearch = createWebSearchProvider({
     ceramicApiKey: env.CERAMIC_API_KEY,
     exaClient,
     searchFns,
+    cacheStore,
+    cacheTtlMs: Number(env.SF_FOOD_SEARCH_CACHE_TTL_MS || 1000 * 60 * 30),
   })
-  const articleSearch = createArticleSearchProvider({ exaClient, searchFns })
+  const articleSearch = createArticleSearchProvider({
+    exaClient,
+    searchFns,
+    cacheStore,
+    cacheTtlMs: Number(env.SF_FOOD_SEARCH_CACHE_TTL_MS || 1000 * 60 * 30),
+  })
 
   return {
     visionProvider,
@@ -72,47 +83,90 @@ export function createProviderConfig({
   }
 }
 
-function createPhotoSearchProvider({ hasDataApiKey, serpApiKey, searchFns }) {
-  if (hasDataApiKey && searchFns.searchHasDataPhotos) {
+function cachedSearch(cacheStore, provider, cacheTtlMs, search) {
+  return async (input) => {
+    const cacheKey = `${provider}:${JSON.stringify(input)}`
+    const cached = cacheStore.get(cacheKey)
+    if (cached && cached.expiresAt > Date.now()) return cached.value
+    const value = await search(input)
+    if (cacheTtlMs > 0) {
+      cacheStore.set(cacheKey, { value, expiresAt: Date.now() + cacheTtlMs })
+    }
+    return value
+  }
+}
+
+function createPhotoSearchProvider({
+  googlePlacesApiKey,
+  hasDataApiKey,
+  serpApiKey,
+  searchFns,
+  cacheStore,
+  cacheTtlMs,
+}) {
+  if (googlePlacesApiKey && searchFns.searchGooglePlacesPhotos) {
+    const provider = 'google-places-new-photos'
     return {
-      provider: 'hasdata-google-maps-photos',
-      search: (queries) => searchFns.searchHasDataPhotos(queries, hasDataApiKey),
+      provider,
+      search: (queries) => searchFns.searchGooglePlacesPhotos(queries, googlePlacesApiKey),
+    }
+  }
+
+  if (hasDataApiKey && searchFns.searchHasDataPhotos) {
+    const provider = 'hasdata-google-maps-photos'
+    return {
+      provider,
+      search: cachedSearch(cacheStore, provider, cacheTtlMs, (queries) =>
+        searchFns.searchHasDataPhotos(queries, hasDataApiKey),
+      ),
     }
   }
 
   if (serpApiKey && searchFns.searchSerpApiPhotos) {
+    const provider = 'serpapi-google-maps-photos'
     return {
-      provider: 'serpapi-google-maps-photos',
-      search: (queries) => searchFns.searchSerpApiPhotos(queries, serpApiKey),
+      provider,
+      search: cachedSearch(cacheStore, provider, cacheTtlMs, (queries) =>
+        searchFns.searchSerpApiPhotos(queries, serpApiKey),
+      ),
     }
   }
 
   return null
 }
 
-function createWebSearchProvider({ ceramicApiKey, exaClient, searchFns }) {
+function createWebSearchProvider({ ceramicApiKey, exaClient, searchFns, cacheStore, cacheTtlMs }) {
   if (ceramicApiKey && searchFns.searchCeramicWeb) {
+    const provider = 'ceramic-web-search'
     return {
-      provider: 'ceramic-web-search',
-      search: (queries) => searchFns.searchCeramicWeb(queries, ceramicApiKey),
+      provider,
+      search: cachedSearch(cacheStore, provider, cacheTtlMs, (queries) =>
+        searchFns.searchCeramicWeb(queries, ceramicApiKey),
+      ),
     }
   }
 
   if (exaClient && searchFns.searchExaWeb) {
+    const provider = 'exa-deep-highlights'
     return {
-      provider: 'exa-deep-highlights',
-      search: (queries) => searchFns.searchExaWeb(queries, exaClient),
+      provider,
+      search: cachedSearch(cacheStore, provider, cacheTtlMs, (queries) =>
+        searchFns.searchExaWeb(queries, exaClient),
+      ),
     }
   }
 
   return null
 }
 
-function createArticleSearchProvider({ exaClient, searchFns }) {
+function createArticleSearchProvider({ exaClient, searchFns, cacheStore, cacheTtlMs }) {
   if (!exaClient || !searchFns.discoverArticleCandidates) return null
 
+  const provider = 'exa-article-discovery'
   return {
-    provider: 'exa-article-discovery',
-    search: (searchPlan) => searchFns.discoverArticleCandidates(searchPlan, exaClient),
+    provider,
+    search: cachedSearch(cacheStore, provider, cacheTtlMs, (searchPlan) =>
+      searchFns.discoverArticleCandidates(searchPlan, exaClient),
+    ),
   }
 }

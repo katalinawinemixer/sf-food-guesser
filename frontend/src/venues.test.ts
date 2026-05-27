@@ -40,4 +40,13 @@ describe('verified seed venues', () => {
   it('does not include excluded broad-chain guesses as seed venues', () => {
     expect(venues.some((venue) => /blue bottle/i.test(venue.name))).toBe(false)
   })
+
+  it('keeps each seed venue source-backed with enough image-search clues', () => {
+    for (const venue of venues) {
+      expect(venue.sourceUrl, venue.id).toMatch(/^https:\/\//)
+      expect(venue.mapsUrl, venue.id).toMatch(/^https:\/\/www\.google\.com\/maps/)
+      expect(venue.signature.length, venue.id).toBeGreaterThanOrEqual(2)
+      expect(venue.imageEvidenceHints.length, venue.id).toBeGreaterThanOrEqual(4)
+    }
+  })
 })

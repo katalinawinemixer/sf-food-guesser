@@ -2,7 +2,12 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { onRequestGet as healthGet } from '../functions/api/health.js'
 import { onRequestPost as analyzePhotoPost } from '../functions/api/analyze-photo.js'
 import { onRequestPost as feedbackPost } from '../functions/api/feedback.js'
-import { buildCloudflareQueryLanes, normalizeAnalysis } from '../functions/api/_shared.js'
+import { onRequestGet as adminFeedbackReviewGet } from '../functions/api/admin/feedback-review.js'
+import {
+  buildCloudflareQueryLanes,
+  normalizeAnalysis,
+  searchGooglePlacesPhotoEvidence,
+} from '../functions/api/_shared.js'
 
 const pngPixel = Buffer.from(
   'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=',
@@ -583,6 +588,58 @@ describe('Cloudflare Pages Functions API', () => {
         },
       ],
     })
+
+    fetchMock.mockRestore()
+  })
+
+  it('uses official Google Places photos without persisting Maps data in the search cache', async () => {
+    const get = vi.fn(async () => null)
+    const put = vi.fn(async () => undefined)
+    const fetchMock = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            places: [
+              {
+                id: 'places/green-tile-cafe',
+                displayName: { text: 'Green Tile Cafe' },
+                formattedAddress: '123 Valencia St, San Francisco, CA',
+                photos: [{ name: 'places/green-tile-cafe/photos/photo-1' }],
+              },
+            ],
+          }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } },
+        ),
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            photoUri: 'https://lh3.googleusercontent.com/places-photo=w900',
+          }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } },
+        ),
+      )
+
+    const photos = await searchGooglePlacesPhotoEvidence(
+      { searchQueries: ['green tile matcha counter'] },
+      {
+        GOOGLE_PLACES_API_KEY: 'google-places-key',
+        SF_FOOD_SEARCH_CACHE_KV: { get, put },
+      },
+      fetch,
+    )
+
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+    expect(String(fetchMock.mock.calls[0][0])).toBe('https://places.googleapis.com/v1/places:searchText')
+    expect(String(fetchMock.mock.calls[1][0])).toContain('/places/green-tile-cafe/photos/photo-1/media')
+    expect(photos[0]).toMatchObject({
+      title: 'Green Tile Cafe Google Places photo',
+      source: 'Google Places photos',
+      imageUrl: 'https://lh3.googleusercontent.com/places-photo=w900',
+    })
+    expect(get).not.toHaveBeenCalled()
+    expect(put).not.toHaveBeenCalled()
 
     fetchMock.mockRestore()
   })
@@ -1198,5 +1255,62 @@ describe('Cloudflare Pages Functions API', () => {
       '4',
       { expirationTtl: 30 * 24 * 60 * 60 },
     )
+  })
+
+  it('serves Cloudflare feedback review only with the admin token', async () => {
+    const list = vi.fn(async () => ({
+      keys: [{ name: 'feedback:run-admin:1' }],
+      list_complete: true,
+    }))
+    const get = vi.fn(async () =>
+      JSON.stringify({
+        createdAt: '2026-05-27T10:00:00.000Z',
+        runId: 'run-admin',
+        vote: 'correct',
+        rank: 1,
+        candidate: { name: 'Souvla', confidence: 91 },
+      }),
+    )
+
+    const blocked = await adminFeedbackReviewGet({
+      request: new Request('https://sf-food-guesser.pages.dev/api/admin/feedback-review'),
+      env: {
+        SF_FOOD_ADMIN_TOKEN: 'admin-token',
+        SF_FOOD_FEEDBACK_KV: { list, get },
+      },
+    })
+    expect(blocked.status).toBe(401)
+
+    const response = await adminFeedbackReviewGet({
+      request: new Request('https://sf-food-guesser.pages.dev/api/admin/feedback-review', {
+        headers: { 'x-admin-token': 'admin-token' },
+      }),
+      env: {
+        SF_FOOD_ADMIN_TOKEN: 'admin-token',
+        SF_FOOD_FEEDBACK_KV: { list, get },
+      },
+    })
+    const body = await json(response)
+
+    expect(response.status).toBe(200)
+    expect(body).toMatchObject({
+      ok: true,
+      recordCount: 1,
+      runCount: 1,
+      counts: {
+        confirmed_top_match: 1,
+      },
+      runs: [
+        expect.objectContaining({
+          runId: 'run-admin',
+          lastCandidate: 'Souvla',
+          classification: expect.objectContaining({
+            type: 'confirmed_top_match',
+          }),
+        }),
+      ],
+    })
+    expect(list).toHaveBeenCalledWith({ prefix: 'feedback:', cursor: undefined, limit: 100 })
+    expect(get).toHaveBeenCalledWith('feedback:run-admin:1')
   })
 })

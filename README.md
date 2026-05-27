@@ -119,3 +119,13 @@ npm run benchmark
 
 The runner writes JSON reports to `data/benchmark-runs/` with whether the
 expected venue was rank 1, present lower-ranked, missing, skipped, or uncertain.
+
+The source-backed seed venue database can be audited with:
+
+```bash
+npm run review:venues
+```
+
+That writes `data/venue-database-report.json`, including source domains,
+coverage counts for visual/menu/non-inference clues, and records that need
+more source-backed evidence.

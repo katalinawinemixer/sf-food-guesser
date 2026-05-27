@@ -9,6 +9,7 @@ vi.mock('exifr', () => ({
 describe('SF Food Guesser photo flow', () => {
   beforeEach(() => {
     vi.restoreAllMocks()
+    window.history.pushState({}, '', '/')
     window.localStorage.clear()
   })
 
@@ -749,5 +750,58 @@ describe('SF Food Guesser photo flow', () => {
     })
 
     expect(screen.getByRole('button', { name: 'Identify restaurant' })).toBeDisabled()
+  })
+
+  it('shows the admin feedback review behind a token without rendering upload UI', async () => {
+    window.history.pushState({}, '', '/?admin=1')
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          ok: true,
+          recordCount: 2,
+          runCount: 1,
+          counts: {
+            all_wrong_no_suggestion: 1,
+          },
+          runs: [
+            {
+              runId: 'run-admin',
+              recordCount: 2,
+              lastVote: 'incorrect',
+              lastCandidate: 'Wrong Cafe',
+              classification: {
+                type: 'all_wrong_no_suggestion',
+                summary: 'All visible candidates were marked incorrect, but no correction was submitted.',
+              },
+            },
+          ],
+        }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } },
+      ),
+    )
+
+    render(<App />)
+
+    expect(screen.getByRole('heading', { name: 'Feedback Review' })).toBeVisible()
+    expect(screen.queryByText('Drop a food photo here')).not.toBeInTheDocument()
+
+    fireEvent.change(screen.getByLabelText('Admin token'), {
+      target: { value: 'admin-token' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Load review' }))
+
+    await waitFor(() => {
+      expect(screen.getByText('2 records')).toBeVisible()
+    })
+    expect(screen.getByText('1 runs')).toBeVisible()
+    expect(screen.getByText('all_wrong_no_suggestion: 1')).toBeVisible()
+    expect(screen.getByRole('heading', { name: 'Wrong Cafe', level: 3 })).toBeVisible()
+    expect(screen.getByText(/All visible candidates were marked incorrect/)).toBeVisible()
+    expect(fetchMock).toHaveBeenCalledWith('/api/admin/feedback-review', {
+      headers: {
+        'x-admin-token': 'admin-token',
+      },
+      credentials: 'include',
+    })
   })
 })

@@ -7,12 +7,15 @@ import { describe, expect, it, vi } from 'vitest'
 import {
   buildEvidenceQueryLanes,
   buildUploadedImageViews,
+  cosineSimilarity,
   createApp as createServerApp,
+  createLocalImageEmbedding,
   dedupeCandidatesBeforeRanking,
   discoverArticleCandidates,
   rerankCandidates,
   searchCeramicWeb,
   searchExaWeb,
+  searchGooglePlacesPhotos,
   searchHasDataPhotos,
   searchSerpApiPhotos,
 } from './server.mjs'
@@ -38,6 +41,7 @@ describe('SF Food Guesser API', () => {
       discoverArticleCandidates: vi.fn(async () => []),
       searchCeramicWeb: vi.fn(async () => []),
       searchExaWeb: vi.fn(async () => []),
+      searchGooglePlacesPhotos: vi.fn(async () => []),
       searchHasDataPhotos: vi.fn(async () => []),
       searchSerpApiPhotos: vi.fn(async () => []),
     }
@@ -46,6 +50,7 @@ describe('SF Food Guesser API', () => {
         OPENROUTER_API_KEY: 'openrouter-key',
         OPENROUTER_VISION_MODEL: 'qwen/qwen3-vl-32b-instruct',
         OPENROUTER_FALLBACK_MODELS: ' google/gemma-3-4b-it:free, openai/gpt-4o-mini ',
+        GOOGLE_PLACES_API_KEY: 'google-places-key',
         HASDATA_API_KEY: 'hasdata-key',
         SERPAPI_API_KEY: 'serpapi-key',
         CERAMIC_API_KEY: 'ceramic-key',
@@ -69,11 +74,12 @@ describe('SF Food Guesser API', () => {
       'openai/gpt-4o-mini',
     ])
     expect(calls).toEqual([
-      'hasdata-google-maps-photos',
+      'google-places-new-photos',
       'ceramic-web-search',
       'exa-article-discovery',
     ])
-    expect(searchFns.searchHasDataPhotos).toHaveBeenCalledWith(['photo query'], 'hasdata-key')
+    expect(searchFns.searchGooglePlacesPhotos).toHaveBeenCalledWith(['photo query'], 'google-places-key')
+    expect(searchFns.searchHasDataPhotos).not.toHaveBeenCalled()
     expect(searchFns.searchSerpApiPhotos).not.toHaveBeenCalled()
     expect(searchFns.searchCeramicWeb).toHaveBeenCalledWith(['web query'], 'ceramic-key')
     expect(searchFns.searchExaWeb).not.toHaveBeenCalled()
@@ -105,6 +111,27 @@ describe('SF Food Guesser API', () => {
       ['green tile cafe'],
       expect.objectContaining({ search: expect.any(Function) }),
     )
+  })
+
+  it('caches provider search results by query to reduce repeated cost', async () => {
+    const searchFns = {
+      discoverArticleCandidates: vi.fn(async () => []),
+      searchExaWeb: vi.fn(async () => [{ url: 'https://example.com/one' }]),
+    }
+    const providers = createProviderConfig({
+      env: {
+        OPENAI_API_KEY: 'openai-key',
+        EXA_API_KEY: 'exa-key',
+        SF_FOOD_SEARCH_CACHE_TTL_MS: '60000',
+      },
+      searchFns,
+      createVisionClient: false,
+    })
+
+    await providers.webSearch.search(['green tile cafe'])
+    await providers.webSearch.search(['green tile cafe'])
+
+    expect(searchFns.searchExaWeb).toHaveBeenCalledTimes(1)
   })
 
   it('parses fallback model ids without keeping blank entries', () => {
@@ -368,6 +395,55 @@ describe('SF Food Guesser API', () => {
       expect(response.body.error).toMatch(/already submitted/)
       const lines = (await readFile(feedbackLogPath, 'utf8')).trim().split('\n')
       expect(lines).toHaveLength(1)
+    } finally {
+      await rm(tempDir, { recursive: true, force: true })
+    }
+  })
+
+  it('serves local feedback review only with the admin token', async () => {
+    const tempDir = await mkdtemp(join(tmpdir(), 'sf-food-admin-review-'))
+    const feedbackLogPath = join(tempDir, 'feedback.jsonl')
+    const app = createApp({
+      openAIClient: null,
+      photoSearch: null,
+      feedbackLogPath,
+      adminToken: 'admin-token',
+    })
+
+    try {
+      await request(app)
+        .post('/api/feedback')
+        .send({
+          runId: 'run-review',
+          vote: 'incorrect',
+          rank: 1,
+          candidate: { name: 'Wrong Cafe', confidence: 88 },
+          lineup: [{ rank: 1, candidate: { name: 'Wrong Cafe', confidence: 88 } }],
+        })
+        .expect(201)
+
+      await request(app).get('/api/admin/feedback-review').expect(401)
+      const response = await request(app)
+        .get('/api/admin/feedback-review')
+        .set('x-admin-token', 'admin-token')
+        .expect(200)
+
+      expect(response.body).toMatchObject({
+        ok: true,
+        recordCount: 1,
+        runCount: 1,
+        counts: {
+          all_wrong_no_suggestion: 1,
+        },
+        runs: [
+          expect.objectContaining({
+            runId: 'run-review',
+            classification: expect.objectContaining({
+              type: 'all_wrong_no_suggestion',
+            }),
+          }),
+        ],
+      })
     } finally {
       await rm(tempDir, { recursive: true, force: true })
     }
@@ -1325,6 +1401,60 @@ describe('SF Food Guesser API', () => {
       title: 'Green Tile Cafe customer photo',
       source: 'Google Maps reviews/photos',
       imageUrl: 'https://lh5.googleusercontent.com/p/interior=w1200-h900-k-no',
+      placeTitle: 'Green Tile Cafe',
+      placeAddress: '123 Valencia St, San Francisco, CA',
+    })
+
+    fetchMock.mockRestore()
+  })
+
+  it('uses official Google Places text search before fetching Place photos', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch')
+    fetchMock
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            places: [
+              {
+                id: 'places/green-tile-cafe',
+                displayName: { text: 'Green Tile Cafe' },
+                formattedAddress: '123 Valencia St, San Francisco, CA',
+                location: { latitude: 37.76, longitude: -122.42 },
+                photos: [{ name: 'places/green-tile-cafe/photos/photo-1' }],
+              },
+            ],
+          }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } },
+        ),
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            photoUri: 'https://lh3.googleusercontent.com/places-photo=w900',
+          }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } },
+        ),
+      )
+
+    const photos = await searchGooglePlacesPhotos(['green tile matcha counter'], 'google-key')
+    const textSearchUrl = String(fetchMock.mock.calls[0][0])
+    const textSearchInit = fetchMock.mock.calls[0][1]
+    const textSearchPayload = JSON.parse(String(textSearchInit.body))
+    const photoUrl = new URL(String(fetchMock.mock.calls[1][0]))
+
+    expect(textSearchUrl).toBe('https://places.googleapis.com/v1/places:searchText')
+    expect(textSearchInit.headers).toMatchObject({
+      'X-Goog-Api-Key': 'google-key',
+      'X-Goog-FieldMask':
+        'places.id,places.displayName,places.formattedAddress,places.location,places.photos',
+    })
+    expect(textSearchPayload.textQuery).toContain('green tile matcha counter')
+    expect(photoUrl.pathname).toBe('/v1/places/green-tile-cafe/photos/photo-1/media')
+    expect(photoUrl.searchParams.get('skipHttpRedirect')).toBe('true')
+    expect(photos[0]).toMatchObject({
+      title: 'Green Tile Cafe Google Places photo',
+      source: 'Google Places photos',
+      imageUrl: 'https://lh3.googleusercontent.com/places-photo=w900',
       placeTitle: 'Green Tile Cafe',
       placeAddress: '123 Valencia St, San Francisco, CA',
     })
@@ -2409,6 +2539,40 @@ describe('SF Food Guesser API', () => {
     expect(views[0].label).toContain('high-contrast')
     expect(metadata.width).toBe(1260)
     expect(metadata.height).toBe(840)
+  })
+
+  it('creates local image embeddings that separate visually different photos', async () => {
+    const redImage = await sharp({
+      create: {
+        width: 80,
+        height: 80,
+        channels: 3,
+        background: '#ff0000',
+      },
+    }).png().toBuffer()
+    const redImageCopy = await sharp({
+      create: {
+        width: 80,
+        height: 80,
+        channels: 3,
+        background: '#f00000',
+      },
+    }).png().toBuffer()
+    const blueImage = await sharp({
+      create: {
+        width: 80,
+        height: 80,
+        channels: 3,
+        background: '#0000ff',
+      },
+    }).png().toBuffer()
+
+    const redEmbedding = await createLocalImageEmbedding(redImage)
+    const similarRedEmbedding = await createLocalImageEmbedding(redImageCopy)
+    const blueEmbedding = await createLocalImageEmbedding(blueImage)
+
+    expect(cosineSimilarity(redEmbedding, similarRedEmbedding)).toBeGreaterThan(0.98)
+    expect(cosineSimilarity(redEmbedding, blueEmbedding)).toBeLessThan(0.2)
   })
 
   it('builds separate query lanes for OCR text, interiors, dish clues, and recent openings', () => {
