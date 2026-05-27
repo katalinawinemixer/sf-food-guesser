@@ -1,5 +1,4 @@
 import { type DragEvent, useEffect, useMemo, useState } from 'react'
-import { CircleMarker, MapContainer, Popup, TileLayer } from 'react-leaflet'
 import { gps } from 'exifr'
 import {
   ArrowUpRight,
@@ -15,7 +14,6 @@ import {
   Upload,
   X,
 } from 'lucide-react'
-import 'leaflet/dist/leaflet.css'
 import './App.css'
 import { categoryOptions, venues, type Venue, type VenueCategory } from './venues'
 
@@ -1053,71 +1051,6 @@ function App() {
             </div>
           ) : null}
 
-          <div className="map-panel" aria-label="Venue map">
-            <MapContainer
-              center={[37.7749, -122.445]}
-              zoom={12}
-              minZoom={11}
-              maxZoom={16}
-              scrollWheelZoom={false}
-              className="sf-map"
-            >
-              <TileLayer
-                attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>'
-                url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
-              />
-              {matches.map((match) => {
-                if (!hasVerifiedCoordinates(match.venue)) return null
-
-                return (
-                  <CircleMarker
-                    key={match.venue.id}
-                    center={[match.venue.lat, match.venue.lng]}
-                    radius={match.venue.id === activeMatch?.venue.id ? 10 : 7}
-                    pathOptions={{
-                      color: match.venue.id === activeMatch?.venue.id ? '#0f172a' : '#ffffff',
-                      fillColor:
-                        match.confidence >= 75
-                          ? '#0f9f78'
-                          : match.confidence >= 45
-                            ? '#ec8f2d'
-                            : '#d84f4f',
-                      fillOpacity: 0.9,
-                      weight: 2,
-                    }}
-                    eventHandlers={{
-                      click: () => setActiveVenueId(match.venue.id),
-                    }}
-                  >
-                    <Popup>
-                      <strong>{match.venue.name}</strong>
-                      <br />
-                      {match.venue.address}
-                    </Popup>
-                  </CircleMarker>
-                )
-              })}
-              {photo.coords ? (
-                <CircleMarker
-                  center={[photo.coords.latitude, photo.coords.longitude]}
-                  radius={6}
-                  pathOptions={{
-                    color: '#0f172a',
-                    fillColor: '#ffffff',
-                    fillOpacity: 1,
-                    weight: 3,
-                  }}
-                >
-                  <Popup>
-                    <strong>Uploaded photo GPS</strong>
-                    <br />
-                    {photo.coords.latitude.toFixed(5)}, {photo.coords.longitude.toFixed(5)}
-                  </Popup>
-                </CircleMarker>
-              ) : null}
-            </MapContainer>
-          </div>
-
           <div className="results-head">
             <div>
               <span className="eyebrow">Guesses to confirm</span>
@@ -1295,8 +1228,8 @@ function App() {
               <Camera size={26} />
               <h3>Results will appear here</h3>
               <p>
-                Once a photo is analyzed, this area shows ranked venue matches, evidence, source
-                links, and the map view.
+                Once a photo is analyzed, this area shows ranked venue matches, evidence, and
+                source links.
               </p>
             </section>
           )}
