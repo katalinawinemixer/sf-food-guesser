@@ -130,10 +130,30 @@ logged to Cloudflare logs with `persisted: false`.
 ## Anonymous Upload Limit
 
 Anonymous users get one successful photo analysis before the API returns
-`402 signup_required`. The Cloudflare Pages Function sets the
-`sf_food_free_photo_used` cookie after a successful analysis and checks that
-cookie before parsing later uploads or calling model/search providers. This is
-a lightweight public-abuse guard until real account authentication is added.
+`402 upload_limit_reached`. The Cloudflare Pages Function checks the
+`sf_food_free_photo_used` cookie, an atomic D1 usage record in
+`SF_FOOD_USAGE_DB`, and a hashed anonymous usage record in `SF_FOOD_USAGE_KV`
+before parsing later uploads or calling model/search providers. It also places a
+short in-flight hold while a first upload is being validated, then reserves the
+free attempt after upload validation and before any provider calls.
+
+The D1 table uses `usage_key` as a primary key, so concurrent first-upload
+attempts across Cloudflare isolates collapse to a single winner before provider
+calls. `REQUIRE_ATOMIC_USAGE_LIMIT=true` makes production fail closed if the D1
+binding is missing.
+
+Cloudflare Pages Functions reject browser requests with unknown `Origin` values.
+Add any new production frontend origins to `SF_FOOD_GUESSER_ALLOWED_ORIGINS`.
+
+Apply D1 migrations after creating or changing the database:
+
+```bash
+npx wrangler d1 migrations apply spotted-in-sf-usage --remote
+```
+
+This is still a public-abuse guard, not real identity. Users who change network
+identity or browser identity can be harder to connect until CAPTCHA/Turnstile,
+stronger edge rate limits, or a future auth system is added.
 
 Provider selection for local development is centralized in
 `backend/providers.mjs`. The backend chooses the vision provider, fallback

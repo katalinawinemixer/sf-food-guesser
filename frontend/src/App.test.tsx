@@ -169,6 +169,7 @@ describe('SF Food Guesser photo flow', () => {
 
     const photoRequest = fetchMock.mock.calls[1]?.[1] as RequestInit | undefined
     expect(photoRequest?.body).toBeInstanceOf(FormData)
+    expect(photoRequest?.credentials).toBe('include')
     const photoForm = photoRequest?.body as FormData
     expect(photoForm.has('photo')).toBe(true)
     expect(photoForm.has('venues')).toBe(true)
@@ -222,7 +223,7 @@ describe('SF Food Guesser photo flow', () => {
     })
   })
 
-  it('prompts for signup instead of allowing a second free photo analysis', async () => {
+  it('shows a public demo limit instead of allowing a second free photo analysis', async () => {
     const fetchMock = vi
       .spyOn(globalThis, 'fetch')
       .mockResolvedValueOnce(
@@ -262,12 +263,14 @@ describe('SF Food Guesser photo flow', () => {
     await waitFor(() => {
       expect(screen.getByRole('heading', { name: 'Kissaten HiFi', level: 3 })).toBeVisible()
     })
-    expect(screen.getByText('One free photo included')).toBeVisible()
+    expect(screen.getByText('Public demo limit reached')).toBeVisible()
     expect(window.localStorage.getItem('sf-food-free-upload-used')).toBe('1')
 
-    fireEvent.click(screen.getByRole('button', { name: 'Sign up to keep guessing' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Photo limit reached' }))
 
-    expect(await screen.findByText('Create a free account to keep identifying photos.')).toBeVisible()
+    expect(
+      await screen.findByText('This public demo includes one photo analysis for now.'),
+    ).toBeVisible()
     expect(fetchMock).toHaveBeenCalledTimes(2)
   })
 

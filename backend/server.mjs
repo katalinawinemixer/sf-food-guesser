@@ -1,6 +1,6 @@
 import 'dotenv/config'
 import { appendFile, mkdir } from 'node:fs/promises'
-import { randomUUID } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import express from 'express'
@@ -52,7 +52,9 @@ const defaultFeedbackLogPath = resolve(process.cwd(), 'data', 'feedback.jsonl')
 const defaultRunLogPath = resolve(process.cwd(), 'data', 'runs.jsonl')
 const freeUploadCookieName = 'sf_food_free_photo_used'
 const freeUploadCookieMaxAge = 60 * 60 * 24 * 365
-const signupRequiredMessage = 'Create a free account to keep identifying photos.'
+const uploadLimitMessage = 'This public demo includes one photo analysis for now.'
+const anonymousUsageSalt = process.env.ANON_USAGE_SALT || 'sf-food-guesser-anonymous-v1'
+const anonymousUsageHoldTtlMs = 2 * 60 * 1000
 const maxExternalPhotoImagesForVision = 4
 const evidenceSearchTimeoutMs = 45_000
 const visionRequestTimeoutMs = 60_000
@@ -79,6 +81,32 @@ function isSupportedImageUpload(file) {
   return allowedImageMimeTypes.has(mimeType) || allowedImageExtensions.test(fileName)
 }
 
+function looksLikeSupportedImage(buffer) {
+  if (!buffer || buffer.length < 4) return false
+  const ascii = (start, end) => buffer.subarray(start, end).toString('ascii')
+
+  if (buffer[0] === 0xff && buffer[1] === 0xd8 && buffer[2] === 0xff) return true
+  if (
+    buffer[0] === 0x89 &&
+    buffer[1] === 0x50 &&
+    buffer[2] === 0x4e &&
+    buffer[3] === 0x47 &&
+    buffer[4] === 0x0d &&
+    buffer[5] === 0x0a &&
+    buffer[6] === 0x1a &&
+    buffer[7] === 0x0a
+  ) {
+    return true
+  }
+  if (ascii(0, 6) === 'GIF87a' || ascii(0, 6) === 'GIF89a') return true
+  if (ascii(0, 4) === 'RIFF' && ascii(8, 12) === 'WEBP') return true
+  if (ascii(4, 8) === 'ftyp') {
+    return ['avif', 'avis', 'heic', 'heix', 'hevc', 'hevx', 'mif1', 'msf1'].includes(ascii(8, 12))
+  }
+
+  return false
+}
+
 function isAllowedOrigin(origin, allowedOrigins) {
   if (!origin) return true
   const normalizedOrigin = origin.replace(/\/$/, '')
@@ -97,16 +125,81 @@ function createFreeUploadCookie({ secure = false } = {}) {
   return `${freeUploadCookieName}=1; Max-Age=${freeUploadCookieMaxAge}; Path=/; SameSite=Lax${secure ? '; Secure' : ''}`
 }
 
-function enforceFreeUploadLimit(request, response, next) {
-  if (!hasUsedFreeUpload(request)) {
-    next()
-    return
-  }
+function anonymousUsageKeys(request) {
+  const ip = String(request.ip || request.socket?.remoteAddress || '').toLowerCase()
+  const userAgent = String(request.get('user-agent') || '').trim().toLowerCase()
+  const acceptLanguage = String(request.get('accept-language') || '').trim().toLowerCase()
+  const components = []
 
-  response.status(402).json({
-    code: 'signup_required',
-    error: signupRequiredMessage,
-  })
+  if (ip) components.push(['ip', ip])
+  if (ip && userAgent) components.push(['ip-ua', `${ip}|${userAgent}`])
+  if (ip && userAgent && acceptLanguage) components.push(['ip-ua-lang', `${ip}|${userAgent}|${acceptLanguage}`])
+  if (!components.length && userAgent) components.push(['ua', userAgent])
+  if (!components.length) components.push(['fallback', 'unknown-client'])
+
+  return components.map(
+    ([label, value]) => `anonymous-free-upload:${label}:${createHash('sha256').update(`${anonymousUsageSalt}|${value}`).digest('hex')}`,
+  )
+}
+
+function hasAnonymousUsageRecord(request, anonymousUsageStore, anonymousUsageInFlightStore) {
+  const now = Date.now()
+  for (const key of anonymousUsageKeys(request)) {
+    const holdExpiresAt = anonymousUsageInFlightStore.get(key)
+    if (holdExpiresAt && holdExpiresAt > now) return true
+    if (holdExpiresAt) anonymousUsageInFlightStore.delete(key)
+
+    const expiresAt = anonymousUsageStore.get(key)
+    if (!expiresAt) continue
+    if (expiresAt > now) return true
+    anonymousUsageStore.delete(key)
+  }
+  return false
+}
+
+function reserveAnonymousUsage(request, anonymousUsageStore) {
+  const expiresAt = Date.now() + freeUploadCookieMaxAge * 1000
+  for (const key of anonymousUsageKeys(request)) anonymousUsageStore.set(key, expiresAt)
+}
+
+function holdAnonymousUsage(request, anonymousUsageInFlightStore) {
+  const expiresAt = Date.now() + anonymousUsageHoldTtlMs
+  const keys = anonymousUsageKeys(request)
+  for (const key of keys) anonymousUsageInFlightStore.set(key, expiresAt)
+  return () => {
+    for (const key of keys) anonymousUsageInFlightStore.delete(key)
+  }
+}
+
+function releaseAnonymousUsageHold(response) {
+  response.locals.releaseAnonymousUsageHold?.()
+  response.locals.releaseAnonymousUsageHold = null
+}
+
+function enforceFreeUploadLimit(anonymousUsageStore, anonymousUsageInFlightStore) {
+  return (request, response, next) => {
+    const hasCookie = hasUsedFreeUpload(request)
+    const hasServerRecord = hasAnonymousUsageRecord(
+      request,
+      anonymousUsageStore,
+      anonymousUsageInFlightStore,
+    )
+
+    if (!hasCookie && !hasServerRecord) {
+      response.locals.releaseAnonymousUsageHold = holdAnonymousUsage(
+        request,
+        anonymousUsageInFlightStore,
+      )
+      next()
+      return
+    }
+
+    response.status(402).json({
+      code: 'upload_limit_reached',
+      reason: hasCookie ? 'cookie' : 'server_usage_record',
+      error: uploadLimitMessage,
+    })
+  }
 }
 
 function applyCors(app, allowedOrigins) {
@@ -118,6 +211,7 @@ function applyCors(app, allowedOrigins) {
       response.setHeader('Access-Control-Allow-Origin', origin)
       response.setHeader('Vary', 'Origin')
       response.setHeader('Access-Control-Allow-Methods', 'GET,POST,OPTIONS')
+      response.setHeader('Access-Control-Allow-Credentials', 'true')
       response.setHeader(
         'Access-Control-Allow-Headers',
         requestedHeaders || 'Content-Type, Authorization',
@@ -1849,6 +1943,8 @@ export function createApp(options = {}) {
     hasArticleSearch || hasPhotoSearch || hasWebSearch
       ? options.articleSearch ?? null
       : defaultProviders.articleSearch
+  const anonymousUsageStore = options.anonymousUsageStore ?? new Map()
+  const anonymousUsageInFlightStore = options.anonymousUsageInFlightStore ?? new Map()
 
   const app = express()
   const allowedOrigins = parseAllowedOrigins(options.allowedOrigins ?? defaultAllowedOrigins.join(','))
@@ -1897,8 +1993,9 @@ export function createApp(options = {}) {
     }
   })
 
-  app.post('/api/analyze-photo', enforceFreeUploadLimit, upload.single('photo'), async (request, response) => {
+  app.post('/api/analyze-photo', enforceFreeUploadLimit(anonymousUsageStore, anonymousUsageInFlightStore), upload.single('photo'), async (request, response) => {
     if (!visionClient) {
+      releaseAnonymousUsageHold(response)
       response.status(503).json({
         error:
           'Photo analysis needs OPENROUTER_API_KEY or OPENAI_API_KEY in .env. Add one, then restart npm run dev.',
@@ -1907,7 +2004,17 @@ export function createApp(options = {}) {
     }
 
     if (!request.file) {
+      releaseAnonymousUsageHold(response)
       response.status(400).json({ error: 'No photo was uploaded.' })
+      return
+    }
+
+    if (!looksLikeSupportedImage(request.file.buffer)) {
+      releaseAnonymousUsageHold(response)
+      response.status(415).json({
+        error:
+          'Uploaded file did not look like a real image. Upload a JPG, PNG, WebP, AVIF, GIF, HEIC, or HEIF photo.',
+      })
       return
     }
 
@@ -1915,9 +2022,13 @@ export function createApp(options = {}) {
     try {
       venues = JSON.parse(String(request.body.venues ?? '[]'))
     } catch {
+      releaseAnonymousUsageHold(response)
       response.status(400).json({ error: 'Venue payload was not valid JSON.' })
       return
     }
+
+    reserveAnonymousUsage(request, anonymousUsageStore)
+    releaseAnonymousUsageHold(response)
 
     const compactVenues = venues.map((venue) => ({
       id: venue.id,

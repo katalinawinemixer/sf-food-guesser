@@ -23,7 +23,7 @@ const apiBaseUrl = import.meta.env.VITE_API_BASE_URL?.replace(/\/$/, '') ?? ''
 const maxUploadBytes = 12 * 1024 * 1024
 const freeUploadStorageKey = 'sf-food-free-upload-used'
 const freeUploadCookieName = 'sf_food_free_photo_used'
-const signupRequiredMessage = 'Create a free account to keep identifying photos.'
+const uploadLimitMessage = 'This public demo includes one photo analysis for now.'
 const allowedImageMimeTypes = new Set([
   'image/jpeg',
   'image/jpg',
@@ -89,7 +89,7 @@ async function readApiError(response: Response) {
   if (response.status === 429) {
     return 'The AI provider is rate limiting photo analysis. Wait a bit, then try the upload again.'
   }
-  if (response.status === 402) return signupRequiredMessage
+  if (response.status === 402) return uploadLimitMessage
 
   return 'Photo analysis failed.'
 }
@@ -396,6 +396,7 @@ async function analyzePhotoWithVision(file: File): Promise<VisionAnalysis> {
   const response = await fetch(apiUrl('/api/analyze-photo'), {
     method: 'POST',
     body: payload,
+    credentials: 'include',
   })
 
   if (!response.ok) {
@@ -517,7 +518,7 @@ function App() {
   const [apiHealth, setApiHealth] = useState<ApiHealth>({ status: 'checking' })
   const [feedbackByVenueId, setFeedbackByVenueId] = useState<Record<string, FeedbackState>>({})
   const [hasUsedFreePhoto, setHasUsedFreePhoto] = useState(browserHasUsedFreeUpload)
-  const [showSignupPrompt, setShowSignupPrompt] = useState(browserHasUsedFreeUpload)
+  const [showUploadLimitPrompt, setShowUploadLimitPrompt] = useState(browserHasUsedFreeUpload)
 
   const matches = useMemo(
     () =>
@@ -542,7 +543,7 @@ function App() {
 
     async function checkApiHealth() {
       try {
-        const response = await fetch(apiUrl('/api/health'))
+        const response = await fetch(apiUrl('/api/health'), { credentials: 'include' })
         const result = await response.json()
         if (shouldIgnore) return
 
@@ -634,12 +635,12 @@ function App() {
   async function submitPhoto() {
     if (!photoFile || !photo.previewUrl) return
     if (hasUsedFreePhoto) {
-      setShowSignupPrompt(true)
+      setShowUploadLimitPrompt(true)
       setPhoto({
         status: 'error',
         name: photoFile.name,
         previewUrl: photo.previewUrl,
-        message: signupRequiredMessage,
+        message: uploadLimitMessage,
       })
       return
     }
@@ -660,7 +661,7 @@ function App() {
       ])
       rememberFreeUploadUsed()
       setHasUsedFreePhoto(true)
-      setShowSignupPrompt(true)
+      setShowUploadLimitPrompt(true)
       const coords =
         location &&
         Number.isFinite(location.latitude) &&
@@ -699,10 +700,10 @@ function App() {
         error instanceof Error
           ? error.message
           : 'Could not analyze this image. Try again with a clearer image.'
-      if (/account|sign up/i.test(message)) {
+      if (/public demo|photo analysis|upload limit|upload_limit_reached/i.test(message)) {
         rememberFreeUploadUsed()
         setHasUsedFreePhoto(true)
-        setShowSignupPrompt(true)
+        setShowUploadLimitPrompt(true)
       }
       setPhoto({
         status: 'error',
@@ -728,6 +729,7 @@ function App() {
     const response = await fetch(apiUrl('/api/feedback'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
+      credentials: 'include',
       body: JSON.stringify({
         runId: photo.analysis?.runId,
         vote,
@@ -1020,20 +1022,17 @@ function App() {
                   Identifying...
                 </>
               ) : hasUsedFreePhoto ? (
-                'Sign up to keep guessing'
+                'Photo limit reached'
               ) : (
                 'Identify restaurant'
               )}
             </button>
-            {hasUsedFreePhoto || showSignupPrompt ? (
-              <div className="signup-gate" role="status">
+            {hasUsedFreePhoto || showUploadLimitPrompt ? (
+              <div className="upload-limit-gate" role="status">
                 <div>
-                  <strong>One free photo included</strong>
-                  <p>Sign up for an account to keep identifying gatekept SF spots.</p>
+                  <strong>Public demo limit reached</strong>
+                  <p>This demo allows one photo analysis for now so public API usage stays controlled.</p>
                 </div>
-                <button type="button" onClick={() => setShowSignupPrompt(true)}>
-                  Sign up
-                </button>
               </div>
             ) : null}
           </section>

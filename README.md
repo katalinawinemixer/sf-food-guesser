@@ -22,6 +22,7 @@ in your local `.env`, which is ignored by git.
 frontend/          React/Vite app, venue seed data, browser tests
 backend/           Local Express API, provider wiring, API tests
 functions/api/     Cloudflare Pages Functions for the production same-origin API
+migrations/        D1 schema for atomic anonymous upload limiting
 docs/              Product and deployment notes
 scripts/           Secret scan and production health checks
 evaluation/        Evaluation photos and accuracy results
@@ -34,9 +35,13 @@ convention for Pages Functions.
 ## Anonymous Upload Limit
 
 Anonymous visitors get one photo analysis before the app prompts them to sign
-up. The API sets a `sf_food_free_photo_used` cookie after the first successful
-analysis and blocks later anonymous analysis requests before model/search
-providers are called.
+up. The API places a short in-flight hold when a request starts, then reserves
+that free attempt after validating the upload but before model/search providers
+are called. In production, a D1 unique insert acts as the atomic cross-isolate
+gate, with KV as a secondary durable record. Local development keeps matching
+in-memory records. The API also sets a `sf_food_free_photo_used` cookie so the
+browser can show the limit message immediately. Later anonymous analysis
+requests are blocked before provider calls.
 
 For stronger interior/storefront matching, add optional provider keys locally.
 `HASDATA_API_KEY` is the cost-optimized Google Maps/photo provider: the backend
@@ -92,6 +97,8 @@ Cloudflare runtime secrets are set on the Pages project, not committed to the
 repo. The Pages Function uses OpenRouter for vision and Exa for parallel
 photo-derived evidence searches when `EXA_API_KEY` is configured. Production
 feedback records use the `SF_FOOD_FEEDBACK_KV` binding.
+Anonymous upload records use the `SF_FOOD_USAGE_DB` D1 binding plus the
+`SF_FOOD_USAGE_KV` binding.
 
 Target production domains are `https://spotted-in-sf.com` and
 `https://www.spotted-in-sf.com`; both should serve the same Cloudflare Pages

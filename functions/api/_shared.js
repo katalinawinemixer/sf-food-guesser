@@ -1,7 +1,17 @@
 const maxUploadBytes = 12 * 1024 * 1024
 const freeUploadCookieName = 'sf_food_free_photo_used'
 const freeUploadCookieMaxAge = 60 * 60 * 24 * 365
-const signupRequiredMessage = 'Create a free account to keep identifying photos.'
+const uploadLimitMessage = 'This public demo includes one photo analysis for now.'
+const anonymousUsagePrefix = 'anonymous-free-upload'
+const anonymousUsageHoldTtlMs = 2 * 60 * 1000
+const anonymousUsageHolds = new Map()
+const anonymousUsageFallbackRecords = new Map()
+const defaultCloudflareOrigins = [
+  'https://spotted-in-sf.pages.dev',
+  'https://spotted-in-sf.com',
+  'https://www.spotted-in-sf.com',
+  'https://sf-food-guesser.pages.dev',
+]
 const allowedImageMimeTypes = new Set([
   'image/jpeg',
   'image/jpg',
@@ -43,12 +53,13 @@ export function hasUsedFreeUpload(request) {
     .some((cookie) => cookie === `${freeUploadCookieName}=1`)
 }
 
-export function freeUploadLimitResponse(runId) {
+export function freeUploadLimitResponse(runId, reason = 'anonymous_limit') {
   return jsonResponse(
     {
       runId,
-      code: 'signup_required',
-      error: signupRequiredMessage,
+      code: 'upload_limit_reached',
+      reason,
+      error: uploadLimitMessage,
     },
     402,
   )
@@ -56,6 +67,215 @@ export function freeUploadLimitResponse(runId) {
 
 export function freeUploadCookie() {
   return `${freeUploadCookieName}=1; Max-Age=${freeUploadCookieMaxAge}; Path=/; SameSite=Lax; Secure`
+}
+
+export async function checkAnonymousUsageLimit(request, env, runId) {
+  if (hasUsedFreeUpload(request)) return freeUploadLimitResponse(runId, 'cookie')
+
+  const database = anonymousUsageDatabase(env)
+  if (requiresAtomicUsageLimit(env) && !database) {
+    return jsonResponse(
+      {
+        runId,
+        error: 'Anonymous upload limiting is not configured. Set SF_FOOD_USAGE_DB before enabling photo analysis.',
+      },
+      503,
+    )
+  }
+
+  const keys = await anonymousUsageKeys(request, env)
+  if (hasAnonymousUsageMapRecord(keys, anonymousUsageHolds)) {
+    return freeUploadLimitResponse(runId, 'in_flight')
+  }
+  if (hasAnonymousUsageMapRecord(keys, anonymousUsageFallbackRecords)) {
+    return freeUploadLimitResponse(runId, 'server_usage_record')
+  }
+
+  if (database) {
+    const existingRecord = await findD1UsageRecord(database, keys)
+    if (existingRecord) return freeUploadLimitResponse(runId, 'server_usage_record')
+  }
+
+  const store = anonymousUsageStore(env)
+  if (!store?.get) return null
+
+  for (const key of keys) {
+    if (await store.get(key)) return freeUploadLimitResponse(runId, 'server_usage_record')
+  }
+
+  return null
+}
+
+export async function holdAnonymousUsageSlot(request, env, runId) {
+  const keys = await anonymousUsageKeys(request, env)
+  if (hasAnonymousUsageMapRecord(keys, anonymousUsageHolds)) {
+    return { blockedResponse: freeUploadLimitResponse(runId, 'in_flight') }
+  }
+
+  const expiresAt = Date.now() + anonymousUsageHoldTtlMs
+  for (const key of keys) anonymousUsageHolds.set(key, expiresAt)
+
+  return {
+    release: () => {
+      for (const key of keys) anonymousUsageHolds.delete(key)
+    },
+  }
+}
+
+export async function reserveAnonymousUsage(request, env, runId) {
+  const keys = await anonymousUsageKeys(request, env)
+  const database = anonymousUsageDatabase(env)
+
+  if (database) {
+    const reserved = await reserveD1UsageRecord(database, keys)
+    if (!reserved) return freeUploadLimitResponse(runId, 'server_usage_record')
+    return null
+  }
+
+  const store = anonymousUsageStore(env)
+
+  if (!store?.put) {
+    const expiresAt = Date.now() + freeUploadCookieMaxAge * 1000
+    for (const key of keys) anonymousUsageFallbackRecords.set(key, expiresAt)
+    return
+  }
+
+  await Promise.all(
+    keys.map((key) =>
+      store.put(
+        key,
+        JSON.stringify({
+          createdAt: new Date().toISOString(),
+          reason: 'anonymous_free_upload_used',
+        }),
+        { expirationTtl: freeUploadCookieMaxAge },
+      ),
+    ),
+  )
+}
+
+function anonymousUsageStore(env) {
+  return env.SF_FOOD_USAGE_KV || env.SF_FOOD_FEEDBACK_KV || null
+}
+
+function anonymousUsageDatabase(env) {
+  return env.SF_FOOD_USAGE_DB || null
+}
+
+function requiresAtomicUsageLimit(env) {
+  return String(env.REQUIRE_ATOMIC_USAGE_LIMIT || '').toLowerCase() === 'true'
+}
+
+async function findD1UsageRecord(database, keys) {
+  const now = new Date().toISOString()
+  const placeholders = keys.map(() => '?').join(',')
+  const result = await database
+    .prepare(`SELECT usage_key FROM anonymous_usage WHERE usage_key IN (${placeholders}) AND expires_at > ? LIMIT 1`)
+    .bind(...keys, now)
+    .first()
+  return Boolean(result)
+}
+
+async function reserveD1UsageRecord(database, keys) {
+  const now = new Date()
+  const createdAt = now.toISOString()
+  const expiresAt = new Date(now.getTime() + freeUploadCookieMaxAge * 1000).toISOString()
+  const primaryKey = keys[0]
+  await database
+    .prepare('DELETE FROM anonymous_usage WHERE expires_at <= ?')
+    .bind(createdAt)
+    .run()
+  const primaryResult = await database
+    .prepare(
+      'INSERT OR IGNORE INTO anonymous_usage (usage_key, created_at, expires_at, reason) VALUES (?, ?, ?, ?)',
+    )
+    .bind(primaryKey, createdAt, expiresAt, 'anonymous_free_upload_used')
+    .run()
+
+  if (primaryResult?.meta?.changes !== 1) return false
+
+  await Promise.all(
+    keys.slice(1).map((key) =>
+      database
+        .prepare(
+          'INSERT OR IGNORE INTO anonymous_usage (usage_key, created_at, expires_at, reason) VALUES (?, ?, ?, ?)',
+        )
+        .bind(key, createdAt, expiresAt, 'anonymous_free_upload_used')
+        .run(),
+    ),
+  )
+
+  return true
+}
+
+function hasAnonymousUsageMapRecord(keys, store) {
+  const now = Date.now()
+  for (const key of keys) {
+    const expiresAt = store.get(key)
+    if (!expiresAt) continue
+    if (expiresAt > now) return true
+    store.delete(key)
+  }
+  return false
+}
+
+export function disallowedOriginResponse(request, env) {
+  const origin = normalizedHeader(request, 'origin')
+  if (!origin || isAllowedCloudflareOrigin(origin, request, env)) return null
+  return jsonResponse({ error: 'This API origin is not allowed.' }, 403)
+}
+
+function isAllowedCloudflareOrigin(origin, request, env) {
+  const allowedOrigins = [
+    ...defaultCloudflareOrigins,
+    ...String(env.SF_FOOD_GUESSER_ALLOWED_ORIGINS || '')
+      .split(',')
+      .map((entry) => entry.trim().replace(/\/$/, '').toLowerCase())
+      .filter(Boolean),
+  ]
+  const requestUrl = request?.url ? new URL(request.url).origin.toLowerCase() : ''
+  return allowedOrigins.includes('*') || allowedOrigins.includes(origin) || origin === requestUrl
+}
+
+async function anonymousUsageKeys(request, env) {
+  const ip = clientIp(request)
+  const userAgent = normalizedHeader(request, 'user-agent')
+  const acceptLanguage = normalizedHeader(request, 'accept-language')
+  const salt = env.ANON_USAGE_SALT || 'sf-food-guesser-anonymous-v1'
+  const components = []
+
+  if (ip) components.push(['ip', ip])
+  if (ip && userAgent) components.push(['ip-ua', `${ip}|${userAgent}`])
+  if (ip && userAgent && acceptLanguage) {
+    components.push(['ip-ua-lang', `${ip}|${userAgent}|${acceptLanguage}`])
+  }
+
+  if (!components.length && userAgent) components.push(['ua', userAgent])
+  if (!components.length) components.push(['fallback', 'unknown-client'])
+
+  return Promise.all(
+    components.map(async ([label, value]) => `${anonymousUsagePrefix}:${label}:${await sha256Hex(`${salt}|${value}`)}`),
+  )
+}
+
+function clientIp(request) {
+  const cfIp = normalizedHeader(request, 'cf-connecting-ip')
+  if (cfIp) return cfIp
+  const trueClientIp = normalizedHeader(request, 'true-client-ip')
+  if (trueClientIp) return trueClientIp
+  const forwarded = normalizedHeader(request, 'x-forwarded-for')
+  if (forwarded) return forwarded.split(',')[0].trim()
+  return ''
+}
+
+function normalizedHeader(request, name) {
+  return String(request?.headers?.get?.(name) ?? '').trim().toLowerCase()
+}
+
+async function sha256Hex(value) {
+  const bytes = new TextEncoder().encode(value)
+  const digest = await crypto.subtle.digest('SHA-256', bytes)
+  return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, '0')).join('')
 }
 
 export function methodNotAllowed() {
@@ -83,6 +303,12 @@ export function validateImageFile(file) {
   return null
 }
 
+export async function validateImageBytes(file) {
+  const bytes = new Uint8Array(await file.slice(0, 32).arrayBuffer())
+  if (looksLikeSupportedImage(bytes)) return null
+  return 'Uploaded file did not look like a real image. Upload a JPG, PNG, WebP, AVIF, GIF, HEIC, or HEIF photo.'
+}
+
 export async function fileToDataUrl(file) {
   const bytes = await file.arrayBuffer()
   const byteArray = new Uint8Array(bytes)
@@ -91,6 +317,23 @@ export async function fileToDataUrl(file) {
     binary += String.fromCharCode(...byteArray.subarray(index, index + 0x8000))
   }
   return `data:${file.type || 'application/octet-stream'};base64,${btoa(binary)}`
+}
+
+function looksLikeSupportedImage(bytes) {
+  if (bytes.length < 4) return false
+  const ascii = (start, end) => String.fromCharCode(...bytes.slice(start, end))
+  const startsWith = (signature) => signature.every((byte, index) => bytes[index] === byte)
+
+  if (startsWith([0xff, 0xd8, 0xff])) return true
+  if (startsWith([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])) return true
+  if (ascii(0, 6) === 'GIF87a' || ascii(0, 6) === 'GIF89a') return true
+  if (ascii(0, 4) === 'RIFF' && ascii(8, 12) === 'WEBP') return true
+  if (ascii(4, 8) === 'ftyp') {
+    const brand = ascii(8, 12)
+    return ['avif', 'avis', 'heic', 'heix', 'hevc', 'hevx', 'mif1', 'msf1'].includes(brand)
+  }
+
+  return false
 }
 
 export function parseFallbackModels(value = '') {
