@@ -595,10 +595,17 @@ function hasDistinctTopMatch(matches: MatchResult[]) {
   return matches[0].confidence - matches[1].confidence >= 5
 }
 
-function confidenceLabel(confidence: number) {
-  if (confidence >= 75) return 'Strong'
-  if (confidence >= 45) return 'Likely'
-  if (confidence > 0) return 'Possible'
+function hasIdentityEvidence(evidenceCategories: string[] = []) {
+  return evidenceCategories.some((category) =>
+    ['visible_text', 'gps_match', 'storefront_match'].includes(category),
+  )
+}
+
+function confidenceLabel(confidence: number, evidenceCategories: string[] = []) {
+  if (confidence >= 75 && hasIdentityEvidence(evidenceCategories)) return 'Strong'
+  if (confidence >= 60) return 'Likely'
+  if (confidence >= 30) return 'Possible'
+  if (confidence > 0) return 'Weak lead'
   return 'Ready'
 }
 
@@ -1340,11 +1347,11 @@ function App() {
           </div>
         ) : null}
 
-        {/* ── Top match hero card ─────────────────────── */}
+        {/* ── Best supported match hero card ──────────── */}
         {topMatch ? (
           <section className="top-answer" aria-live="polite">
             <div className="top-answer-body">
-              <span className="eyebrow">Top match</span>
+              <span className="eyebrow">Best supported match</span>
               <h2>{topMatch.venue.name}</h2>
               <p className="top-answer-location">{venueLocationLabel(topMatch.venue)}</p>
               {topMatch.venue.note ? (
@@ -1366,7 +1373,7 @@ function App() {
               </div>
             </div>
             <div className="top-score">
-              <span>{confidenceLabel(topMatch.confidence)}</span>
+              <span>{confidenceLabel(topMatch.confidence, topMatch.evidenceCategories)}</span>
               <strong>{topMatch.confidence || '--'}%</strong>
             </div>
           </section>
@@ -1442,7 +1449,7 @@ function App() {
                         <h3>{match.venue.name}</h3>
                       </div>
                       <div className="score">
-                        <span>{confidenceLabel(match.confidence)}</span>
+                        <span>{confidenceLabel(match.confidence, match.evidenceCategories)}</span>
                         <strong>{match.confidence || '--'}%</strong>
                       </div>
                     </div>

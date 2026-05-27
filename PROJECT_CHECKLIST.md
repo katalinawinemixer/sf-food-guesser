@@ -149,7 +149,7 @@ order keeps the app honest first, then adds more search power and scale.
 ### 11.3 More Honest Confidence And Result States
 
 - [x] Hide the top-match hero when top candidates are tied or nearly tied.
-- [ ] Rename or recalibrate labels so `Strong` requires identity-level evidence,
+- [x] Rename or recalibrate labels so `Strong` requires identity-level evidence,
   not just a high numeric score.
 - [ ] Add caps for source-only, seed-only, dish-only, and unverified-interior
   guesses across both local Express and Cloudflare Functions code paths.

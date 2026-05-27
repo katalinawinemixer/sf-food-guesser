@@ -552,6 +552,8 @@ describe('SF Food Guesser photo flow', () => {
 
     expect(await screen.findByText(/too close to call/i)).toBeVisible()
     expect(screen.queryByText('Top match')).not.toBeInTheDocument()
+    expect(screen.getAllByText('Likely')).toHaveLength(3)
+    expect(screen.queryByText('Strong')).not.toBeInTheDocument()
 
     fireEvent.click(screen.getByLabelText('Mark Wrong Cafe One incorrect'))
     fireEvent.click(screen.getByLabelText('Mark Wrong Cafe Two incorrect'))
@@ -706,6 +708,8 @@ describe('SF Food Guesser photo flow', () => {
     expect(screen.getAllByRole('link', { name: /Search Maps/i })[0]).toBeVisible()
     expect(screen.getByText('interior evidence')).toBeVisible()
     expect(screen.getByText('Web-discovered match')).toBeVisible()
+    expect(screen.getAllByText('Likely')[0]).toBeVisible()
+    expect(screen.queryByText('Strong')).not.toBeInTheDocument()
     expect(screen.getByText('From the uploaded photo')).toBeVisible()
     expect(screen.getByText('The uploaded photo shows a blue cup beside a pastry case.')).toBeVisible()
     expect(screen.getByText('External support')).toBeVisible()
