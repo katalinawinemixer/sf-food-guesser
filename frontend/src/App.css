@@ -313,31 +313,6 @@
   animation: spin 900ms linear infinite;
 }
 
-.upload-limit-gate {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  margin-top: 10px;
-  padding: 12px;
-  border: 1px solid #f3bfd0;
-  border-radius: 8px;
-  background: #fff3f7;
-  color: #6f1d3a;
-}
-
-.upload-limit-gate strong {
-  display: block;
-  margin-bottom: 3px;
-  font-size: 13px;
-}
-
-.upload-limit-gate p {
-  margin: 0;
-  color: #8d3c58;
-  font-size: 12px;
-  line-height: 1.35;
-}
-
 .vision-evidence {
   display: flex;
   flex-wrap: wrap;

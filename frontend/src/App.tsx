@@ -21,9 +21,6 @@ import { categoryOptions, venues, type Venue, type VenueCategory } from './venue
 
 const apiBaseUrl = import.meta.env.VITE_API_BASE_URL?.replace(/\/$/, '') ?? ''
 const maxUploadBytes = 12 * 1024 * 1024
-const freeUploadStorageKey = 'sf-food-free-upload-used'
-const freeUploadCookieName = 'sf_food_free_photo_used'
-const uploadLimitMessage = 'This public demo includes one photo analysis for now.'
 const allowedImageMimeTypes = new Set([
   'image/jpeg',
   'image/jpg',
@@ -38,22 +35,6 @@ const allowedImageExtensions = /\.(avif|gif|heic|heif|jpe?g|png|webp)$/i
 
 function apiUrl(path: string) {
   return `${apiBaseUrl}${path}`
-}
-
-function browserHasUsedFreeUpload() {
-  if (typeof window === 'undefined') return false
-  return (
-    window.localStorage.getItem(freeUploadStorageKey) === '1' ||
-    document.cookie
-      .split(';')
-      .map((cookie) => cookie.trim())
-      .includes(`${freeUploadCookieName}=1`)
-  )
-}
-
-function rememberFreeUploadUsed() {
-  if (typeof window === 'undefined') return
-  window.localStorage.setItem(freeUploadStorageKey, '1')
 }
 
 function formatMegabytes(bytes: number) {
@@ -89,8 +70,6 @@ async function readApiError(response: Response) {
   if (response.status === 429) {
     return 'The AI provider is rate limiting photo analysis. Wait a bit, then try the upload again.'
   }
-  if (response.status === 402) return uploadLimitMessage
-
   return 'Photo analysis failed.'
 }
 
@@ -517,8 +496,6 @@ function App() {
   const [isDraggingPhoto, setIsDraggingPhoto] = useState(false)
   const [apiHealth, setApiHealth] = useState<ApiHealth>({ status: 'checking' })
   const [feedbackByVenueId, setFeedbackByVenueId] = useState<Record<string, FeedbackState>>({})
-  const [hasUsedFreePhoto, setHasUsedFreePhoto] = useState(browserHasUsedFreeUpload)
-  const [showUploadLimitPrompt, setShowUploadLimitPrompt] = useState(browserHasUsedFreeUpload)
 
   const matches = useMemo(
     () =>
@@ -634,16 +611,6 @@ function App() {
 
   async function submitPhoto() {
     if (!photoFile || !photo.previewUrl) return
-    if (hasUsedFreePhoto) {
-      setShowUploadLimitPrompt(true)
-      setPhoto({
-        status: 'error',
-        name: photoFile.name,
-        previewUrl: photo.previewUrl,
-        message: uploadLimitMessage,
-      })
-      return
-    }
 
     setPhoto({
       status: 'reading',
@@ -659,9 +626,6 @@ function App() {
         gps(photoFile).catch(() => undefined),
         analyzePhotoWithVision(photoFile),
       ])
-      rememberFreeUploadUsed()
-      setHasUsedFreePhoto(true)
-      setShowUploadLimitPrompt(true)
       const coords =
         location &&
         Number.isFinite(location.latitude) &&
@@ -700,11 +664,6 @@ function App() {
         error instanceof Error
           ? error.message
           : 'Could not analyze this image. Try again with a clearer image.'
-      if (/public demo|photo analysis|upload limit|upload_limit_reached/i.test(message)) {
-        rememberFreeUploadUsed()
-        setHasUsedFreePhoto(true)
-        setShowUploadLimitPrompt(true)
-      }
       setPhoto({
         status: 'error',
         name: photoFile.name,
@@ -1021,20 +980,10 @@ function App() {
                   <LoaderCircle size={17} />
                   Identifying...
                 </>
-              ) : hasUsedFreePhoto ? (
-                'Photo limit reached'
               ) : (
                 'Identify restaurant'
               )}
             </button>
-            {hasUsedFreePhoto || showUploadLimitPrompt ? (
-              <div className="upload-limit-gate" role="status">
-                <div>
-                  <strong>Public demo limit reached</strong>
-                  <p>This demo allows one photo analysis for now so public API usage stays controlled.</p>
-                </div>
-              </div>
-            ) : null}
           </section>
 
           <div className="filter-head">

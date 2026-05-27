@@ -12,11 +12,6 @@ EXA_SEARCH_TYPE = "deep"
 EXA_NUM_RESULTS = "6"
 EXA_MAX_PARALLEL_QUERIES = "4"
 
-[[d1_databases]]
-binding = "SF_FOOD_USAGE_DB"
-database_name = "spotted-in-sf-usage"
-database_id = "19c5950f-e6d7-46b7-8ca6-bc97e06366b3"
-
 [[kv_namespaces]]
 binding = "SF_FOOD_FEEDBACK_KV"
 id = "ebc5b021ab2e48f08b2d882c17cc5519"

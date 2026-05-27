@@ -419,7 +419,7 @@ describe('SF Food Guesser API', () => {
     expect(userContent[0].text).not.toContain('"manual"')
   })
 
-  it('enforces the public demo limit after one anonymous local photo analysis', async () => {
+  it('allows repeated anonymous local photo analysis requests', async () => {
     const openAIClient = {
       responses: {
         create: vi.fn(async () => ({
@@ -455,108 +455,16 @@ describe('SF Food Guesser API', () => {
       .field('venues', '[]')
       .expect(200)
 
-    expect(firstResponse.headers['set-cookie']?.join(';')).toContain(
-      'sf_food_free_photo_used=1',
-    )
+    expect(firstResponse.headers['set-cookie']).toBeUndefined()
 
     const secondResponse = await agent
       .post('/api/analyze-photo')
       .attach('photo', pngPixel, { filename: 'food.png', contentType: 'image/png' })
       .field('venues', '[]')
-      .expect(402)
-
-    expect(secondResponse.body).toMatchObject({
-      code: 'upload_limit_reached',
-      error: 'This public demo includes one photo analysis for now.',
-    })
-    expect(openAIClient.responses.create).toHaveBeenCalledTimes(1)
-  })
-
-  it('blocks a second local analysis without relying on the browser cookie', async () => {
-    const openAIClient = {
-      responses: {
-        create: vi.fn(async () => ({
-          output_text: JSON.stringify({
-            summary: 'A focaccia-style pizza slice.',
-            imageEvidence: ['square slice'],
-            candidates: [
-              {
-                id: 'golden-boy',
-                confidence: 92,
-                evidenceCategories: ['dish_match', 'web_source_match'],
-                reasons: ['The slice shape matches the venue signature.'],
-              },
-            ],
-            needsMoreEvidence: false,
-          }),
-        })),
-      },
-    }
-    const app = createApp({
-      openAIClient,
-      visionModel: 'test-model',
-      visionProvider: 'openai',
-      photoSearch: null,
-      webSearch: null,
-    })
-
-    await request(app)
-      .post('/api/analyze-photo')
-      .attach('photo', pngPixel, { filename: 'food.png', contentType: 'image/png' })
-      .field('venues', '[]')
       .expect(200)
 
-    const secondResponse = await request(app)
-      .post('/api/analyze-photo')
-      .attach('photo', pngPixel, { filename: 'food.png', contentType: 'image/png' })
-      .field('venues', '[]')
-      .expect(402)
-
-    expect(secondResponse.body).toMatchObject({
-      code: 'upload_limit_reached',
-      reason: 'server_usage_record',
-    })
-    expect(openAIClient.responses.create).toHaveBeenCalledTimes(1)
-  })
-
-  it('blocks concurrent local first-upload attempts before duplicate provider calls', async () => {
-    const openAIClient = {
-      responses: {
-        create: vi.fn(async () => ({
-          output_text: JSON.stringify({
-            summary: 'A focaccia-style pizza slice.',
-            imageEvidence: ['square slice'],
-            candidates: [],
-            needsMoreEvidence: true,
-          }),
-        })),
-      },
-    }
-    const app = createApp({
-      openAIClient,
-      visionModel: 'test-model',
-      visionProvider: 'openai',
-      photoSearch: null,
-      webSearch: null,
-    })
-
-    const [firstResponse, secondResponse] = await Promise.all([
-      request(app)
-        .post('/api/analyze-photo')
-        .attach('photo', pngPixel, { filename: 'food.png', contentType: 'image/png' })
-        .field('venues', '[]'),
-      request(app)
-        .post('/api/analyze-photo')
-        .attach('photo', pngPixel, { filename: 'food.png', contentType: 'image/png' })
-        .field('venues', '[]'),
-    ])
-    const statuses = [firstResponse.status, secondResponse.status].sort()
-
-    expect(statuses).toEqual([200, 402])
-    expect([firstResponse.body.reason, secondResponse.body.reason]).toContain(
-      'server_usage_record',
-    )
-    expect(openAIClient.responses.create).toHaveBeenCalledTimes(1)
+    expect(secondResponse.body).toMatchObject({ summary: 'A focaccia-style pizza slice.' })
+    expect(openAIClient.responses.create).toHaveBeenCalledTimes(2)
   })
 
   it('rejects fake local image uploads before model providers are called', async () => {

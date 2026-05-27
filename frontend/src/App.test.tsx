@@ -22,7 +22,6 @@ describe('SF Food Guesser photo flow', () => {
   beforeEach(() => {
     vi.restoreAllMocks()
     window.localStorage.clear()
-    document.cookie = 'sf_food_free_photo_used=; Max-Age=0; Path=/'
   })
 
   afterEach(() => {
@@ -223,7 +222,7 @@ describe('SF Food Guesser photo flow', () => {
     })
   })
 
-  it('shows a public demo limit instead of allowing a second free photo analysis', async () => {
+  it('allows another photo analysis after a completed run', async () => {
     const fetchMock = vi
       .spyOn(globalThis, 'fetch')
       .mockResolvedValueOnce(
@@ -250,6 +249,24 @@ describe('SF Food Guesser photo flow', () => {
           { status: 200, headers: { 'Content-Type': 'application/json' } },
         ),
       )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            runId: 'run-2',
+            summary: 'A second iced matcha in the same cafe.',
+            imageEvidence: ['iced matcha', 'espresso bar'],
+            candidates: [
+              {
+                id: 'kissaten-hifi',
+                confidence: 91,
+                reasons: ['The drink and espresso bar match.'],
+              },
+            ],
+            needsMoreEvidence: false,
+          }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } },
+        ),
+      )
 
     render(<App />)
 
@@ -263,15 +280,14 @@ describe('SF Food Guesser photo flow', () => {
     await waitFor(() => {
       expect(screen.getByRole('heading', { name: 'Kissaten HiFi', level: 3 })).toBeVisible()
     })
-    expect(screen.getByText('Public demo limit reached')).toBeVisible()
-    expect(window.localStorage.getItem('sf-food-free-upload-used')).toBe('1')
+    expect(screen.getByText(/Analyzed photo: An iced matcha/i)).toBeVisible()
+    expect(screen.queryByText(/limit reached/i)).not.toBeInTheDocument()
 
-    fireEvent.click(screen.getByRole('button', { name: 'Photo limit reached' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Identify restaurant' }))
 
-    expect(
-      await screen.findByText('This public demo includes one photo analysis for now.'),
-    ).toBeVisible()
-    expect(fetchMock).toHaveBeenCalledTimes(2)
+    expect(await screen.findByText(/Analyzed photo: A second iced matcha/i)).toBeVisible()
+    expect(screen.queryByText(/one photo analysis/i)).not.toBeInTheDocument()
+    expect(fetchMock).toHaveBeenCalledTimes(3)
   })
 
   it('accepts an image dropped directly onto the upload zone', async () => {

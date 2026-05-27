@@ -1,11 +1,8 @@
 import {
   buildCloudflarePrompt,
   buildSearchPlanPrompt,
-  checkAnonymousUsageLimit,
   disallowedOriginResponse,
   fileToDataUrl,
-  freeUploadCookie,
-  holdAnonymousUsageSlot,
   jsonResponse,
   methodNotAllowed,
   normalizeAnalysis,
@@ -14,7 +11,6 @@ import {
   parseModelJson,
   providerErrorMessage,
   providerFromEnv,
-  reserveAnonymousUsage,
   searchExaEvidence,
   validateImageBytes,
   validateImageFile,
@@ -31,15 +27,7 @@ export async function onRequestPost({ request, env }) {
   const originResponse = disallowedOriginResponse(request, env)
   if (originResponse) return originResponse
 
-  const blockedResponse = await checkAnonymousUsageLimit(request, env, runId)
-  if (blockedResponse) return blockedResponse
-
-  const { blockedResponse: inFlightResponse, release: releaseUsageHold } =
-    await holdAnonymousUsageSlot(request, env, runId)
-  if (inFlightResponse) return inFlightResponse
-
   if (!provider) {
-    releaseUsageHold?.()
     return jsonResponse(
       {
         runId,
@@ -54,7 +42,6 @@ export async function onRequestPost({ request, env }) {
   try {
     formData = await request.formData()
   } catch {
-    releaseUsageHold?.()
     return jsonResponse({ runId, error: 'Photo upload form data was invalid.' }, 400)
   }
 
@@ -66,13 +53,11 @@ export async function onRequestPost({ request, env }) {
       : validationError.includes('Unsupported')
         ? 415
         : 400
-    releaseUsageHold?.()
     return jsonResponse({ runId, error: validationError }, status)
   }
 
   const imageBytesError = await validateImageBytes(file)
   if (imageBytesError) {
-    releaseUsageHold?.()
     return jsonResponse({ runId, error: imageBytesError }, 415)
   }
 
@@ -80,13 +65,8 @@ export async function onRequestPost({ request, env }) {
   try {
     venues = JSON.parse(String(formData.get('venues') ?? '[]'))
   } catch {
-    releaseUsageHold?.()
     return jsonResponse({ runId, error: 'Venue payload was not valid JSON.' }, 400)
   }
-
-  const reserveResponse = await reserveAnonymousUsage(request, env, runId)
-  releaseUsageHold?.()
-  if (reserveResponse) return reserveResponse
 
   const dataUrl = await fileToDataUrl(file)
   const models = [provider.model, ...provider.fallbackModels].filter(Boolean)
@@ -242,8 +222,6 @@ export async function onRequestPost({ request, env }) {
         webEvidence,
         searchPlan,
         providerWarnings,
-      }, 200, {
-        'Set-Cookie': freeUploadCookie(),
       })
     } catch (error) {
       lastError = error
