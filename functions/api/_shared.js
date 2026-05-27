@@ -314,7 +314,64 @@ const evidenceWeights = {
 }
 
 function candidateKey(candidate) {
-  return `${candidate.id || candidate.name}:${candidate.address}`.toLowerCase()
+  if (candidate.id) return String(candidate.id).toLowerCase()
+  return `${candidate.name}:${candidate.address}`.toLowerCase()
+}
+
+function normalizeMatchText(value) {
+  return String(value ?? '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+}
+
+function seedVenueCandidates(seedVenues = [], options = {}) {
+  const searchPlan = options.searchPlan ?? {}
+  const webEvidence = Array.isArray(options.webEvidence) ? options.webEvidence : []
+  const haystack = normalizeMatchText(
+    [
+      options.summary,
+      ...(Array.isArray(options.imageEvidence) ? options.imageEvidence : []),
+      searchPlan.summary,
+      ...(Array.isArray(searchPlan.imageEvidence) ? searchPlan.imageEvidence : []),
+      ...(Array.isArray(searchPlan.visibleText) ? searchPlan.visibleText : []),
+      ...(Array.isArray(searchPlan.searchQueries) ? searchPlan.searchQueries : []),
+      ...webEvidence.flatMap((page) => [page.title, page.snippet, page.url]),
+    ].join(' '),
+  )
+
+  return seedVenues
+    .map((venue) => {
+      const hints = Array.isArray(venue.imageEvidenceHints) ? venue.imageEvidenceHints : []
+      const matchedHints = hints
+        .map((hint) => normalizeMatchText(hint))
+        .filter((hint) => hint.length >= 4 && haystack.includes(hint))
+      const venueName = normalizeMatchText(venue.name)
+      const nameHit = venueName && haystack.includes(venueName)
+      const sourceHit = webEvidence.some((page) =>
+        normalizeMatchText([page.title, page.snippet, page.url].join(' ')).includes(venueName),
+      )
+      if (matchedHints.length < 3 && !nameHit && !sourceHit) return null
+
+      const confidence = Math.min(94, 62 + matchedHints.length * 6 + (nameHit ? 10 : 0) + (sourceHit ? 8 : 0))
+      return normalizeCandidate({
+        id: venue.id,
+        name: venue.name,
+        category: venue.category,
+        neighborhood: venue.neighborhood,
+        address: venue.address,
+        confidence,
+        evidenceCategories: ['interior_match', 'dish_match', 'web_source_match'],
+        reasons: [
+          `Seed venue matched photo/search clues: ${matchedHints.slice(0, 4).join(', ') || venue.name}.`,
+          'Seed source and search context support checking this venue before generic lookalikes.',
+        ],
+        sourceUrls: venue.sourceUrl ? [venue.sourceUrl] : [],
+        mapsQuery: [venue.name, venue.address, 'San Francisco'].filter(Boolean).join(' '),
+      })
+    })
+    .filter(Boolean)
 }
 
 function rankCandidates(candidates, seedVenueIds = []) {
@@ -372,15 +429,23 @@ function rankCandidates(candidates, seedVenueIds = []) {
 }
 
 export function normalizeAnalysis(result, options = {}) {
-  const candidates = Array.isArray(result?.candidates)
+  const modelCandidates = Array.isArray(result?.candidates)
     ? result.candidates.map(normalizeCandidate).filter((candidate) => candidate.name)
     : []
+  const imageEvidence = Array.isArray(result?.imageEvidence) ? result.imageEvidence.map(String).slice(0, 8) : []
+  const candidates = [
+    ...modelCandidates,
+    ...seedVenueCandidates(options.seedVenues, {
+      summary: result?.summary,
+      imageEvidence,
+      searchPlan: options.searchPlan,
+      webEvidence: options.webEvidence,
+    }),
+  ]
 
   return {
     summary: String(result?.summary ?? 'No visual summary returned.'),
-    imageEvidence: Array.isArray(result?.imageEvidence)
-      ? result.imageEvidence.map(String).slice(0, 8)
-      : [],
+    imageEvidence,
     candidates: rankCandidates(candidates, options.seedVenueIds).slice(0, 3),
     needsMoreEvidence: Boolean(result?.needsMoreEvidence),
   }

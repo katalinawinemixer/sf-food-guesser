@@ -335,6 +335,99 @@ describe('Cloudflare Pages Functions API', () => {
     globalThis.fetch.mockRestore()
   })
 
+  it('recovers a seeded venue when the model omits it but photo clues match', async () => {
+    vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            choices: [
+              {
+                message: {
+                  content: JSON.stringify({
+                    summary: 'Iced matcha with cream top, brown coffee bags, and tan aprons.',
+                    imageEvidence: ['iced matcha', 'cream top', 'brown coffee bags', 'tan aprons'],
+                    visibleText: [],
+                    searchQueries: ['San Francisco iced matcha cream top brown coffee bags tan aprons cafe'],
+                    likelyVenueTypes: ['cafe'],
+                  }),
+                },
+              },
+            ],
+          }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } },
+        ),
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            choices: [
+              {
+                message: {
+                  content: JSON.stringify({
+                    summary: 'Iced matcha with cream top, brown coffee bags, and tan aprons.',
+                    imageEvidence: ['iced matcha', 'cream top', 'brown coffee bags', 'tan aprons'],
+                    candidates: [
+                      {
+                        id: '',
+                        name: 'Matcha Cafe Maiko',
+                        category: 'Cafe',
+                        neighborhood: 'Japantown',
+                        address: '1581 Webster St',
+                        confidence: 80,
+                        evidenceCategories: ['dish_match', 'web_source_match'],
+                        reasons: ['It serves matcha drinks.'],
+                        sourceUrls: ['https://example.com/maiko'],
+                      },
+                    ],
+                    needsMoreEvidence: false,
+                  }),
+                },
+              },
+            ],
+          }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } },
+        ),
+      )
+    const formData = new FormData()
+    formData.set('photo', new File([pngPixel], 'matcha.png', { type: 'image/png' }))
+    formData.set(
+      'venues',
+      JSON.stringify([
+        {
+          id: 'kissaten-hifi',
+          name: 'Kissaten HiFi',
+          category: 'Cafe',
+          neighborhood: 'Inner Richmond',
+          address: '189 6th Ave',
+          imageEvidenceHints: ['matcha', 'cream top', 'brown coffee bags', 'tan aprons'],
+          sourceUrl: 'https://www.theinfatuation.com/san-francisco/reviews/kissaten-hifi',
+        },
+      ]),
+    )
+
+    const response = await analyzePhotoPost({
+      request: {
+        formData: async () => formData,
+        headers: {
+          get: () => 'https://spotted-in-sf.pages.dev',
+        },
+      },
+      env: {
+        OPENROUTER_API_KEY: 'test-openrouter-key',
+      },
+    })
+    const body = await json(response)
+
+    expect(response.status).toBe(200)
+    expect(body.candidates[0]).toMatchObject({
+      id: 'kissaten-hifi',
+      name: 'Kissaten HiFi',
+      address: '189 6th Ave',
+    })
+
+    globalThis.fetch.mockRestore()
+  })
+
   it('rejects unsupported Cloudflare photo uploads before provider calls', async () => {
     const fetchMock = vi.spyOn(globalThis, 'fetch')
     const formData = new FormData()

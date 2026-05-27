@@ -197,6 +197,9 @@ export async function onRequestPost({ request, env }) {
       const outputText = result?.choices?.[0]?.message?.content ?? ''
       const analysis = normalizeAnalysis(parseModelJson(outputText), {
         seedVenueIds: venues.map((venue) => venue.id).filter(Boolean),
+        seedVenues: venues,
+        searchPlan,
+        webEvidence,
       })
       return jsonResponse({
         runId,
