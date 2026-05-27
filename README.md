@@ -69,11 +69,13 @@ npm run deploy:cloudflare
 The deployed API lives under `/api` through `functions/api/`, so
 `VITE_API_BASE_URL` should stay blank for the normal Cloudflare deployment.
 Cloudflare runtime secrets are set on the Pages project, not committed to the
-repo. Production feedback records use the `SF_FOOD_FEEDBACK_KV` binding.
+repo. The Pages Function uses OpenRouter for vision and Exa for parallel
+photo-derived evidence searches when `EXA_API_KEY` is configured. Production
+feedback records use the `SF_FOOD_FEEDBACK_KV` binding.
 
-Production domains are `https://spotted-in-sf.com` and
-`https://www.spotted-in-sf.com`; both are attached to the same Cloudflare Pages
-project and should serve the same app. The active Pages project is
+Target production domains are `https://spotted-in-sf.com` and
+`https://www.spotted-in-sf.com`; both should serve the same Cloudflare Pages
+project after DNS validation completes. The active Pages project is
 `spotted-in-sf`, connected to the private GitHub repo
 `katalinawinemixer/sf-food-guesser` on the `main` branch.
 

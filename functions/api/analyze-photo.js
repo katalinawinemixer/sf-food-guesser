@@ -1,13 +1,16 @@
 import {
   buildCloudflarePrompt,
+  buildSearchPlanPrompt,
   fileToDataUrl,
   jsonResponse,
   methodNotAllowed,
   normalizeAnalysis,
+  normalizeSearchPlan,
   optionsResponse,
   parseModelJson,
   providerErrorMessage,
   providerFromEnv,
+  searchExaEvidence,
   validateImageFile,
 } from './_shared.js'
 
@@ -57,7 +60,74 @@ export async function onRequestPost({ request, env }) {
 
   const dataUrl = await fileToDataUrl(file)
   const models = [provider.model, ...provider.fallbackModels].filter(Boolean)
+  const providerWarnings = []
+  let searchPlan = null
+  let webEvidence = []
   let lastError = null
+
+  for (const model of models) {
+    try {
+      const response = await fetch(provider.endpoint, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${provider.apiKey}`,
+          'Content-Type': 'application/json',
+          ...(provider.provider === 'openrouter'
+            ? {
+                'HTTP-Referer': env.OPENROUTER_SITE_URL || request.headers.get('origin') || '',
+                'X-OpenRouter-Title': 'SF Food Guesser',
+              }
+            : {}),
+        },
+        body: JSON.stringify({
+          model,
+          messages: [
+            {
+              role: 'system',
+              content:
+                'You inspect San Francisco food venue photos and create concise web-search plans. Return strict JSON only.',
+            },
+            {
+              role: 'user',
+              content: [
+                { type: 'text', text: buildSearchPlanPrompt(venues) },
+                { type: 'image_url', image_url: { url: dataUrl, detail: 'high' } },
+              ],
+            },
+          ],
+          response_format: { type: 'json_object' },
+          temperature: 0,
+          max_tokens: 1200,
+        }),
+      })
+      const result = await response.json().catch(() => ({}))
+      if (!response.ok) {
+        const error = new Error(result?.error?.message || result?.message || response.statusText)
+        error.status = response.status
+        throw error
+      }
+      searchPlan = normalizeSearchPlan(parseModelJson(result?.choices?.[0]?.message?.content ?? ''))
+      break
+    } catch (error) {
+      providerWarnings.push({
+        provider: `search-plan:${model}`,
+        message: String(error?.message ?? 'Search planning failed.'),
+      })
+      lastError = error
+      if (Number(error?.status) !== 429) break
+    }
+  }
+
+  if (searchPlan) {
+    try {
+      webEvidence = await searchExaEvidence(searchPlan, env)
+    } catch (error) {
+      providerWarnings.push({
+        provider: 'exa-deep-highlights',
+        message: String(error?.message ?? 'Exa evidence search failed.'),
+      })
+    }
+  }
 
   for (const model of models) {
     try {
@@ -84,7 +154,7 @@ export async function onRequestPost({ request, env }) {
             {
               role: 'user',
               content: [
-                { type: 'text', text: buildCloudflarePrompt(venues) },
+                { type: 'text', text: buildCloudflarePrompt(venues, webEvidence, searchPlan) },
                 { type: 'image_url', image_url: { url: dataUrl, detail: 'high' } },
               ],
             },
@@ -131,11 +201,12 @@ export async function onRequestPost({ request, env }) {
         ...analysis,
         searchProvider: null,
         webSearchProvider: provider.provider === 'openrouter' ? 'openrouter-web-search' : null,
-        articleSearchProvider: null,
+        articleSearchProvider: env.EXA_API_KEY ? 'exa-deep-highlights' : null,
         articleCandidates: [],
         photoEvidence: [],
-        webEvidence: [],
-        providerWarnings: [],
+        webEvidence,
+        searchPlan,
+        providerWarnings,
       })
     } catch (error) {
       lastError = error

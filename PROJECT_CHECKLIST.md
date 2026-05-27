@@ -56,7 +56,8 @@ items were completed earlier out of order.
 - [x] Add optional Google Maps customer/review photo search through SerpAPI and compare candidate public images visually against the upload.
 - [x] Add source-specific search query generation for Yelp photos, restaurant sites, local blogs, Instagram/TikTok captions, Eater, Infatuation, and other public pages where available.
 - [x] Parallelize independent search calls: article discovery with base web search, and batched Google Maps/place-photo retrieval.
-- [ ] Avoid unsupported scraping; use provider APIs or publicly accessible search results.
+- [x] Parallelize Cloudflare Exa evidence searches generated from the uploaded photo.
+- [x] Avoid unsupported scraping; use provider APIs or publicly accessible search results.
 - [x] Add a durable provider interface so Exa, OpenRouter search, SerpAPI, and future providers are isolated.
 
 ## 6. Matching And Ranking
@@ -106,6 +107,8 @@ items were completed earlier out of order.
 - [x] Attach `spotted-in-sf.com` and `www.spotted-in-sf.com` to the same Cloudflare Pages project.
 - [x] Add HTTPS/security headers for the deployed app and API.
 - [x] Connect the Cloudflare Pages project to the `katalinawinemixer/sf-food-guesser` GitHub repo.
+- [ ] Validate DNS for `spotted-in-sf.com` and `www.spotted-in-sf.com` so both resolve to the Pages project.
+- [ ] Re-test production photo analysis on the custom domains after DNS validates.
 
 ## 10. Future Accuracy Improvements
 

@@ -98,7 +98,60 @@ export function providerFromEnv(env) {
   return null
 }
 
-export function buildCloudflarePrompt(venues) {
+export function buildSearchPlanPrompt(venues) {
+  const compactVenues = Array.isArray(venues)
+    ? venues.slice(0, 120).map((venue) => ({
+        id: venue.id,
+        name: venue.name,
+        category: venue.category,
+        neighborhood: venue.neighborhood,
+        address: venue.address,
+        signature: venue.signature,
+        imageEvidenceHints: venue.imageEvidenceHints,
+      }))
+    : []
+
+  return `Inspect the uploaded San Francisco food or cafe photo and create search queries that another agent can use to find the exact venue. Do not guess from generic dish type alone.
+
+Return strict JSON only:
+{
+  "summary": "short visual summary",
+  "imageEvidence": ["specific visible clues from the uploaded image"],
+  "visibleText": ["readable words, logos, labels, signs, menus, bags, receipts"],
+  "searchQueries": ["web search query"],
+  "likelyVenueTypes": ["cafe"]
+}
+
+Search-query rules:
+- Include San Francisco in every query.
+- Use visible text, interior details, packaging, drink/food style, recent-opening clues, and review-photo clues.
+- Include queries for local articles/recent openings when the place looks new or heavily shared.
+- Return 3 to 5 distinct queries.
+
+Seed venues for comparison hints:
+${JSON.stringify(compactVenues).slice(0, 12000)}`
+}
+
+export function normalizeSearchPlan(result) {
+  return {
+    summary: String(result?.summary ?? ''),
+    imageEvidence: Array.isArray(result?.imageEvidence)
+      ? result.imageEvidence.map(String).slice(0, 10)
+      : [],
+    visibleText: Array.isArray(result?.visibleText) ? result.visibleText.map(String).slice(0, 8) : [],
+    searchQueries: Array.isArray(result?.searchQueries)
+      ? result.searchQueries
+          .map(String)
+          .map((query) => (/\bsan francisco\b/i.test(query) ? query : `${query} San Francisco`))
+          .slice(0, 5)
+      : [],
+    likelyVenueTypes: Array.isArray(result?.likelyVenueTypes)
+      ? result.likelyVenueTypes.map(String).slice(0, 8)
+      : [],
+  }
+}
+
+export function buildCloudflarePrompt(venues, webEvidence = [], searchPlan = null) {
   const compactVenues = Array.isArray(venues)
     ? venues.slice(0, 120).map((venue) => ({
         id: venue.id,
@@ -111,10 +164,20 @@ export function buildCloudflarePrompt(venues) {
         note: venue.note,
       }))
     : []
+  const compactEvidence = Array.isArray(webEvidence)
+    ? webEvidence.slice(0, 24).map((page) => ({
+        title: page.title,
+        source: page.source,
+        url: page.url,
+        snippet: page.snippet,
+        query: page.query,
+      }))
+    : []
 
   return `Identify the most likely San Francisco food venue from the uploaded photo. Inspect visible text, logos, cups, bags, receipts, menus, counters, shelving, decor, lighting, storefront clues, and food. Do not require the user to provide clues.
 
 Use the seed venue list only as hints. You may return San Francisco venues outside the seed list when the image or web evidence supports them.
+Use external evidence as leads, not truth: compare it against the uploaded image before ranking a venue.
 
 Return strict JSON only:
 {
@@ -142,8 +205,71 @@ Ranking rules:
 - Penalize guesses based only on generic coffee/matcha/pastry/cuisine.
 - Return up to three candidates. Use low confidence when evidence is weak.
 
+Photo-derived search plan:
+${JSON.stringify(searchPlan ?? null).slice(0, 5000)}
+
+External web/article evidence:
+${JSON.stringify(compactEvidence).slice(0, 12000)}
+
 Seed venues:
 ${JSON.stringify(compactVenues).slice(0, 18000)}`
+}
+
+export async function searchExaEvidence(searchPlan, env, fetchImpl = fetch) {
+  if (!env.EXA_API_KEY) return []
+  const queries = (searchPlan?.searchQueries ?? [])
+    .filter(Boolean)
+    .slice(0, Number(env.EXA_MAX_PARALLEL_QUERIES || 4))
+  if (!queries.length) return []
+
+  const responses = await Promise.all(
+    queries.map(async (query) => {
+      const response = await fetchImpl('https://api.exa.ai/search', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-api-key': env.EXA_API_KEY,
+        },
+        body: JSON.stringify({
+          query,
+          type: env.EXA_SEARCH_TYPE || 'deep',
+          numResults: Number(env.EXA_NUM_RESULTS || 6),
+          contents: {
+            highlights: true,
+          },
+          userLocation: 'US',
+        }),
+      })
+      const body = await response.json().catch(() => ({}))
+      if (!response.ok) {
+        const error = new Error(body?.error || response.statusText)
+        error.status = response.status
+        throw error
+      }
+      return { query, results: Array.isArray(body.results) ? body.results : [] }
+    }),
+  )
+
+  const seen = new Set()
+  return responses
+    .flatMap(({ query, results }) =>
+      results.map((result) => ({
+        title: result.title ? String(result.title) : '',
+        source: 'exa',
+        url: result.url ? String(result.url) : '',
+        snippet: Array.isArray(result.highlights)
+          ? result.highlights.join(' ').slice(0, 900)
+          : String(result.summary ?? result.text ?? '').slice(0, 900),
+        query,
+      })),
+    )
+    .filter((result) => {
+      const key = result.url || `${result.title}:${result.snippet}`
+      if (!key || seen.has(key)) return false
+      seen.add(key)
+      return true
+    })
+    .slice(0, 24)
 }
 
 export function parseModelJson(outputText) {

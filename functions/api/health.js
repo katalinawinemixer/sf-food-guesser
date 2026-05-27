@@ -18,8 +18,8 @@ export function onRequestGet({ env }) {
     photoSearchProvider: null,
     webSearchEnabled: provider?.provider === 'openrouter',
     webSearchProvider: provider?.provider === 'openrouter' ? 'openrouter-web-search' : null,
-    articleSearchEnabled: false,
-    articleSearchProvider: null,
+    articleSearchEnabled: Boolean(env.EXA_API_KEY),
+    articleSearchProvider: env.EXA_API_KEY ? 'exa-deep-highlights' : null,
   })
 }
 
