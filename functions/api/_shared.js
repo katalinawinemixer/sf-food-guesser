@@ -183,6 +183,69 @@ Seed venues for comparison hints:
 ${JSON.stringify(compactVenues).slice(0, 12000)}`
 }
 
+export function buildOcrPrompt() {
+  return `Read exact visible text from this uploaded-food contact sheet. The panels are all crops from the same photo.
+
+Return strict JSON only:
+{
+  "visibleText": ["exact readable words or logos"],
+  "uncertainText": ["text that might be present but is not certain"],
+  "textEvidence": ["where the readable text appears, such as cup, tray, sign, receipt, bag"]
+}
+
+Rules:
+- Only return text that is actually visible in the image.
+- Do not infer a restaurant name from food style, colors, patterns, or seed knowledge.
+- If a word is cropped or stylized, put it in uncertainText unless the letters are clear.
+- Prefer exact casing when readable.
+- Return empty arrays when no text is readable.`
+}
+
+export function normalizeOcrResult(result) {
+  return {
+    visibleText: Array.isArray(result?.visibleText)
+      ? result.visibleText.map(String).map((text) => text.trim()).filter(Boolean).slice(0, 8)
+      : [],
+    uncertainText: Array.isArray(result?.uncertainText)
+      ? result.uncertainText.map(String).map((text) => text.trim()).filter(Boolean).slice(0, 8)
+      : [],
+    textEvidence: Array.isArray(result?.textEvidence)
+      ? result.textEvidence.map(String).map((text) => text.trim()).filter(Boolean).slice(0, 8)
+      : [],
+  }
+}
+
+export function mergeOcrIntoSearchPlan(searchPlan, ocrResult = null) {
+  if (!searchPlan || !ocrResult) return searchPlan
+  const visibleText = [
+    ...(Array.isArray(searchPlan.visibleText) ? searchPlan.visibleText : []),
+    ...(Array.isArray(ocrResult.visibleText) ? ocrResult.visibleText : []),
+  ]
+    .map(String)
+    .map((text) => text.trim())
+    .filter(Boolean)
+  const uniqueVisibleText = [...new Set(visibleText)].slice(0, 8)
+  const textQueries = uniqueVisibleText.flatMap((text) => [
+    `"${text}" San Francisco restaurant`,
+    `"${text}" San Francisco menu photos reviews`,
+  ])
+
+  return {
+    ...searchPlan,
+    visibleText: uniqueVisibleText,
+    imageEvidence: [
+      ...(Array.isArray(searchPlan.imageEvidence) ? searchPlan.imageEvidence : []),
+      ...(Array.isArray(ocrResult.textEvidence) ? ocrResult.textEvidence : []),
+      ...uniqueVisibleText.map((text) => `Readable text: ${text}`),
+    ].slice(0, 12),
+    searchQueries: [
+      ...textQueries,
+      ...(Array.isArray(searchPlan.searchQueries) ? searchPlan.searchQueries : []),
+    ].slice(0, 8),
+    ocr: ocrResult,
+  }
+}
+
 export function normalizeSearchPlan(result) {
   return {
     summary: String(result?.summary ?? ''),

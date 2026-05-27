@@ -1,12 +1,15 @@
 import {
   buildCloudflarePrompt,
   buildCloudflarePhotoEvidenceParts,
+  buildOcrPrompt,
   buildSearchPlanPrompt,
   disallowedOriginResponse,
   fileToDataUrl,
   jsonResponse,
+  mergeOcrIntoSearchPlan,
   methodNotAllowed,
   normalizeAnalysis,
+  normalizeOcrResult,
   normalizeSearchPlan,
   optionsResponse,
   parseModelJson,
@@ -132,6 +135,16 @@ export async function onRequestPost({ request, env }) {
     return jsonResponse({ runId, error: imageBytesError }, 415)
   }
 
+  const ocrFile = formData.get('ocrPhoto')
+  let ocrDataUrl = null
+  if (ocrFile && typeof ocrFile === 'object' && typeof ocrFile.arrayBuffer === 'function' && typeof ocrFile.slice === 'function') {
+    const ocrValidationError = validateImageFile(ocrFile)
+    if (!ocrValidationError) {
+      const ocrImageBytesError = await validateImageBytes(ocrFile)
+      if (!ocrImageBytesError) ocrDataUrl = await fileToDataUrl(ocrFile)
+    }
+  }
+
   let venues = []
   try {
     venues = JSON.parse(String(formData.get('venues') ?? '[]'))
@@ -143,11 +156,66 @@ export async function onRequestPost({ request, env }) {
   const models = [provider.model, ...provider.fallbackModels].filter(Boolean)
   const providerWarnings = []
   let searchPlan = null
+  let ocrResult = null
   let webEvidence = []
   let photoEvidence = []
   const shouldDebugPhotoEvidence = env.DEBUG_PHOTO_EVIDENCE === 'true'
   let photoEvidenceDebug = null
   let lastError = null
+
+  if (ocrDataUrl) {
+    for (const model of models) {
+      try {
+        const { response, result } = await fetchJsonWithTimeout(provider.endpoint, {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${provider.apiKey}`,
+            'Content-Type': 'application/json',
+            ...(provider.provider === 'openrouter'
+              ? {
+                  'HTTP-Referer': env.OPENROUTER_SITE_URL || request.headers.get('origin') || '',
+                  'X-OpenRouter-Title': 'SF Food Guesser',
+                }
+              : {}),
+          },
+          body: JSON.stringify({
+            model,
+            messages: [
+              {
+                role: 'system',
+                content: 'You are a careful OCR reader. Return strict JSON only.',
+              },
+              {
+                role: 'user',
+                content: [
+                  { type: 'text', text: buildOcrPrompt() },
+                  { type: 'image_url', image_url: { url: ocrDataUrl, detail: 'high' } },
+                ],
+              },
+            ],
+            response_format: { type: 'json_object' },
+            temperature: 0,
+            max_tokens: 800,
+          }),
+        }, remainingProviderTimeout(deadline), `OCR text reading with ${model}`)
+        if (!response.ok) {
+          const error = new Error(result?.error?.message || result?.message || response.statusText)
+          error.status = response.status
+          throw error
+        }
+        ocrResult = normalizeOcrResult(parseModelJson(result?.choices?.[0]?.message?.content ?? ''))
+        break
+      } catch (error) {
+        providerWarnings.push({
+          provider: `ocr:${model}`,
+          message: String(error?.message ?? 'OCR text reading failed.'),
+        })
+        lastError = error
+        if (!shouldTryNextProviderAttempt(error)) break
+      }
+      if (Date.now() >= deadline) break
+    }
+  }
 
   for (const model of models) {
     try {
@@ -189,7 +257,10 @@ export async function onRequestPost({ request, env }) {
         error.status = response.status
         throw error
       }
-      searchPlan = normalizeSearchPlan(parseModelJson(result?.choices?.[0]?.message?.content ?? ''))
+      searchPlan = mergeOcrIntoSearchPlan(
+        normalizeSearchPlan(parseModelJson(result?.choices?.[0]?.message?.content ?? '')),
+        ocrResult,
+      )
       break
     } catch (error) {
       providerWarnings.push({
@@ -338,6 +409,7 @@ export async function onRequestPost({ request, env }) {
           seedVenueIds: venues.map((venue) => venue.id).filter(Boolean),
           seedVenues: venues,
           searchPlan,
+          ocr: ocrResult,
           webEvidence,
         })
         return jsonResponse({
@@ -354,6 +426,7 @@ export async function onRequestPost({ request, env }) {
           ...(photoEvidenceDebug ? { photoEvidenceDebug } : {}),
           webEvidence,
           searchPlan,
+          ocr: ocrResult,
           providerWarnings,
         })
       } catch (error) {

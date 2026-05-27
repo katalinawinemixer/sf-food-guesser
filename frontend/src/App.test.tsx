@@ -107,6 +107,8 @@ describe('SF Food Guesser photo flow', () => {
     const drawImage = vi.fn()
     vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue({
       drawImage,
+      fillRect: vi.fn(),
+      fillStyle: '#ffffff',
     } as unknown as CanvasRenderingContext2D)
     vi.spyOn(HTMLCanvasElement.prototype, 'toBlob').mockImplementation(
       (callback: BlobCallback) => {
@@ -157,8 +159,11 @@ describe('SF Food Guesser photo flow', () => {
     const photoRequest = fetchMock.mock.calls[1]?.[1] as RequestInit | undefined
     const photoForm = photoRequest?.body as FormData
     const uploadedPhoto = photoForm.get('photo') as File
+    const ocrPhoto = photoForm.get('ocrPhoto') as File
     expect(uploadedPhoto.name).toBe('souvla.jpg')
     expect(uploadedPhoto.type).toBe('image/jpeg')
+    expect(ocrPhoto.name).toBe('souvla-ocr-contact-sheet.jpg')
+    expect(ocrPhoto.type).toBe('image/jpeg')
     expect(drawImage).toHaveBeenCalled()
     expect(closeBitmap).toHaveBeenCalled()
   })

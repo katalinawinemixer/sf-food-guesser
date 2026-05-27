@@ -138,6 +138,98 @@ async function transcodeImageForVision(file: File) {
   })
 }
 
+async function canvasToJpegFile(canvas: HTMLCanvasElement, name: string, lastModified: number) {
+  const jpegBlob = await new Promise<Blob>((resolve, reject) => {
+    canvas.toBlob(
+      (blob) => {
+        if (blob) {
+          resolve(blob)
+          return
+        }
+        reject(new Error('Could not prepare this image for text analysis.'))
+      },
+      'image/jpeg',
+      0.9,
+    )
+  })
+
+  return new File([jpegBlob], name, {
+    type: 'image/jpeg',
+    lastModified,
+  })
+}
+
+async function createOcrContactSheet(file: File) {
+  if (typeof createImageBitmap !== 'function') return null
+
+  const drawable = await imageBitmapFromFile(file)
+  if (!drawable) return null
+  const sourceWidth = drawable.width
+  const sourceHeight = drawable.height
+  if (!sourceWidth || !sourceHeight) return null
+
+  const panelWidth = 420
+  const panelHeight = 280
+  const canvas = document.createElement('canvas')
+  canvas.width = panelWidth * 3
+  canvas.height = panelHeight * 2
+  const context = canvas.getContext('2d')
+  if (!context) return null
+
+  context.fillStyle = '#ffffff'
+  context.fillRect(0, 0, canvas.width, canvas.height)
+
+  const drawContain = (dx: number, dy: number) => {
+    const scale = Math.min(panelWidth / sourceWidth, panelHeight / sourceHeight)
+    const width = sourceWidth * scale
+    const height = sourceHeight * scale
+    context.drawImage(
+      drawable,
+      0,
+      0,
+      sourceWidth,
+      sourceHeight,
+      dx + (panelWidth - width) / 2,
+      dy + (panelHeight - height) / 2,
+      width,
+      height,
+    )
+  }
+
+  const drawCrop = (
+    sourceXRatio: number,
+    sourceYRatio: number,
+    sourceWidthRatio: number,
+    sourceHeightRatio: number,
+    dx: number,
+    dy: number,
+  ) => {
+    context.drawImage(
+      drawable,
+      sourceWidth * sourceXRatio,
+      sourceHeight * sourceYRatio,
+      sourceWidth * sourceWidthRatio,
+      sourceHeight * sourceHeightRatio,
+      dx,
+      dy,
+      panelWidth,
+      panelHeight,
+    )
+  }
+
+  drawContain(0, 0)
+  drawCrop(0, 0, 0.5, 0.5, panelWidth, 0)
+  drawCrop(0.5, 0, 0.5, 0.5, panelWidth * 2, 0)
+  drawCrop(0, 0.5, 0.5, 0.5, 0, panelHeight)
+  drawCrop(0.5, 0.5, 0.5, 0.5, panelWidth, panelHeight)
+  drawCrop(0.2, 0.2, 0.6, 0.6, panelWidth * 2, panelHeight)
+
+  if ('close' in drawable && typeof drawable.close === 'function') drawable.close()
+
+  const normalizedName = file.name.replace(/(\.jpe?g)?\.(avif|gif|heic|heif|jpe?g|png|webp)$/i, '') || 'photo'
+  return canvasToJpegFile(canvas, `${normalizedName}-ocr-contact-sheet.jpg`, file.lastModified)
+}
+
 function normalizeConfidence(value: unknown) {
   const confidence = Number(value ?? 0)
   if (!Number.isFinite(confidence)) return 0
@@ -421,6 +513,8 @@ const analysisSteps = [
 async function analyzePhotoWithVision(file: File): Promise<VisionAnalysis> {
   const payload = new FormData()
   payload.append('photo', await transcodeImageForVision(file))
+  const ocrPhoto = await createOcrContactSheet(file).catch(() => null)
+  if (ocrPhoto) payload.append('ocrPhoto', ocrPhoto)
   payload.append(
     'venues',
     JSON.stringify(

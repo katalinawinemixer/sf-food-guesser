@@ -300,6 +300,113 @@ describe('Cloudflare Pages Functions API', () => {
     fetchMock.mockRestore()
   })
 
+  it('reads text from the OCR contact sheet before Cloudflare ranking', async () => {
+    const fetchMock = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            choices: [
+              {
+                message: {
+                  content: JSON.stringify({
+                    visibleText: ['SOUVLA'],
+                    uncertainText: [],
+                    textEvidence: ['SOUVLA logo on tray and cup'],
+                  }),
+                },
+              },
+            ],
+          }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } },
+        ),
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            choices: [
+              {
+                message: {
+                  content: JSON.stringify({
+                    summary: 'Greek food spread with blue-rim plates.',
+                    imageEvidence: ['blue-rim plates', 'Greek fries'],
+                    visibleText: [],
+                    searchQueries: ['Greek fries blue rim plates San Francisco restaurant'],
+                    likelyVenueTypes: ['restaurant'],
+                  }),
+                },
+              },
+            ],
+          }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } },
+        ),
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            choices: [
+              {
+                message: {
+                  content: JSON.stringify({
+                    summary: 'Greek food spread with SOUVLA branding.',
+                    imageEvidence: ['Readable SOUVLA logo', 'Greek fries'],
+                    candidates: [
+                      {
+                        id: 'souvla',
+                        name: 'Souvla',
+                        category: 'Restaurant',
+                        neighborhood: 'Multiple SF neighborhoods',
+                        address: 'Multiple San Francisco locations',
+                        confidence: 92,
+                        evidenceCategories: ['visible_text', 'packaging_logo', 'dish_match'],
+                        reasons: ['The OCR pass read SOUVLA on the tray and cup.'],
+                      },
+                    ],
+                    needsMoreEvidence: false,
+                  }),
+                },
+              },
+            ],
+          }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } },
+        ),
+      )
+    const formData = new FormData()
+    formData.set('photo', new File([pngPixel], 'souvla.png', { type: 'image/png' }))
+    formData.set('ocrPhoto', new File([pngPixel], 'souvla-ocr-contact-sheet.jpg', { type: 'image/jpeg' }))
+    formData.set('venues', JSON.stringify([{ id: 'souvla', name: 'Souvla' }]))
+
+    const response = await analyzePhotoPost({
+      request: {
+        formData: async () => formData,
+        headers: cloudflareHeaders(),
+      },
+      env: usageEnv({
+        OPENROUTER_VISION_MODEL: 'qwen/qwen3-vl-32b-instruct',
+      }),
+    })
+    const body = await json(response)
+    const ocrPayload = JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body))
+    const finalPayload = JSON.parse(String(fetchMock.mock.calls[2]?.[1]?.body))
+
+    expect(response.status).toBe(200)
+    expect(ocrPayload.messages[1].content[0].text).toContain('Read exact visible text')
+    expect(finalPayload.messages[1].content[0].text).toContain('SOUVLA')
+    expect(body.searchPlan).toMatchObject({
+      visibleText: ['SOUVLA'],
+      ocr: {
+        visibleText: ['SOUVLA'],
+        textEvidence: ['SOUVLA logo on tray and cup'],
+      },
+    })
+    expect(body.candidates[0]).toMatchObject({
+      id: 'souvla',
+      name: 'Souvla',
+    })
+
+    fetchMock.mockRestore()
+  })
+
   it('runs Exa evidence searches in parallel before final Cloudflare analysis', async () => {
     const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation(async (url, init) => {
       if (String(url).includes('api.exa.ai')) {
