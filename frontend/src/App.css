@@ -109,7 +109,7 @@
   min-height: 0;
   border: 1px solid #cdd8d0;
   border-radius: 10px;
-  background: #111814;
+  background: #f5f8f5;
   display: block;
   box-shadow: none;
 }
@@ -156,16 +156,22 @@
 
 .upload-preview {
   position: relative;
-  display: block;
+  display: flex;
+  justify-content: center;
+  align-items: center;
   width: 100%;
+  background: #f5f8f5;
 }
 
 .upload-zone img {
   display: block;
-  width: 100%;
-  max-height: 280px;
-  object-fit: cover;
+  width: auto;
+  max-width: 100%;
+  height: auto;
+  max-height: min(72vh, 760px);
+  object-fit: contain;
   border-radius: 9px;
+  background: #f5f8f5;
 }
 
 .analysis-overlay {

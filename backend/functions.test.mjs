@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { onRequestGet as healthGet } from '../functions/api/health.js'
 import { onRequestPost as analyzePhotoPost } from '../functions/api/analyze-photo.js'
 import { onRequestPost as feedbackPost } from '../functions/api/feedback.js'
+import { normalizeAnalysis } from '../functions/api/_shared.js'
 
 const pngPixel = Buffer.from(
   'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=',
@@ -464,7 +465,7 @@ describe('Cloudflare Pages Functions API', () => {
         {
           id: 'kissaten-hifi',
           name: 'Kissaten HiFi',
-          confidence: 96,
+          confidence: 78,
           category: 'Cafe',
           neighborhood: 'Inner Richmond',
           address: '189 6th Ave',
@@ -652,6 +653,33 @@ describe('Cloudflare Pages Functions API', () => {
     })
 
     globalThis.fetch.mockRestore()
+  })
+
+  it('caps partial packaging text in Cloudflare ranking', () => {
+    const result = normalizeAnalysis(
+      {
+        summary: 'Greek-style food with a cup that says BODEGA.',
+        imageEvidence: ['Cup with BODEGA logo', 'blue-rim plates', 'fries'],
+        candidates: [
+          {
+            id: 'bodega-sf',
+            name: 'Bodega SF',
+            confidence: 100,
+            evidenceCategories: ['visible_text', 'packaging_logo', 'dish_match', 'web_source_match'],
+            reasons: ["The image shows a cup with a visible 'BODEGA' logo."],
+            sourceUrls: ['https://www.bodegasf.com/'],
+          },
+        ],
+      },
+      { seedVenueIds: ['bodega-sf'] },
+    )
+
+    expect(result.candidates[0]).toMatchObject({
+      name: 'Bodega SF',
+      confidence: expect.any(Number),
+    })
+    expect(result.candidates[0].evidenceCategories).not.toContain('visible_text')
+    expect(result.candidates[0].confidence).toBeLessThanOrEqual(72)
   })
 
   it('rejects unsupported Cloudflare photo uploads before provider calls', async () => {

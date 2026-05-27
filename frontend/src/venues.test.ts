@@ -17,6 +17,12 @@ describe('verified seed venues', () => {
           address: '205 Oak St',
           imageEvidenceHints: expect.arrayContaining(['caviar', 'burger', 'rich table']),
         }),
+        expect.objectContaining({
+          id: 'souvla',
+          name: 'Souvla',
+          address: 'Multiple San Francisco locations',
+          imageEvidenceHints: expect.arrayContaining(['souvla', 'greek key', 'blue rim']),
+        }),
       ]),
     )
   })

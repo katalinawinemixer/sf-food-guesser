@@ -241,6 +241,7 @@ export function buildCloudflarePrompt(venues, webEvidence = [], searchPlan = nul
 
 Use the seed venue list only as hints. You may return San Francisco venues outside the seed list when the image or web evidence supports them.
 Use external evidence as leads, not truth: compare it against the uploaded image before ranking a venue.
+Treat visible text carefully. Exact storefront/menu/receipt/venue-name text is strong evidence. Generic words, partial brand marks, sauce bottles, packaged goods, delivery bags, cups, or third-party branding are not enough for very high confidence unless the exact venue name is readable or web/photo evidence confirms that branding belongs to the venue shown.
 
 Return strict JSON only:
 {
@@ -264,7 +265,8 @@ Return strict JSON only:
 }
 
 Ranking rules:
-- Prefer exact readable venue text, packaging/logo, storefront, or matching interior evidence over generic dish similarity.
+- Prefer exact readable venue text, storefront, receipt/menu text, or matching interior evidence over generic dish similarity.
+- Do not give a very high confidence score to a venue based only on packaging, cups, bottles, bags, or a partial logo. Keep those guesses moderate unless the exact venue name is visible.
 - Penalize guesses based only on generic coffee/matcha/pastry/cuisine.
 - Return up to three candidates. Use low confidence when evidence is weak.
 
@@ -623,7 +625,7 @@ function seedVenueCandidates(seedVenues = [], options = {}) {
       const sourceHit = webEvidence.some((page) =>
         normalizeMatchText([page.title, page.snippet, page.url].join(' ')).includes(venueName),
       )
-      if (matchedHints.length < 1 && !nameHit && !sourceHit) return null
+      if (matchedHints.length < 2 && !nameHit && !sourceHit) return null
 
       const confidence = Math.min(94, 62 + matchedHints.length * 6 + (nameHit ? 10 : 0) + (sourceHit ? 8 : 0))
       return normalizeCandidate({
@@ -652,9 +654,20 @@ function rankCandidates(candidates, seedVenueIds = []) {
     .map((candidate, originalIndex) => {
       const categories = new Set(candidate.evidenceCategories)
       const hasSeedMatch = Boolean(candidate.id) && seedIds.has(candidate.id)
-      const hasIdentityEvidence = ['visible_text', 'packaging_logo', 'gps_match'].some((category) =>
+      const candidateText = normalizeMatchText([
+        ...(Array.isArray(candidate.reasons) ? candidate.reasons : []),
+        ...(Array.isArray(candidate.sourceUrls) ? candidate.sourceUrls : []),
+      ].join(' '))
+      const normalizedName = normalizeMatchText(candidate.name)
+      const hasReliableVisibleText =
+        categories.has('visible_text') && normalizedName && candidateText.includes(normalizedName)
+      if (categories.has('visible_text') && !hasReliableVisibleText) {
+        categories.delete('visible_text')
+      }
+      const hasIdentityEvidence = ['visible_text', 'gps_match'].some((category) =>
         categories.has(category),
       )
+      const hasLogoEvidence = categories.has('packaging_logo')
       const hasInteriorOrStorefront = ['interior_match', 'storefront_match'].some((category) =>
         categories.has(category),
       )
@@ -678,14 +691,21 @@ function rankCandidates(candidates, seedVenueIds = []) {
       const confidenceCap =
         dishOnly
           ? 42
-          : !hasSeedMatch && !hasIdentityEvidence
-            ? hasInteriorOrStorefront
-              ? 62
-              : 54
-            : 100
+          : hasSeedMatch && !hasIdentityEvidence && hasLogoEvidence
+            ? 72
+            : hasSeedMatch && !hasIdentityEvidence
+              ? 78
+              : !hasSeedMatch && !hasIdentityEvidence
+                ? hasInteriorOrStorefront
+                  ? 62
+                  : hasLogoEvidence
+                    ? 58
+                    : 54
+                : 100
 
       return {
         ...candidate,
+        evidenceCategories: [...categories],
         confidence: Math.round(Math.min(rawScore, confidenceCap)),
         _rankScore: Math.min(rawScore, confidenceCap),
         _originalIndex: originalIndex,

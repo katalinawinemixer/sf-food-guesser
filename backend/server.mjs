@@ -343,7 +343,9 @@ Use both:
 
 If the photo shows the interior of a store, dining room, counter, bar, wall art, lighting, tile, tables, menu boards, display cases, murals, plants, windows, flooring, shelving, or other room details, treat those as primary evidence. Search for public photo/review pages and venue pages that could show matching interiors, including Google Maps / Google Business Profile pages when surfaced by search, Yelp photo pages, Tripadvisor, restaurant websites, Instagram/TikTok captions, food blogs, Eater, Infatuation, Michelin, and local press.
 
-Use interior/storefront evidence more heavily than generic dish evidence. A croissant, pizza slice, latte, or sandwich alone is usually not enough. A matching counter, mural, menu board, tile wall, logo, plate, cup, bag, or window view is much stronger.
+Use interior/storefront evidence more heavily than generic dish evidence. A croissant, pizza slice, latte, or sandwich alone is usually not enough. A matching counter, mural, menu board, tile wall, plate, or window view is much stronger.
+
+Treat visible text and branding carefully. Exact storefront/menu/receipt/venue-name text is strong evidence. Generic words, partial brand marks, sauce bottles, packaged goods, delivery bags, cups, or third-party branding are not enough for very high confidence unless the exact venue name is readable or web/photo evidence confirms that branding belongs to the venue shown.
 
 You may receive a contact sheet built from the same uploaded image: one panel is the full upload and another panel may be a zoomed crop. Inspect every panel. Small logo, tray, cup, bag, label, receipt, menu, or storefront text may only be readable in the zoomed panel.
 
@@ -378,7 +380,8 @@ Rules:
 - Do not use live hours, reviews, or unsupported claims.
 - Base the ranking on what can be inferred from the uploaded image, any embedded location context, the seed dataset, and web evidence.
 - If signage, menu text, street signs, dish shape, packaging, or interior details are visible, use them as image evidence.
-- If any readable brand or venue text is visible anywhere in the image or crops, copy the exact text into imageEvidence, create/search a candidate for that venue first, and include visible_text plus packaging_logo or storefront_match when appropriate. Readable venue text outranks generic dish, plate, and interior similarity.
+- If any readable brand or venue text is visible anywhere in the image or crops, copy the exact text into imageEvidence, create/search a candidate for that text first, and include visible_text only when the exact venue name is readable. Readable exact venue text outranks generic dish, plate, and interior similarity.
+- Do not give a very high confidence score to a venue based only on packaging, cups, bottles, bags, or a partial logo. Keep those guesses moderate unless the exact venue name is visible.
 - Search broadly across the internet for San Francisco-specific matches when the seed list is insufficient.
 - For interior photos, explicitly search for matching interiors and public customer/business photos; do not stop after matching the food item.
 - Prefer candidates with matching interior/storefront/photo-page evidence over candidates that only share a common dish.
@@ -1024,10 +1027,16 @@ function normalizeEvidenceCategories(candidate) {
       .filter((category) => evidenceCategories.includes(category)),
   )
 
+  const normalizedCandidateName = normalizeNameText(candidate.name)
+  const normalizedEvidenceText = normalizeNameText(text)
+  const exactCandidateNameIsReadable =
+    normalizedCandidateName.length >= 4 && normalizedEvidenceText.includes(normalizedCandidateName)
   const hasReliableVisibleText =
     /\b(readable|reads|says|spells|labeled|labelled|venue name|store name|sign says|label says|logo says|menu says|receipt says|visible sign|visible text|brand text|brand name|printed text|printed logo|visible logo|visible branding)\b/.test(
       text,
-    ) && !/\b(blurred|unreadable|blank|white label|no readable)\b/.test(text)
+    ) &&
+    exactCandidateNameIsReadable &&
+    !/\b(blurred|unreadable|blank|white label|no readable)\b/.test(text)
 
   if (categories.has('visible_text') && !hasReliableVisibleText) {
     categories.delete('visible_text')
@@ -1107,8 +1116,7 @@ export function rerankCandidates(rawCandidates = [], options = {}) {
       const hasHardVenueEvidence =
         hasSeedMatch ||
         hasExternalPhotoMatch ||
-        hasIdentityEvidence ||
-        hasLogoEvidence
+        hasIdentityEvidence
       const hasUnverifiedVisualClaim =
         !hasExternalPhotoMatch &&
         evidenceCategoriesForCandidate.some((category) =>
@@ -1132,19 +1140,23 @@ export function rerankCandidates(rawCandidates = [], options = {}) {
       const confidenceCap =
         dishOnly
           ? 42
-          : isWebDiscovered && !hasIdentityEvidence && !hasExternalPhotoMatch
-            ? 58
-            : isWebDiscovered && !hasIdentityEvidence && hasUnverifiedVisualClaim
-              ? 68
-              : isWebDiscovered && !hasIdentityEvidence
-                ? hasLogoEvidence
-                  ? 78
-                  : 72
-                : !hasHardVenueEvidence && hasUnverifiedVisualClaim
+          : hasSeedMatch && !hasIdentityEvidence && hasLogoEvidence
+            ? 72
+            : hasSeedMatch && !hasIdentityEvidence
+              ? 78
+              : isWebDiscovered && !hasIdentityEvidence && !hasExternalPhotoMatch
+                ? 58
+                : isWebDiscovered && !hasIdentityEvidence && hasUnverifiedVisualClaim
                   ? 68
-                  : !hasHardVenueEvidence
-                    ? 74
-                    : 100
+                  : isWebDiscovered && !hasIdentityEvidence
+                    ? hasLogoEvidence
+                      ? 78
+                      : 72
+                    : !hasHardVenueEvidence && hasUnverifiedVisualClaim
+                      ? 68
+                      : !hasHardVenueEvidence
+                        ? 74
+                        : 100
       const adjustedScore = Math.min(rawAdjustedScore, confidenceCap)
       const adjustedConfidence = Math.round(adjustedScore)
       const rankingNotes = [

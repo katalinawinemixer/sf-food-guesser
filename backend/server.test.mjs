@@ -2081,6 +2081,22 @@ describe('SF Food Guesser API', () => {
     expect(candidates[0].rankingNotes).toContain('Matched visible text from the photo.')
   })
 
+  it('does not treat partial packaging text as exact venue identity', () => {
+    const candidates = rerankCandidates([
+      {
+        id: 'bodega-sf',
+        name: 'Bodega SF',
+        confidence: 100,
+        evidenceCategories: ['visible_text', 'packaging_logo', 'dish_match', 'web_source_match'],
+        reasons: ["The image shows a cup with a visible 'BODEGA' logo."],
+        sourceUrls: ['https://www.bodegasf.com/'],
+      },
+    ], { seedVenueIds: ['bodega-sf'] })
+
+    expect(candidates[0].evidenceCategories).not.toContain('visible_text')
+    expect(candidates[0].confidence).toBeLessThanOrEqual(72)
+  })
+
   it('does not keep duplicate candidate names after reranking', () => {
     const candidates = rerankCandidates([
       {
