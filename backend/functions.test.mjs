@@ -152,6 +152,104 @@ describe('Cloudflare Pages Functions API', () => {
     fetchMock.mockRestore()
   })
 
+  it('falls back to a simpler Cloudflare vision request when provider tools fail', async () => {
+    const fetchMock = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            choices: [
+              {
+                message: {
+                  content: JSON.stringify({
+                    summary: 'A Mediterranean tray with blue-rim plates.',
+                    imageEvidence: ['blue-rim plates', 'salad', 'fries'],
+                    visibleText: [],
+                    searchQueries: ['San Francisco blue rim plates Mediterranean tray'],
+                    likelyVenueTypes: ['restaurant'],
+                  }),
+                },
+              },
+            ],
+          }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } },
+        ),
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ error: { message: 'Provider tool call failed' } }), {
+          status: 500,
+          headers: { 'Content-Type': 'application/json' },
+        }),
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            choices: [
+              {
+                message: {
+                  content: JSON.stringify({
+                    summary: 'A Mediterranean tray with blue-rim plates.',
+                    imageEvidence: ['blue-rim plates', 'salad', 'fries'],
+                    candidates: [
+                      {
+                        id: '',
+                        name: 'Souvla',
+                        category: 'Restaurant',
+                        neighborhood: 'Hayes Valley',
+                        address: '517 Hayes St',
+                        confidence: 82,
+                        evidenceCategories: ['dish_match', 'visible_brand_match'],
+                        reasons: ['The blue-rim plates and Greek dishes match Souvla.'],
+                      },
+                    ],
+                    needsMoreEvidence: false,
+                  }),
+                },
+              },
+            ],
+          }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } },
+        ),
+      )
+    const formData = new FormData()
+    formData.set('photo', new File([pngPixel], 'souvla.png', { type: 'image/png' }))
+    formData.set('venues', '[]')
+
+    const response = await analyzePhotoPost({
+      request: {
+        formData: async () => formData,
+        headers: cloudflareHeaders(),
+      },
+      env: usageEnv({
+        OPENROUTER_VISION_MODEL: 'qwen/qwen3-vl-32b-instruct',
+      }),
+    })
+    const body = await json(response)
+    const primaryPayload = JSON.parse(String(fetchMock.mock.calls[1]?.[1]?.body))
+    const fallbackPayload = JSON.parse(String(fetchMock.mock.calls[2]?.[1]?.body))
+
+    expect(response.status).toBe(200)
+    expect(fetchMock).toHaveBeenCalledTimes(3)
+    expect(primaryPayload.tools[0].type).toBe('openrouter:web_search')
+    expect(fallbackPayload.tools).toBeUndefined()
+    expect(body).toMatchObject({
+      candidates: [
+        {
+          name: 'Souvla',
+        },
+      ],
+      webSearchProvider: null,
+      providerWarnings: [
+        {
+          provider: 'vision-analysis:qwen/qwen3-vl-32b-instruct',
+          message: 'Provider tool call failed',
+        },
+      ],
+    })
+
+    fetchMock.mockRestore()
+  })
+
   it('rejects disallowed Cloudflare origins before parsing uploads', async () => {
     const fetchMock = vi.spyOn(globalThis, 'fetch')
     const formData = vi.fn(async () => new FormData())

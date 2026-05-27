@@ -56,6 +56,11 @@ function seedPhotoSearchQueries(venues = [], searchPlan = null) {
     )
 }
 
+function shouldTryNextProviderAttempt(error) {
+  const status = Number(error?.status ?? 0)
+  return status !== 401 && status !== 402
+}
+
 export async function onRequestPost({ request, env }) {
   const provider = providerFromEnv(env)
   const runId = crypto.randomUUID()
@@ -163,7 +168,7 @@ export async function onRequestPost({ request, env }) {
         message: String(error?.message ?? 'Search planning failed.'),
       })
       lastError = error
-      if (Number(error?.status) !== 429) break
+      if (!shouldTryNextProviderAttempt(error)) break
     }
   }
 
@@ -216,102 +221,130 @@ export async function onRequestPost({ request, env }) {
     }
   }
 
+  const analysisAttempts = [
+    {
+      label: 'vision-analysis',
+      includeExternalPhotoImages: true,
+      includeOpenRouterWebSearch: true,
+    },
+    {
+      label: 'vision-analysis-fallback',
+      includeExternalPhotoImages: false,
+      includeOpenRouterWebSearch: false,
+    },
+  ]
   for (const model of models) {
-    try {
-      const response = await fetch(provider.endpoint, {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${provider.apiKey}`,
-          'Content-Type': 'application/json',
-          ...(provider.provider === 'openrouter'
-            ? {
-                'HTTP-Referer': env.OPENROUTER_SITE_URL || request.headers.get('origin') || '',
-                'X-OpenRouter-Title': 'SF Food Guesser',
-              }
-            : {}),
-        },
-        body: JSON.stringify({
-          model,
-          messages: [
-            {
-              role: 'system',
-              content:
-                'You identify likely San Francisco restaurants, cafes, bakeries, counters, bars, and dessert shops from uploaded photos. Be honest about uncertainty and return strict JSON only.',
-            },
-            {
-              role: 'user',
-              content: [
-                { type: 'text', text: buildCloudflarePrompt(venues, webEvidence, searchPlan, photoEvidence) },
-                ...buildCloudflarePhotoEvidenceParts(photoEvidence),
-                { type: 'image_url', image_url: { url: dataUrl, detail: 'high' } },
-              ],
-            },
-          ],
-          response_format: { type: 'json_object' },
-          ...(provider.provider === 'openrouter'
-            ? {
-                tools: [
+    for (const attempt of analysisAttempts) {
+      try {
+        const response = await fetch(provider.endpoint, {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${provider.apiKey}`,
+            'Content-Type': 'application/json',
+            ...(provider.provider === 'openrouter'
+              ? {
+                  'HTTP-Referer': env.OPENROUTER_SITE_URL || request.headers.get('origin') || '',
+                  'X-OpenRouter-Title': 'SF Food Guesser',
+                }
+              : {}),
+          },
+          body: JSON.stringify({
+            model,
+            messages: [
+              {
+                role: 'system',
+                content:
+                  'You identify likely San Francisco restaurants, cafes, bakeries, counters, bars, and dessert shops from uploaded photos. Be honest about uncertainty and return strict JSON only.',
+              },
+              {
+                role: 'user',
+                content: [
                   {
-                    type: 'openrouter:web_search',
-                    parameters: {
-                      engine: 'auto',
-                      max_results: 8,
-                      max_total_results: 24,
-                      search_context_size: 'high',
-                      user_location: {
-                        type: 'approximate',
-                        city: 'San Francisco',
-                        region: 'California',
-                        country: 'US',
-                        timezone: 'America/Los_Angeles',
+                    type: 'text',
+                    text: buildCloudflarePrompt(venues, webEvidence, searchPlan, photoEvidence),
+                  },
+                  ...(attempt.includeExternalPhotoImages
+                    ? buildCloudflarePhotoEvidenceParts(photoEvidence)
+                    : []),
+                  { type: 'image_url', image_url: { url: dataUrl, detail: 'high' } },
+                ],
+              },
+            ],
+            response_format: { type: 'json_object' },
+            ...(provider.provider === 'openrouter' && attempt.includeOpenRouterWebSearch
+              ? {
+                  tools: [
+                    {
+                      type: 'openrouter:web_search',
+                      parameters: {
+                        engine: 'auto',
+                        max_results: 8,
+                        max_total_results: 24,
+                        search_context_size: 'high',
+                        user_location: {
+                          type: 'approximate',
+                          city: 'San Francisco',
+                          region: 'California',
+                          country: 'US',
+                          timezone: 'America/Los_Angeles',
+                        },
                       },
                     },
-                  },
-                ],
-              }
-            : {}),
-          temperature: 0.1,
-          max_tokens: 2200,
-        }),
-      })
+                  ],
+                }
+              : {}),
+            temperature: 0.1,
+            max_tokens: 2200,
+          }),
+        })
 
-      const result = await response.json().catch(() => ({}))
-      if (!response.ok) {
-        const error = new Error(result?.error?.message || result?.message || response.statusText)
-        error.status = response.status
-        throw error
+        const result = await response.json().catch(() => ({}))
+        if (!response.ok) {
+          const error = new Error(result?.error?.message || result?.message || response.statusText)
+          error.status = response.status
+          throw error
+        }
+
+        const outputText = result?.choices?.[0]?.message?.content ?? ''
+        const analysis = normalizeAnalysis(parseModelJson(outputText), {
+          seedVenueIds: venues.map((venue) => venue.id).filter(Boolean),
+          seedVenues: venues,
+          searchPlan,
+          webEvidence,
+        })
+        return jsonResponse({
+          runId,
+          ...analysis,
+          searchProvider: env.HASDATA_API_KEY ? 'hasdata-google-maps-photos' : null,
+          webSearchProvider:
+            provider.provider === 'openrouter' && attempt.includeOpenRouterWebSearch
+              ? 'openrouter-web-search'
+              : null,
+          articleSearchProvider: env.EXA_API_KEY ? 'exa-deep-highlights' : null,
+          articleCandidates: [],
+          photoEvidence,
+          ...(photoEvidenceDebug ? { photoEvidenceDebug } : {}),
+          webEvidence,
+          searchPlan,
+          providerWarnings,
+        })
+      } catch (error) {
+        providerWarnings.push({
+          provider: `${attempt.label}:${model}`,
+          message: String(error?.message ?? 'Vision analysis failed.'),
+        })
+        lastError = error
+        if (!shouldTryNextProviderAttempt(error)) break
       }
-
-      const outputText = result?.choices?.[0]?.message?.content ?? ''
-      const analysis = normalizeAnalysis(parseModelJson(outputText), {
-        seedVenueIds: venues.map((venue) => venue.id).filter(Boolean),
-        seedVenues: venues,
-        searchPlan,
-        webEvidence,
-      })
-      return jsonResponse({
-        runId,
-        ...analysis,
-        searchProvider: env.HASDATA_API_KEY ? 'hasdata-google-maps-photos' : null,
-        webSearchProvider: provider.provider === 'openrouter' ? 'openrouter-web-search' : null,
-        articleSearchProvider: env.EXA_API_KEY ? 'exa-deep-highlights' : null,
-        articleCandidates: [],
-        photoEvidence,
-        ...(photoEvidenceDebug ? { photoEvidenceDebug } : {}),
-        webEvidence,
-        searchPlan,
-        providerWarnings,
-      })
-    } catch (error) {
-      lastError = error
-      if (Number(error?.status) !== 429) break
     }
+    if (!shouldTryNextProviderAttempt(lastError)) break
   }
 
   return jsonResponse(
     {
       runId,
       error: providerErrorMessage(lastError, provider.provider),
+      providerWarnings,
     },
     Number(lastError?.status) || 500,
   )
