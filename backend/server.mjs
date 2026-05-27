@@ -1179,6 +1179,9 @@ export function rerankCandidates(rawCandidates = [], options = {}) {
       const strongEvidence = evidenceCategoriesForCandidate.filter(
         (category) => category !== 'dish_match',
       )
+      const nonSourceEvidence = evidenceCategoriesForCandidate.filter(
+        (category) => category !== 'web_source_match',
+      )
       const hasExternalPhotoMatch =
         Array.isArray(candidate.comparisonPhotos) &&
         candidate.comparisonPhotos.some((photo) => trustedPhotoUrls.has(photo.url))
@@ -1188,8 +1191,12 @@ export function rerankCandidates(rawCandidates = [], options = {}) {
       )
       const hasLogoEvidence = evidenceCategoriesForCandidate.includes('packaging_logo')
       const isWebDiscovered = !hasSeedMatch
+      const sourceOnly =
+        evidenceCategoriesForCandidate.includes('web_source_match') && nonSourceEvidence.length === 0
+      const seedOnly = hasSeedMatch && sourceOnly
+      const hasSeedPhotoEvidence = hasSeedMatch && nonSourceEvidence.length > 0
       const hasHardVenueEvidence =
-        hasSeedMatch ||
+        hasSeedPhotoEvidence ||
         hasExternalPhotoMatch ||
         hasIdentityEvidence
       const hasUnverifiedVisualClaim =
@@ -1198,7 +1205,10 @@ export function rerankCandidates(rawCandidates = [], options = {}) {
           ['interior_match', 'storefront_match'].includes(category),
         )
       const dishOnly =
-        evidenceCategoriesForCandidate.includes('dish_match') && strongEvidence.length === 0
+        evidenceCategoriesForCandidate.includes('dish_match') &&
+        nonSourceEvidence.every((category) => category === 'dish_match') &&
+        !hasIdentityEvidence &&
+        !hasExternalPhotoMatch
       const hasSource = Array.isArray(candidate.sourceUrls) && candidate.sourceUrls.length > 0
       const hasReasons = Array.isArray(candidate.reasons) && candidate.reasons.length > 0
       const explanations = explanationBuckets(candidate)
@@ -1214,29 +1224,35 @@ export function rerankCandidates(rawCandidates = [], options = {}) {
         Math.min(100, baseConfidence * 0.62 + evidenceScore + sourceScore + reasonScore + dishOnlyPenalty),
       )
       const confidenceCap =
-        dishOnly
-          ? 42
-          : hasSeedMatch && !hasIdentityEvidence && hasLogoEvidence
-            ? 72
-            : hasSeedMatch && !hasIdentityEvidence
-              ? 78
-              : isWebDiscovered && !hasIdentityEvidence && !hasExternalPhotoMatch
-                ? 58
-                : isWebDiscovered && !hasIdentityEvidence && hasUnverifiedVisualClaim
-                  ? 68
-                  : isWebDiscovered && !hasIdentityEvidence
-                    ? hasLogoEvidence
-                      ? 78
-                      : 72
-                    : !hasHardVenueEvidence && hasUnverifiedVisualClaim
+        seedOnly
+          ? 40
+          : sourceOnly
+            ? 38
+            : dishOnly
+              ? 42
+              : hasSeedMatch && !hasIdentityEvidence && hasLogoEvidence
+                ? 72
+                : hasSeedMatch && !hasIdentityEvidence
+                  ? 78
+                  : isWebDiscovered && !hasIdentityEvidence && !hasExternalPhotoMatch
+                    ? 58
+                    : isWebDiscovered && !hasIdentityEvidence && hasUnverifiedVisualClaim
                       ? 68
-                      : !hasHardVenueEvidence
-                        ? 74
-                        : 100
+                      : isWebDiscovered && !hasIdentityEvidence
+                        ? hasLogoEvidence
+                          ? 78
+                          : 72
+                        : !hasHardVenueEvidence && hasUnverifiedVisualClaim
+                          ? 68
+                          : !hasHardVenueEvidence
+                            ? 74
+                            : 100
       const adjustedScore = Math.min(rawAdjustedScore, confidenceCap)
       const adjustedConfidence = Math.round(adjustedScore)
       const rankingNotes = [
         ...strongEvidence.map(evidenceNote).filter(Boolean),
+        ...(seedOnly ? ['Seed-list identity alone is not photo evidence, so this was capped.'] : []),
+        ...(sourceOnly ? ['Source/article evidence alone is weak without a matching uploaded-photo clue.'] : []),
         ...(dishOnly ? ['Food/drink similarity alone is weak evidence, so this was ranked lower.'] : []),
         ...(hasUnverifiedVisualClaim
           ? ['Interior/storefront similarity was not verified against external photos, so confidence is capped.']

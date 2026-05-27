@@ -867,6 +867,37 @@ describe('Cloudflare Pages Functions API', () => {
     )
   })
 
+  it('caps Cloudflare source-only and seed-only guesses', () => {
+    const result = normalizeAnalysis(
+      {
+        summary: 'Burger and fries with no readable venue text.',
+        imageEvidence: ['burger', 'fries'],
+        candidates: [
+          {
+            id: 'rintaro',
+            name: 'Rintaro',
+            confidence: 99,
+            evidenceCategories: ['web_source_match'],
+            externalEvidence: ['A source page says Rintaro serves udon.'],
+            sourceUrls: ['https://example.com/rintaro'],
+          },
+          {
+            id: '',
+            name: 'Article Only Cafe',
+            confidence: 95,
+            evidenceCategories: ['web_source_match'],
+            externalEvidence: ['An article mentions a new cafe.'],
+            sourceUrls: ['https://example.com/article-only'],
+          },
+        ],
+      },
+      { seedVenueIds: ['rintaro'] },
+    )
+
+    expect(result.candidates.find((candidate) => candidate.name === 'Rintaro')?.confidence).toBeLessThanOrEqual(40)
+    expect(result.candidates.find((candidate) => candidate.name === 'Article Only Cafe')?.confidence).toBeLessThanOrEqual(38)
+  })
+
   it('rejects unsupported Cloudflare photo uploads before provider calls', async () => {
     const fetchMock = vi.spyOn(globalThis, 'fetch')
     const formData = new FormData()

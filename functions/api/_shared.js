@@ -776,6 +776,7 @@ function rankCandidates(candidates, seedVenueIds = []) {
     .map((candidate, originalIndex) => {
       const categories = new Set(candidate.evidenceCategories)
       const hasSeedMatch = Boolean(candidate.id) && seedIds.has(candidate.id)
+      const nonSourceCategories = [...categories].filter((category) => category !== 'web_source_match')
       const candidateText = normalizeMatchText([
         ...(Array.isArray(candidate.reasons) ? candidate.reasons : []),
         ...(Array.isArray(candidate.sourceUrls) ? candidate.sourceUrls : []),
@@ -793,7 +794,12 @@ function rankCandidates(candidates, seedVenueIds = []) {
       const hasInteriorOrStorefront = ['interior_match', 'storefront_match'].some((category) =>
         categories.has(category),
       )
-      const dishOnly = categories.has('dish_match') && !hasInteriorOrStorefront && !hasIdentityEvidence
+      const sourceOnly = categories.has('web_source_match') && nonSourceCategories.length === 0
+      const seedOnly = hasSeedMatch && sourceOnly
+      const dishOnly =
+        categories.has('dish_match') &&
+        nonSourceCategories.every((category) => category === 'dish_match') &&
+        !hasIdentityEvidence
       const hasSource = candidate.sourceUrls.length > 0
       const evidenceScore = [...categories].reduce(
         (score, category) => score + (evidenceWeights[category] ?? 0),
@@ -811,22 +817,28 @@ function rankCandidates(candidates, seedVenueIds = []) {
         ),
       )
       const confidenceCap =
-        dishOnly
-          ? 42
-          : hasSeedMatch && !hasIdentityEvidence && hasLogoEvidence
-            ? 72
-            : hasSeedMatch && !hasIdentityEvidence
-              ? 78
-              : !hasSeedMatch && !hasIdentityEvidence
-                ? hasInteriorOrStorefront
-                  ? 62
-                  : hasLogoEvidence
-                    ? 58
-                    : 54
-                : 100
+        seedOnly
+          ? 40
+          : sourceOnly
+            ? 38
+            : dishOnly
+              ? 42
+              : hasSeedMatch && !hasIdentityEvidence && hasLogoEvidence
+                ? 72
+                : hasSeedMatch && !hasIdentityEvidence
+                  ? 78
+                  : !hasSeedMatch && !hasIdentityEvidence
+                    ? hasInteriorOrStorefront
+                      ? 62
+                      : hasLogoEvidence
+                        ? 58
+                        : 54
+                    : 100
 
       const rankingRules = [
         ...candidate.rankingRules,
+        ...(seedOnly ? ['Seed-list identity alone is not photo evidence, so this was capped.'] : []),
+        ...(sourceOnly ? ['Source/article evidence alone is weak without a matching uploaded-photo clue.'] : []),
         ...(dishOnly ? ['Food/drink similarity alone is weak evidence, so this was ranked lower.'] : []),
         ...(!hasSeedMatch && !hasIdentityEvidence
           ? ['No readable venue name, GPS, or unique identity clue was verified, so this guess is capped.']

@@ -404,7 +404,7 @@ describe('SF Food Guesser API', () => {
         candidates: [
           {
             name: 'RT Bistro',
-            confidence: 58,
+            confidence: 42,
           },
         ],
       })
@@ -471,7 +471,7 @@ describe('SF Food Guesser API', () => {
       evidenceCategories: ['dish_match', 'web_source_match'],
       originalConfidence: 92,
     })
-    expect(response.body.candidates[0].confidence).toBeGreaterThan(45)
+    expect(response.body.candidates[0].confidence).toBeLessThanOrEqual(42)
     expect(openAIClient.responses.create).toHaveBeenCalledWith(
       expect.objectContaining({
         model: 'test-model',
@@ -2258,6 +2258,43 @@ describe('SF Food Guesser API', () => {
     expect(candidates[0].rankingRules).toEqual(
       expect.arrayContaining(['No readable venue text was visible, so confidence is capped.']),
     )
+  })
+
+  it('caps local source-only and seed-only guesses', () => {
+    const candidates = rerankCandidates(
+      [
+        {
+          id: 'rintaro',
+          name: 'Rintaro',
+          confidence: 99,
+          evidenceCategories: ['web_source_match'],
+          externalEvidence: ['A source page says Rintaro serves udon.'],
+          sourceUrls: ['https://example.com/rintaro'],
+        },
+        {
+          id: '',
+          name: 'Article Only Cafe',
+          confidence: 95,
+          evidenceCategories: ['web_source_match'],
+          externalEvidence: ['An article mentions a new cafe.'],
+          sourceUrls: ['https://example.com/article-only'],
+        },
+        {
+          id: '',
+          name: 'Burger Photo Lead',
+          confidence: 70,
+          evidenceCategories: ['dish_match', 'web_source_match'],
+          photoEvidence: ['The uploaded photo shows a burger.'],
+          externalEvidence: ['A review page mentions a similar burger.'],
+          sourceUrls: ['https://example.com/burger-lead'],
+        },
+      ],
+      { seedVenueIds: ['rintaro'] },
+    )
+
+    expect(candidates.find((candidate) => candidate.name === 'Rintaro')?.confidence).toBeLessThanOrEqual(40)
+    expect(candidates.find((candidate) => candidate.name === 'Article Only Cafe')?.confidence).toBeLessThanOrEqual(38)
+    expect(candidates.find((candidate) => candidate.name === 'Burger Photo Lead')?.confidence).toBeLessThanOrEqual(42)
   })
 
   it('continues analysis when a web evidence provider fails', async () => {

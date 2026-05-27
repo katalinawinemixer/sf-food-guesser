@@ -151,7 +151,7 @@ order keeps the app honest first, then adds more search power and scale.
 - [x] Hide the top-match hero when top candidates are tied or nearly tied.
 - [x] Rename or recalibrate labels so `Strong` requires identity-level evidence,
   not just a high numeric score.
-- [ ] Add caps for source-only, seed-only, dish-only, and unverified-interior
+- [x] Add caps for source-only, seed-only, dish-only, and unverified-interior
   guesses across both local Express and Cloudflare Functions code paths.
 
 ### 11.4 Development-Only "Why Not" Debugging
