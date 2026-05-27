@@ -14,6 +14,8 @@ const patterns = [
   { name: 'OpenRouter key', regex: /sk-or-v1-[A-Za-z0-9]+/g },
   { name: 'OpenAI key assignment', regex: /OPENAI_API_KEY\s*=\s*sk-[A-Za-z0-9_-]+/g },
   { name: 'OpenRouter key assignment', regex: /OPENROUTER_API_KEY\s*=\s*sk-[A-Za-z0-9_-]+/g },
+  { name: 'HasData key assignment', regex: /HASDATA_API_KEY\s*=\s*[A-Za-z0-9_-]{20,}/g },
+  { name: 'Ceramic key assignment', regex: /CERAMIC_API_KEY\s*=\s*[A-Za-z0-9_-]{20,}/g },
   { name: 'SerpAPI key assignment', regex: /SERPAPI_API_KEY\s*=\s*[A-Za-z0-9_-]{20,}/g },
   { name: 'Exa key assignment', regex: /EXA_API_KEY\s*=\s*[A-Za-z0-9-]{20,}/g },
 ]

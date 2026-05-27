@@ -40,8 +40,8 @@ items were completed earlier out of order.
 - [x] Send uploaded images to the backend for model analysis.
 - [x] Prompt the model to inspect food, signage, interiors, packaging, decor, menus, street clues, and storefront clues.
 - [x] Force structured JSON output for candidates and evidence.
-- [ ] Add model/provider timeout handling and clearer retry messaging.
-- [ ] Log anonymized analysis steps locally for debugging without storing user photos.
+- [x] Add model/provider timeout handling and clearer retry messaging.
+- [x] Log anonymized analysis steps locally for debugging without storing user photos.
 
 ## 5. Search And Evidence Pipeline
 
@@ -51,11 +51,13 @@ items were completed earlier out of order.
 - [x] Wire Exa deep search with `type: "deep"` and `contents: { highlights: true }`.
 - [x] Add Exa tests that verify the deep/highlights search configuration.
 - [x] Surface web evidence in the returned analysis payload.
+- [x] Add an article-discovery lane for recently opened or popular SF cafe candidates from Infatuation/Eater/SF Standard/SFGATE-style sources.
 - [x] Defer SerpAPI unless Exa/OpenRouter evidence is not enough.
 - [x] Add optional Google Maps customer/review photo search through SerpAPI and compare candidate public images visually against the upload.
 - [x] Add source-specific search query generation for Yelp photos, restaurant sites, local blogs, Instagram/TikTok captions, Eater, Infatuation, and other public pages where available.
+- [x] Parallelize independent search calls: article discovery with base web search, and batched Google Maps/place-photo retrieval.
 - [ ] Avoid unsupported scraping; use provider APIs or publicly accessible search results.
-- [ ] Add a durable provider interface so Exa, OpenRouter search, SerpAPI, and future providers are isolated.
+- [x] Add a durable provider interface so Exa, OpenRouter search, SerpAPI, and future providers are isolated.
 
 ## 6. Matching And Ranking
 
@@ -87,18 +89,23 @@ items were completed earlier out of order.
 - [x] Reject invalid venue payloads.
 - [x] Add provider-specific error messages for OpenRouter, Exa, and photo-search providers.
 - [x] Add graceful behavior when one provider fails but others work.
-- [ ] Add request size and file type messaging in the UI.
-- [ ] Add rate-limit messaging.
+- [x] Add request size and file type messaging in the UI.
+- [x] Add rate-limit messaging.
 
 ## 9. Deployment Readiness
 
-- [ ] Choose deployment target.
-- [ ] Move API keys into deployment environment variables.
-- [ ] Keep GitHub free of real secrets.
-- [ ] Add production CORS/origin rules.
-- [ ] Add deployment README steps.
+- [x] Choose deployment target.
+- [x] Move API keys into deployment environment variables.
+- [x] Keep GitHub free of real secrets.
+- [x] Add production CORS/origin rules.
+- [x] Add deployment README steps.
 - [x] Add CI for test, lint, build, and secret scan.
-- [ ] Decide whether uploaded photos are processed transiently only or stored with explicit consent.
+- [x] Decide whether uploaded photos are processed transiently only or stored with explicit consent.
+- [x] Add same-origin Cloudflare Pages Functions for health, photo analysis, and feedback.
+- [x] Add durable Cloudflare KV feedback storage binding.
+- [x] Attach `spotted-in-sf.com` and `www.spotted-in-sf.com` to the same Cloudflare Pages project.
+- [x] Add HTTPS/security headers for the deployed app and API.
+- [x] Connect the Cloudflare Pages project to the `katalinawinemixer/sf-food-guesser` GitHub repo.
 
 ## 10. Future Accuracy Improvements
 

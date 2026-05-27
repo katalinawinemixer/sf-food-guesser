@@ -20,9 +20,65 @@ import './App.css'
 import { categoryOptions, venues, type Venue, type VenueCategory } from './venues'
 
 const apiBaseUrl = import.meta.env.VITE_API_BASE_URL?.replace(/\/$/, '') ?? ''
+const maxUploadBytes = 12 * 1024 * 1024
+const allowedImageMimeTypes = new Set([
+  'image/jpeg',
+  'image/jpg',
+  'image/png',
+  'image/webp',
+  'image/gif',
+  'image/avif',
+  'image/heic',
+  'image/heif',
+])
+const allowedImageExtensions = /\.(avif|gif|heic|heif|jpe?g|png|webp)$/i
 
 function apiUrl(path: string) {
   return `${apiBaseUrl}${path}`
+}
+
+function formatMegabytes(bytes: number) {
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
+}
+
+function validatePhotoFile(file: File) {
+  const mimeType = file.type.toLowerCase()
+
+  if (file.size > maxUploadBytes) {
+    return `That photo is ${formatMegabytes(file.size)}. Upload an image under 12 MB.`
+  }
+
+  if (!allowedImageMimeTypes.has(mimeType) && !allowedImageExtensions.test(file.name)) {
+    return 'Unsupported image type. Upload a JPG, PNG, WebP, AVIF, GIF, HEIC, or HEIF image.'
+  }
+
+  return null
+}
+
+async function readApiError(response: Response) {
+  try {
+    const result = await response.json()
+    if (typeof result.error === 'string' && result.error) return result.error
+  } catch {
+    // Fall through to status-specific messages below.
+  }
+
+  if (response.status === 413) return 'That image is too large. Upload a photo under 12 MB.'
+  if (response.status === 415) {
+    return 'Unsupported image type. Upload a JPG, PNG, WebP, AVIF, GIF, HEIC, or HEIF image.'
+  }
+  if (response.status === 429) {
+    return 'The AI provider is rate limiting photo analysis. Wait a bit, then try the upload again.'
+  }
+
+  return 'Photo analysis failed.'
+}
+
+function normalizeConfidence(value: unknown) {
+  const confidence = Number(value ?? 0)
+  if (!Number.isFinite(confidence)) return 0
+  const normalized = confidence > 0 && confidence <= 1 ? confidence * 100 : confidence
+  return Math.round(Math.max(0, Math.min(100, normalized)))
 }
 
 type VisionCandidate = {
@@ -322,10 +378,11 @@ async function analyzePhotoWithVision(file: File): Promise<VisionAnalysis> {
     body: payload,
   })
 
-  const result = await response.json()
   if (!response.ok) {
-    throw new Error(result.error ?? 'Photo analysis failed.')
+    throw new Error(await readApiError(response))
   }
+
+  const result = await response.json()
 
   return {
     runId: result.runId ? String(result.runId) : undefined,
@@ -343,9 +400,9 @@ async function analyzePhotoWithVision(file: File): Promise<VisionAnalysis> {
             category: candidate.category ? String(candidate.category) : undefined,
             neighborhood: candidate.neighborhood ? String(candidate.neighborhood) : undefined,
             address: candidate.address ? String(candidate.address) : undefined,
-            confidence: Number(candidate.confidence ?? 0),
+            confidence: normalizeConfidence(candidate.confidence),
             originalConfidence: candidate.originalConfidence
-              ? Number(candidate.originalConfidence)
+              ? normalizeConfidence(candidate.originalConfidence)
               : undefined,
             evidenceType: candidate.evidenceType ? String(candidate.evidenceType) : undefined,
             evidenceCategories: Array.isArray(candidate.evidenceCategories)
@@ -504,6 +561,19 @@ function App() {
 
   function handlePhotoFile(file?: File) {
     if (!file) return
+    const validationMessage = validatePhotoFile(file)
+
+    if (validationMessage) {
+      setPhotoFile(null)
+      setFeedbackByVenueId({})
+      setPhoto({
+        status: 'error',
+        name: file.name,
+        message: validationMessage,
+      })
+      setActiveVenueId(null)
+      return
+    }
 
     const previewUrl = URL.createObjectURL(file)
     setPhotoFile(file)
@@ -520,10 +590,23 @@ function App() {
   function handlePhotoDrop(event: DragEvent<HTMLLabelElement>) {
     event.preventDefault()
     setIsDraggingPhoto(false)
-    const file = Array.from(event.dataTransfer.files).find((droppedFile) =>
-      droppedFile.type.startsWith('image/'),
+    const file = Array.from(event.dataTransfer.files).find(
+      (droppedFile) =>
+        allowedImageMimeTypes.has(droppedFile.type.toLowerCase()) ||
+        allowedImageExtensions.test(droppedFile.name),
     )
-    handlePhotoFile(file)
+    if (file) {
+      handlePhotoFile(file)
+      return
+    }
+
+    setPhotoFile(null)
+    setFeedbackByVenueId({})
+    setPhoto({
+      status: 'error',
+      message: 'Drop a JPG, PNG, WebP, AVIF, GIF, HEIC, or HEIF image.',
+    })
+    setActiveVenueId(null)
   }
 
   async function submitPhoto() {

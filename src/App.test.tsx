@@ -48,6 +48,66 @@ describe('SF Food Guesser photo flow', () => {
     expect(screen.queryByText(/Start with typed text/i)).not.toBeInTheDocument()
   })
 
+  it('shows clear upload validation messages before submitting to the API', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
+      new Response(JSON.stringify({ ok: true, visionEnabled: true, model: 'test-model' }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    )
+
+    render(<App />)
+
+    const fileInput = document.querySelector('input[type="file"]') as HTMLInputElement
+    const textFile = new File(['not a photo'], 'notes.txt', { type: 'text/plain' })
+    fireEvent.change(fileInput, {
+      target: { files: [textFile] },
+    })
+
+    expect(await screen.findByText(/Unsupported image type/)).toBeVisible()
+    expect(screen.getByRole('button', { name: 'Identify restaurant' })).toBeDisabled()
+
+    const largeFile = new File([new Uint8Array(12 * 1024 * 1024 + 1)], 'large.jpg', {
+      type: 'image/jpeg',
+    })
+    fireEvent.change(fileInput, {
+      target: { files: [largeFile] },
+    })
+
+    expect(await screen.findByText(/Upload an image under 12 MB/)).toBeVisible()
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+  })
+
+  it('shows rate-limit messages returned by the analysis API', async () => {
+    vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ ok: true, visionEnabled: true, model: 'test-model' }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        }),
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            error:
+              'OpenRouter is rate limiting photo analysis. Wait a bit, then try the upload again.',
+          }),
+          { status: 429, headers: { 'Content-Type': 'application/json' } },
+        ),
+      )
+
+    render(<App />)
+
+    const file = new File(['fake image bytes'], 'latte.png', { type: 'image/png' })
+    fireEvent.change(document.querySelector('input[type="file"]') as HTMLInputElement, {
+      target: { files: [file] },
+    })
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Identify restaurant' }))
+
+    expect(await screen.findByText(/rate limiting photo analysis/i)).toBeVisible()
+  })
+
   it('enables identification after selecting an image and renders vision-ranked results', async () => {
     const fetchMock = vi
       .spyOn(globalThis, 'fetch')
@@ -60,6 +120,7 @@ describe('SF Food Guesser photo flow', () => {
       .mockResolvedValueOnce(
         new Response(
           JSON.stringify({
+            runId: 'run-1',
             summary: 'A square slice of clam pizza on a paper plate.',
             imageEvidence: ['square pizza', 'clam slice', 'counter service'],
             candidates: [
@@ -73,6 +134,18 @@ describe('SF Food Guesser photo flow', () => {
           }),
           { status: 200, headers: { 'Content-Type': 'application/json' } },
         ),
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ ok: true, id: 'feedback-1' }), {
+          status: 201,
+          headers: { 'Content-Type': 'application/json' },
+        }),
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ ok: true, id: 'feedback-2' }), {
+          status: 201,
+          headers: { 'Content-Type': 'application/json' },
+        }),
       )
 
     render(<App />)
@@ -107,6 +180,44 @@ describe('SF Food Guesser photo flow', () => {
     expect(screen.getByText('square pizza')).toBeVisible()
     expect(screen.getAllByText('91%')[0]).toBeVisible()
     expect(screen.getByText(/The image shows a square focaccia-style pizza slice/i)).toBeVisible()
+
+    fireEvent.click(screen.getByLabelText('Mark Golden Boy Pizza correct'))
+
+    await waitFor(() => {
+      expect(screen.getByText('Marked correct')).toBeVisible()
+    })
+
+    const feedbackRequest = fetchMock.mock.calls[2]?.[1] as RequestInit | undefined
+    expect(fetchMock.mock.calls[2]?.[0]).toBe('/api/feedback')
+    expect(feedbackRequest?.method).toBe('POST')
+    expect(JSON.parse(String(feedbackRequest?.body))).toMatchObject({
+      runId: 'run-1',
+      vote: 'correct',
+      rank: 1,
+      candidate: {
+        id: 'golden-boy',
+        name: 'Golden Boy Pizza',
+        confidence: 91,
+      },
+      analysis: {
+        summary: 'A square slice of clam pizza on a paper plate.',
+      },
+    })
+
+    const wrongButton = screen.getByLabelText('Mark Golden Boy Pizza incorrect')
+    fireEvent.click(wrongButton)
+
+    await waitFor(() => {
+      expect(screen.getByText('Marked incorrect')).toBeVisible()
+    })
+    expect(wrongButton).toHaveClass('broken')
+    expect(JSON.parse(String((fetchMock.mock.calls[3]?.[1] as RequestInit).body))).toMatchObject({
+      vote: 'incorrect',
+      rank: 1,
+      candidate: {
+        name: 'Golden Boy Pizza',
+      },
+    })
   })
 
   it('accepts an image dropped directly onto the upload zone', async () => {
@@ -135,6 +246,111 @@ describe('SF Food Guesser photo flow', () => {
     await waitFor(() => {
       expect(screen.getByRole('button', { name: 'Identify restaurant' })).toBeEnabled()
     })
+  })
+
+  it('marks sibling guesses incorrect when one guess is confirmed and supports undo', async () => {
+    const feedbackBodies: Array<Record<string, unknown>> = []
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      if (input === '/api/health') {
+        return new Response(JSON.stringify({ ok: true, visionEnabled: true, model: 'test-model' }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        })
+      }
+
+      if (input === '/api/analyze-photo') {
+        return new Response(
+          JSON.stringify({
+            runId: 'run-cascade',
+            summary: 'A burger and fries on a scalloped plate.',
+            imageEvidence: ['burger', 'scalloped plate'],
+            candidates: [
+              {
+                id: '',
+                name: 'RT Bistro',
+                category: 'Restaurant',
+                neighborhood: 'Hayes Valley',
+                address: '205 Oak St',
+                confidence: 72,
+                reasons: ['Burger and plate match.'],
+                sourceUrls: ['https://example.com/rt-bistro'],
+              },
+              {
+                id: '',
+                name: 'Maillards',
+                category: 'Restaurant',
+                neighborhood: 'Outer Sunset',
+                address: '3821 Noriega St',
+                confidence: 68,
+                reasons: ['Burger and fries match.'],
+                sourceUrls: ['https://example.com/maillards'],
+              },
+              {
+                id: '',
+                name: 'Goldenette',
+                category: 'Restaurant',
+                neighborhood: 'San Francisco',
+                address: 'Address not confirmed',
+                confidence: 58,
+                reasons: ['Diner-style burger match.'],
+                sourceUrls: ['https://example.com/goldenette'],
+              },
+            ],
+            needsMoreEvidence: true,
+          }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } },
+        )
+      }
+
+      if (input === '/api/feedback') {
+        feedbackBodies.push(JSON.parse(String(init?.body)))
+        return new Response(JSON.stringify({ ok: true, id: `feedback-${feedbackBodies.length}` }), {
+          status: 201,
+          headers: { 'Content-Type': 'application/json' },
+        })
+      }
+
+      throw new Error(`Unexpected request: ${String(input)}`)
+    })
+
+    render(<App />)
+
+    const file = new File(['fake image bytes'], 'burger.png', { type: 'image/png' })
+    fireEvent.change(screen.getByLabelText(/Drop image here or choose/i), {
+      target: { files: [file] },
+    })
+
+    const identifyButton = screen.getByRole('button', { name: 'Identify restaurant' })
+    await waitFor(() => {
+      expect(identifyButton).toBeEnabled()
+    })
+    fireEvent.click(identifyButton)
+
+    await waitFor(() => {
+      expect(screen.getByRole('heading', { name: 'RT Bistro', level: 3 })).toBeVisible()
+    })
+
+    fireEvent.click(screen.getByLabelText('Mark RT Bistro correct'))
+
+    await waitFor(() => {
+      expect(screen.getByText('Marked correct')).toBeVisible()
+      expect(screen.getAllByText('Auto-marked incorrect')).toHaveLength(2)
+    })
+    expect(feedbackBodies.slice(0, 3).map((body) => body.vote)).toEqual([
+      'correct',
+      'incorrect',
+      'incorrect',
+    ])
+    expect(feedbackBodies[0]).toMatchObject({ runId: 'run-cascade', rank: 1 })
+    expect(feedbackBodies[1]).toMatchObject({ runId: 'run-cascade', rank: 2 })
+    expect(feedbackBodies[2]).toMatchObject({ runId: 'run-cascade', rank: 3 })
+
+    fireEvent.click(screen.getByLabelText('Undo feedback for RT Bistro'))
+
+    await waitFor(() => {
+      expect(screen.getAllByText('Was this it?')).toHaveLength(3)
+    })
+    expect(feedbackBodies.slice(3).map((body) => body.vote)).toEqual(['undo', 'undo', 'undo'])
   })
 
   it('shows visible analysis progress while the photo request is running', async () => {

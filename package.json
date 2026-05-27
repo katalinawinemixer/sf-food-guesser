@@ -7,7 +7,9 @@
     "dev": "concurrently -k \"node server.mjs\" \"vite --host 127.0.0.1\"",
     "dev:web": "vite --host 127.0.0.1",
     "dev:api": "node server.mjs",
+    "dev:cloudflare": "npm run build && wrangler pages dev dist --compatibility-date=2026-05-27",
     "build": "tsc -b && vite build",
+    "deploy:cloudflare": "npm run build && wrangler pages deploy dist --project-name spotted-in-sf",
     "lint": "eslint .",
     "secret-scan": "node scripts/secret-scan.mjs",
     "test": "vitest run && npm run lint && node --check server.mjs && npm run build",
@@ -25,7 +27,8 @@
     "openai": "^6.39.0",
     "react": "^19.2.6",
     "react-dom": "^19.2.6",
-    "react-leaflet": "^5.0.0"
+    "react-leaflet": "^5.0.0",
+    "sharp": "^0.34.5"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
@@ -42,10 +45,12 @@
     "eslint-plugin-react-refresh": "^0.5.2",
     "globals": "^17.6.0",
     "jsdom": "^29.1.1",
+    "playwright": "^1.60.0",
     "supertest": "^7.2.2",
     "typescript": "~6.0.2",
     "typescript-eslint": "^8.59.2",
     "vite": "^8.0.12",
-    "vitest": "^4.1.7"
+    "vitest": "^4.1.7",
+    "wrangler": "^4.95.0"
   }
 }

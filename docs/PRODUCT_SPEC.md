@@ -41,6 +41,8 @@ Strongest evidence:
 
 - Visible venue name, logo, menu text, receipt, packaging, cup, bag, or plate.
 - Matching interior/storefront details from public photos or venue pages.
+- Article-backed candidate discovery from current local food coverage, followed
+  by visual confirmation from public venue photos.
 - GPS EXIF metadata close to the venue.
 - Multiple independent source URLs supporting the same venue.
 
@@ -90,3 +92,8 @@ When confidence is low, the app should:
 
 Uploaded photos should be treated as transient by default. Do not store user
 photos unless the user explicitly opts into a future saved-history feature.
+
+Local debugging logs may store a run id, timestamps, upload metadata such as
+MIME type and byte size, detected image labels, provider status, candidate
+names, evidence summaries, and feedback votes. They must not store uploaded
+image bytes, base64 strings, data URLs, or generated copies of the photo.

@@ -16,14 +16,16 @@ extra ranking signal.
 The repository only includes placeholder environment variables. Real keys stay
 in your local `.env`, which is ignored by git.
 
-For stronger interior/storefront matching, you can optionally add your own
-`SERPAPI_API_KEY`. With that key, the backend runs an agent-style two-pass flow:
-describe the uploaded photo, search Google Maps places, fetch Google Maps
-customer/review photos for candidate listings, then compare those external
-photos against the upload before ranking places. You can also optionally add
-your own `EXA_API_KEY`; the backend uses `exa-js` with `type: "deep"` and
-`contents: { highlights: true }` to pull broader web/review-page evidence into
-the same comparison step.
+For stronger interior/storefront matching, add optional provider keys locally.
+`HASDATA_API_KEY` is the cost-optimized Google Maps/photo provider: the backend
+uses it to search Google Maps places and fetch customer/review photos before
+asking the vision model to compare those images against the upload.
+`CERAMIC_API_KEY` is the low-cost broad web-search provider for review pages,
+social/photo pages, and local food coverage. `EXA_API_KEY` can still add
+structured article discovery for sources such as Infatuation, Eater, SF
+Standard, SFGATE, Chronicle, and other local food coverage. `SERPAPI_API_KEY`
+is still supported as a legacy Google Maps/photo fallback when HasData is not
+configured.
 
 ## Run
 
@@ -54,6 +56,28 @@ The React app runs on `http://127.0.0.1:5173/` and the local API runs on
 ```bash
 npm run build
 ```
+
+## Cloudflare Pages
+
+The React frontend and same-origin Pages Functions API are ready for Cloudflare
+Pages:
+
+```bash
+npm run deploy:cloudflare
+```
+
+The deployed API lives under `/api` through `functions/api/`, so
+`VITE_API_BASE_URL` should stay blank for the normal Cloudflare deployment.
+Cloudflare runtime secrets are set on the Pages project, not committed to the
+repo. Production feedback records use the `SF_FOOD_FEEDBACK_KV` binding.
+
+Production domains are `https://spotted-in-sf.com` and
+`https://www.spotted-in-sf.com`; both are attached to the same Cloudflare Pages
+project and should serve the same app. The active Pages project is
+`spotted-in-sf`, connected to the private GitHub repo
+`katalinawinemixer/sf-food-guesser` on the `main` branch.
+
+See [docs/DEPLOYMENT.md](./docs/DEPLOYMENT.md).
 
 ## Build Checklist
 

@@ -1,37 +1,58 @@
 import 'dotenv/config'
-import { resolve } from 'node:path'
+import { appendFile, mkdir } from 'node:fs/promises'
+import { randomUUID } from 'node:crypto'
+import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import express from 'express'
 import multer from 'multer'
-import OpenAI from 'openai'
-import Exa from 'exa-js'
+import sharp from 'sharp'
+import { createProviderConfig } from './providers.mjs'
+
+const maxUploadBytes = 12 * 1024 * 1024
+const allowedImageMimeTypes = new Set([
+  'image/jpeg',
+  'image/jpg',
+  'image/png',
+  'image/webp',
+  'image/gif',
+  'image/avif',
+  'image/heic',
+  'image/heif',
+])
+const allowedImageExtensions = /\.(avif|gif|heic|heif|jpe?g|png|webp)$/i
+const defaultAllowedOrigins = [
+  'http://127.0.0.1:5173',
+  'http://localhost:5173',
+  ...parseAllowedOrigins(process.env.SF_FOOD_GUESSER_ALLOWED_ORIGINS),
+]
 
 const upload = multer({
   storage: multer.memoryStorage(),
   limits: {
-    fileSize: 12 * 1024 * 1024,
+    fileSize: maxUploadBytes,
+    files: 1,
+  },
+  fileFilter: (_request, file, callback) => {
+    if (isSupportedImageUpload(file)) {
+      callback(null, true)
+      return
+    }
+
+    const error = new Error(
+      'Unsupported image type. Upload a JPG, PNG, WebP, AVIF, GIF, HEIC, or HEIF image.',
+    )
+    error.status = 415
+    error.code = 'UNSUPPORTED_IMAGE_TYPE'
+    callback(error)
   },
 })
 
 const port = Number(process.env.SF_FOOD_GUESSER_API_PORT ?? 5174)
-const provider = process.env.OPENROUTER_API_KEY
-  ? 'openrouter'
-  : process.env.OPENAI_API_KEY
-    ? 'openai'
-    : null
-const model =
-  process.env.OPENROUTER_VISION_MODEL ??
-  process.env.OPENAI_VISION_MODEL ??
-  (provider === 'openrouter' ? 'openai/gpt-4o-mini' : 'gpt-4.1-mini')
-const openRouterFallbackModels = (process.env.OPENROUTER_FALLBACK_MODELS ?? '')
-  .split(',')
-  .map((fallbackModel) => fallbackModel.trim())
-  .filter(Boolean)
-const serpApiKey = process.env.SERPAPI_API_KEY
-const exaApiKey = process.env.EXA_API_KEY
-const exaClient = exaApiKey ? new Exa(exaApiKey) : null
+const defaultFeedbackLogPath = resolve(process.cwd(), 'data', 'feedback.jsonl')
+const defaultRunLogPath = resolve(process.cwd(), 'data', 'runs.jsonl')
 const maxExternalPhotoImagesForVision = 4
 const evidenceSearchTimeoutMs = 45_000
+const visionRequestTimeoutMs = 60_000
 const evidenceCategories = [
   'visible_text',
   'interior_match',
@@ -41,6 +62,57 @@ const evidenceCategories = [
   'gps_match',
   'web_source_match',
 ]
+
+function parseAllowedOrigins(value = '') {
+  return String(value)
+    .split(',')
+    .map((origin) => origin.trim().replace(/\/$/, ''))
+    .filter(Boolean)
+}
+
+function isSupportedImageUpload(file) {
+  const mimeType = String(file?.mimetype ?? '').toLowerCase()
+  const fileName = String(file?.originalname ?? '')
+  return allowedImageMimeTypes.has(mimeType) || allowedImageExtensions.test(fileName)
+}
+
+function isAllowedOrigin(origin, allowedOrigins) {
+  if (!origin) return true
+  const normalizedOrigin = origin.replace(/\/$/, '')
+  return allowedOrigins.includes('*') || allowedOrigins.includes(normalizedOrigin)
+}
+
+function applyCors(app, allowedOrigins) {
+  app.use((request, response, next) => {
+    const origin = request.get('origin')
+    const requestedHeaders = request.get('access-control-request-headers')
+
+    if (origin && isAllowedOrigin(origin, allowedOrigins)) {
+      response.setHeader('Access-Control-Allow-Origin', origin)
+      response.setHeader('Vary', 'Origin')
+      response.setHeader('Access-Control-Allow-Methods', 'GET,POST,OPTIONS')
+      response.setHeader(
+        'Access-Control-Allow-Headers',
+        requestedHeaders || 'Content-Type, Authorization',
+      )
+    }
+
+    if (request.method === 'OPTIONS') {
+      response.status(isAllowedOrigin(origin, allowedOrigins) ? 204 : 403).end()
+      return
+    }
+
+    if (origin && !isAllowedOrigin(origin, allowedOrigins) && request.path.startsWith('/api/')) {
+      response.status(403).json({
+        error:
+          'This API origin is not allowed. Add the deployed frontend URL to SF_FOOD_GUESSER_ALLOWED_ORIGINS.',
+      })
+      return
+    }
+
+    next()
+  })
+}
 
 function parseModelJson(outputText) {
   const jsonStart = outputText.indexOf('{')
@@ -60,21 +132,6 @@ function getSourceName(url, fallback = 'Exa') {
   }
 }
 
-function createDefaultClient(visionProvider) {
-  return visionProvider === 'openrouter'
-    ? new OpenAI({
-        apiKey: process.env.OPENROUTER_API_KEY,
-        baseURL: 'https://openrouter.ai/api/v1',
-        defaultHeaders: {
-          'HTTP-Referer': 'http://127.0.0.1:5173',
-          'X-OpenRouter-Title': 'SF Food Guesser',
-        },
-      })
-    : visionProvider === 'openai'
-      ? new OpenAI({ apiKey: process.env.OPENAI_API_KEY })
-      : null
-}
-
 function uniqueModels(models) {
   return [...new Set(models.map(String).map((item) => item.trim()).filter(Boolean))]
 }
@@ -88,6 +145,107 @@ function withTimeout(promise, timeoutMs, label) {
   })
 
   return Promise.race([promise, timeout]).finally(() => clearTimeout(timeoutId))
+}
+
+function imageDataUrl(buffer, mimeType = 'image/jpeg') {
+  return `data:${mimeType};base64,${buffer.toString('base64')}`
+}
+
+function cropBounds(metadata, leftRatio, topRatio, widthRatio, heightRatio) {
+  const imageWidth = metadata.width ?? 0
+  const imageHeight = metadata.height ?? 0
+  const width = Math.max(1, Math.min(imageWidth, Math.round(imageWidth * widthRatio)))
+  const height = Math.max(1, Math.min(imageHeight, Math.round(imageHeight * heightRatio)))
+  const left = Math.max(0, Math.min(imageWidth - width, Math.round(imageWidth * leftRatio)))
+  const top = Math.max(0, Math.min(imageHeight - height, Math.round(imageHeight * topRatio)))
+
+  return { left, top, width, height }
+}
+
+async function buildUploadedImageViews(file) {
+  const fallbackView = {
+    label: 'full uploaded image, original encoding',
+    dataUrl: imageDataUrl(file.buffer, file.mimetype || 'application/octet-stream'),
+  }
+
+  try {
+    const normalizedBuffer = await sharp(file.buffer, { failOn: 'none' }).rotate().toBuffer()
+    const metadata = await sharp(normalizedBuffer).metadata()
+
+    if (!metadata.width || !metadata.height) return [fallbackView]
+
+    const fullImage = await sharp(normalizedBuffer)
+      .resize({ width: 900, height: 680, fit: 'inside', withoutEnlargement: true })
+      .jpeg({ quality: 84 })
+      .toBuffer()
+
+    if (metadata.width < 300 || metadata.height < 300) {
+      return [{ label: 'full uploaded image', dataUrl: imageDataUrl(fullImage) }]
+    }
+
+    const crop = cropBounds(metadata, 0, 0.45, 0.62, 0.55)
+    const cropImage = await sharp(normalizedBuffer)
+      .extract(crop)
+      .resize({ width: 900, height: 680, fit: 'inside', withoutEnlargement: false })
+      .jpeg({ quality: 84 })
+      .toBuffer()
+    const fullMetadata = await sharp(fullImage).metadata()
+    const cropMetadata = await sharp(cropImage).metadata()
+    const gutter = 24
+    const canvasWidth = (fullMetadata.width ?? 900) + (cropMetadata.width ?? 900) + gutter
+    const canvasHeight = Math.max(fullMetadata.height ?? 680, cropMetadata.height ?? 680)
+    const contactSheet = await sharp({
+      create: {
+        width: canvasWidth,
+        height: canvasHeight,
+        channels: 3,
+        background: '#ffffff',
+      },
+    })
+      .composite([
+        { input: fullImage, left: 0, top: 0 },
+        { input: cropImage, left: (fullMetadata.width ?? 900) + gutter, top: 0 },
+      ])
+      .jpeg({ quality: 84 })
+      .toBuffer()
+
+    return [
+      {
+        label:
+          'single contact sheet: left panel is the full uploaded image; right panel is a zoomed lower-left crop for tray, bag, receipt, label, and logo text',
+        dataUrl: imageDataUrl(contactSheet),
+      },
+    ]
+  } catch {
+    return [fallbackView]
+  }
+}
+
+function buildOpenRouterUploadedImageParts(uploadedImageViews) {
+  return uploadedImageViews.flatMap((view, index) => [
+    {
+      type: 'text',
+      text: `Uploaded image ${index + 1}: ${view.label}. Inspect it for readable text, logos, packaging, menus, receipts, storefronts, and interior details. If it is a contact sheet, treat every panel as coming from the same uploaded photo.`,
+    },
+    {
+      type: 'image_url',
+      image_url: { url: view.dataUrl, detail: 'high' },
+    },
+  ])
+}
+
+function buildOpenAIUploadedImageParts(uploadedImageViews) {
+  return uploadedImageViews.flatMap((view, index) => [
+    {
+      type: 'input_text',
+      text: `Uploaded image ${index + 1}: ${view.label}. Inspect it for readable text, logos, packaging, menus, receipts, storefronts, and interior details. If it is a contact sheet, treat every panel as coming from the same uploaded photo.`,
+    },
+    {
+      type: 'input_image',
+      image_url: view.dataUrl,
+      detail: 'high',
+    },
+  ])
 }
 
 async function repairModelJson({
@@ -160,6 +318,8 @@ If the photo shows the interior of a store, dining room, counter, bar, wall art,
 
 Use interior/storefront evidence more heavily than generic dish evidence. A croissant, pizza slice, latte, or sandwich alone is usually not enough. A matching counter, mural, menu board, tile wall, logo, plate, cup, bag, or window view is much stronger.
 
+You may receive a contact sheet built from the same uploaded image: one panel is the full upload and another panel may be a zoomed crop. Inspect every panel. Small logo, tray, cup, bag, label, receipt, menu, or storefront text may only be readable in the zoomed panel.
+
 The JSON venue list below is only a seed dataset. It is not the full search space. If web evidence points to a better San Francisco venue that is not in the seed list, return it as a web-discovered candidate with no seed id.
 
 Return strict JSON only with this shape:
@@ -191,6 +351,7 @@ Rules:
 - Do not use live hours, reviews, or unsupported claims.
 - Base the ranking on what can be inferred from the uploaded image, any embedded location context, the seed dataset, and web evidence.
 - If signage, menu text, street signs, dish shape, packaging, or interior details are visible, use them as image evidence.
+- If any readable brand or venue text is visible anywhere in the image or crops, copy the exact text into imageEvidence, create/search a candidate for that venue first, and include visible_text plus packaging_logo or storefront_match when appropriate. Readable venue text outranks generic dish, plate, and interior similarity.
 - Search broadly across the internet for San Francisco-specific matches when the seed list is insufficient.
 - For interior photos, explicitly search for matching interiors and public customer/business photos; do not stop after matching the food item.
 - Prefer candidates with matching interior/storefront/photo-page evidence over candidates that only share a common dish.
@@ -209,16 +370,20 @@ ${JSON.stringify(compactVenues)}`
 function buildSearchPlanPrompt() {
   return `Look at the uploaded image and create a web/photo-search plan to identify the San Francisco restaurant, cafe, bakery, counter, or bar.
 
+You may receive a contact sheet built from the same uploaded image: one panel is the full upload and another panel may be a zoomed crop. Inspect every panel before writing the search plan. Small logo, tray, cup, bag, label, receipt, menu, or storefront text may only be readable in the zoomed panel.
+
 Return strict JSON only:
 {
   "summary": "what the uploaded image shows",
   "imageEvidence": ["specific visual details to search for"],
+  "visibleText": ["exact readable words or brand names visible in the image, empty if none"],
   "searchQueries": ["5-8 targeted search queries for Google Maps/Yelp/review/photo pages"],
   "likelyVenueTypes": ["Cafe/Restaurant/Bakery/Counter/etc"]
 }
 
 Rules:
 - Focus heavily on interior/storefront clues: wall color, tile, counters, menu boards, display cases, seating, lighting, murals, windows, bags, cups, plates, and logos.
+- If readable venue or brand text appears, include exact quoted text in the first search queries with San Francisco restaurant/cafe terms.
 - Include queries aimed at public photos and reviews, such as Google Maps photos, Yelp photos, Tripadvisor photos, restaurant websites, Instagram captions, TikTok captions, local food blogs, Eater, Infatuation, and Michelin.
 - Do not guess a final venue yet. This is only the search plan.`
 }
@@ -263,6 +428,38 @@ Important:
 - Keep the JSON short and valid. Prefer fewer well-supported candidates over a long malformed response.`
 }
 
+function buildSearchEvidencePromptWithArticles(
+  compactVenues,
+  searchPlan,
+  articleCandidates,
+  photoEvidence,
+  webEvidence,
+) {
+  const articleCandidateText = JSON.stringify(
+    articleCandidates.slice(0, 12).map((candidate, index) => ({
+      index: index + 1,
+      name: candidate.name,
+      category: candidate.category,
+      neighborhood: candidate.neighborhood,
+      address: candidate.address,
+      whyRelevant: candidate.whyRelevant,
+      sourceUrls: candidate.sourceUrls,
+      openingContext: candidate.openingContext,
+    })),
+  )
+
+  return `${buildSearchEvidencePrompt(compactVenues, searchPlan, photoEvidence, webEvidence)}
+
+Article-discovered candidate venues:
+${articleCandidateText}
+
+Additional article-discovery rules:
+- Treat article-discovered venues as candidate generation only. Do not choose one unless the uploaded image or external public photos support it.
+- Recent-opening and local food-guide articles can bring new venues into the search space, especially when the uploaded image lacks readable signage.
+- If an article-discovered venue has matching Google Maps/review/customer photos, rank it above generic web guesses and include both the article source and the matching photo source.
+- If article evidence names a venue but the visual evidence conflicts with the uploaded photo, keep confidence low or omit it.`
+}
+
 function buildOpenRouterPhotoEvidenceParts(photoEvidence, includeExternalPhotoImages = true) {
   return photoEvidence.flatMap((photo, index) => [
     {
@@ -302,20 +499,482 @@ function buildOpenAIPhotoEvidenceParts(photoEvidence, includeExternalPhotoImages
 }
 
 function normalizeSearchPlan(plan) {
-  const searchQueries = Array.isArray(plan.searchQueries)
-    ? plan.searchQueries.map(String).filter(Boolean).slice(0, 8)
+  const visibleText = Array.isArray(plan.visibleText)
+    ? plan.visibleText.map(String).map((text) => text.trim()).filter(Boolean).slice(0, 5)
     : []
+  const visibleTextQueries = visibleText.flatMap((text) => [
+    `"${text}" San Francisco restaurant cafe`,
+    `"${text}" San Francisco menu photos reviews`,
+  ])
+  const searchQueries = [...new Set([
+    ...visibleTextQueries,
+    ...(Array.isArray(plan.searchQueries)
+    ? plan.searchQueries.map(String).filter(Boolean).slice(0, 8)
+    : []),
+  ])].slice(0, 8)
 
   return {
     summary: String(plan.summary ?? ''),
     imageEvidence: Array.isArray(plan.imageEvidence)
       ? plan.imageEvidence.map(String).filter(Boolean).slice(0, 12)
       : [],
+    visibleText,
     searchQueries,
     likelyVenueTypes: Array.isArray(plan.likelyVenueTypes)
       ? plan.likelyVenueTypes.map(String).filter(Boolean).slice(0, 6)
       : [],
   }
+}
+
+function normalizeArticleCandidate(candidate) {
+  const sourceUrls = Array.isArray(candidate.sourceUrls)
+    ? candidate.sourceUrls.map(String).filter(Boolean).slice(0, 4)
+    : []
+
+  return {
+    name: String(candidate.name ?? '').trim(),
+    category: candidate.category ? String(candidate.category) : 'Cafe',
+    neighborhood: candidate.neighborhood ? String(candidate.neighborhood) : '',
+    address: candidate.address ? String(candidate.address) : '',
+    whyRelevant: candidate.whyRelevant ? String(candidate.whyRelevant) : '',
+    openingContext: candidate.openingContext ? String(candidate.openingContext) : '',
+    sourceUrls,
+  }
+}
+
+function candidateKey(candidate) {
+  return String(candidate.name || candidate.id || '').trim().toLowerCase()
+}
+
+function mergeArticleCandidates(primaryCandidates = [], fallbackCandidates = []) {
+  const seen = new Set()
+  const merged = []
+
+  for (const candidate of [...primaryCandidates, ...fallbackCandidates]) {
+    const key = candidateKey(candidate)
+    if (!key || seen.has(key)) continue
+    seen.add(key)
+    merged.push(candidate)
+  }
+
+  return merged.slice(0, 12)
+}
+
+function imageEvidenceScore(text, searchPlan = {}) {
+  const normalizedText = String(text).toLowerCase()
+  const evidenceText = [
+    searchPlan.summary,
+    ...(Array.isArray(searchPlan.imageEvidence) ? searchPlan.imageEvidence : []),
+  ]
+    .join(' ')
+    .toLowerCase()
+  const clueGroups = [
+    ['blue', 'rim', 'rimmed', 'enamel', 'plate', 'plates', 'tray', 'trays'],
+    ['salad', 'feta', 'tomato', 'tomatoes'],
+    ['chicken', 'lemon'],
+    ['wrap', 'sandwich', 'pita'],
+    ['olive', 'branch'],
+    ['hot sauce', 'sauce'],
+  ]
+
+  return clueGroups.reduce((score, group) => {
+    const clueIsInPhoto = group.some((word) => evidenceText.includes(word))
+    const clueIsInSource = group.some((word) => normalizedText.includes(word))
+    return clueIsInPhoto && clueIsInSource ? score + 1 : score
+  }, 0)
+}
+
+function venueNamesFromWebPage(page) {
+  const text = [page.title, page.snippet].filter(Boolean).join(' ')
+  const names = new Set()
+  const patterns = [
+    /\b(?:founder|owner|chef|team|CEO and founder) of ([A-Z][A-Za-z0-9&'’.-]*(?:\s+[A-Z][A-Za-z0-9&'’.-]*){0,3}) in San Francisco\b/g,
+    /\bat ([A-Z][A-Za-z0-9&'’.-]*(?:\s+[A-Z][A-Za-z0-9&'’.-]*){0,3}) in San Francisco\b/g,
+    /\b([A-Z][A-Za-z0-9&'’.-]*(?:\s+[A-Z][A-Za-z0-9&'’.-]*){0,3}) - Review -/g,
+    /\b# ([A-Z][A-Za-z0-9&'’.-]*(?:\s+[A-Z][A-Za-z0-9&'’.-]*){0,3})\b/g,
+  ]
+
+  for (const pattern of patterns) {
+    for (const match of text.matchAll(pattern)) {
+      const name = String(match[1] ?? '').trim()
+      if (
+        name &&
+        name.length <= 40 &&
+        !/\b(San Francisco|Google Maps|Yelp|Eater|Infatuation|OpenTable|The Latest|Best New|Review Highlights)\b/i.test(
+          name,
+        )
+      ) {
+        names.add(name)
+      }
+    }
+  }
+
+  return [...names]
+}
+
+function discoverWebMentionCandidates(webEvidence = [], searchPlan = {}) {
+  const candidates = []
+
+  for (const page of webEvidence) {
+    const pageText = [page.title, page.snippet].filter(Boolean).join(' ')
+    const score = imageEvidenceScore(pageText, searchPlan)
+    if (score === 0) continue
+
+    for (const name of venueNamesFromWebPage(page)) {
+      candidates.push({
+        name,
+        category: 'Restaurant',
+        neighborhood: 'San Francisco',
+        address: '',
+        whyRelevant:
+          score >= 2
+            ? `A web result names ${name} while discussing visual clues that overlap with the uploaded image.`
+            : `A web result names ${name} in a source returned for the uploaded image clues.`,
+        openingContext: 'Discovered from web/review evidence',
+        sourceUrls: page.url ? [page.url] : [],
+        _evidenceScore: score,
+      })
+    }
+  }
+
+  return candidates
+    .sort((a, b) => b._evidenceScore - a._evidenceScore)
+    .map(({ _evidenceScore, ...candidate }) => candidate)
+    .slice(0, 8)
+}
+
+function normalizeNameText(value) {
+  return String(value ?? '').toLowerCase().replace(/[^a-z0-9]+/g, '')
+}
+
+function extractQuotedVisibleText(items = []) {
+  const visibleTexts = new Set()
+  const text = items.filter(Boolean).join(' ')
+  const quotedPatterns = [
+    /['"“”]([A-Z][A-Z0-9&'’ -]{2,24})['"“”]/g,
+    /\b(?:reads|says|labeled|labelled|branded|branding|logo|text)\s+([A-Z][A-Z0-9&'’ -]{2,24})\b/g,
+  ]
+  const blocked = new Set(['HOT', 'SAUCE', 'SAN FRANCISCO', 'GOOGLE MAPS'])
+
+  for (const pattern of quotedPatterns) {
+    for (const match of text.matchAll(pattern)) {
+      const visibleText = String(match[1] ?? '').trim().replace(/\s+/g, ' ')
+      if (visibleText.length >= 4 && !blocked.has(visibleText.toUpperCase())) {
+        visibleTexts.add(visibleText)
+      }
+    }
+  }
+
+  return [...visibleTexts]
+}
+
+function titleCaseVisibleText(text) {
+  return String(text)
+    .trim()
+    .toLowerCase()
+    .replace(/\b[a-z]/g, (letter) => letter.toUpperCase())
+}
+
+function cleanText(value, maxLength = 500) {
+  return String(value ?? '').trim().slice(0, maxLength)
+}
+
+function cleanTextArray(value, maxItems = 8, maxLength = 500) {
+  return Array.isArray(value)
+    ? value.map((item) => cleanText(item, maxLength)).filter(Boolean).slice(0, maxItems)
+    : []
+}
+
+function normalizeConfidence(value) {
+  const confidence = Number(value ?? 0)
+  if (!Number.isFinite(confidence)) return null
+  const normalized = confidence > 0 && confidence <= 1 ? confidence * 100 : confidence
+  return Math.round(Math.max(0, Math.min(100, normalized)))
+}
+
+function normalizeFeedbackPayload(body = {}) {
+  const vote = cleanText(body.vote, 20)
+  if (!['correct', 'incorrect', 'undo'].includes(vote)) {
+    throw new Error('Feedback vote must be correct, incorrect, or undo.')
+  }
+
+  const candidate = body.candidate && typeof body.candidate === 'object' ? body.candidate : {}
+  const analysis = body.analysis && typeof body.analysis === 'object' ? body.analysis : {}
+  const providers = body.providers && typeof body.providers === 'object' ? body.providers : {}
+
+  return {
+    runId: cleanText(body.runId, 120),
+    vote,
+    rank: Number.isFinite(Number(body.rank)) ? Number(body.rank) : null,
+    candidate: {
+      id: cleanText(candidate.id, 120),
+      name: cleanText(candidate.name, 160),
+      category: cleanText(candidate.category, 80),
+      neighborhood: cleanText(candidate.neighborhood, 120),
+      address: cleanText(candidate.address, 180),
+      confidence: normalizeConfidence(candidate.confidence),
+      locationVerified: Boolean(candidate.locationVerified),
+      evidenceCategories: cleanTextArray(candidate.evidenceCategories, 10, 80),
+      reasons: cleanTextArray(candidate.reasons, 6, 700),
+      rankingNotes: cleanTextArray(candidate.rankingNotes, 6, 700),
+      sourceUrls: cleanTextArray(candidate.sourceUrls, 6, 500),
+    },
+    analysis: {
+      summary: cleanText(analysis.summary, 1000),
+      imageEvidence: cleanTextArray(analysis.imageEvidence, 10, 500),
+      needsMoreEvidence: Boolean(analysis.needsMoreEvidence),
+    },
+    providers: {
+      searchProvider: cleanText(providers.searchProvider, 120),
+      webSearchProvider: cleanText(providers.webSearchProvider, 120),
+      articleSearchProvider: cleanText(providers.articleSearchProvider, 120),
+    },
+  }
+}
+
+function cleanCandidateForLog(candidate = {}) {
+  return {
+    id: cleanText(candidate.id, 120),
+    name: cleanText(candidate.name, 160),
+    category: cleanText(candidate.category, 80),
+    neighborhood: cleanText(candidate.neighborhood, 120),
+    address: cleanText(candidate.address, 180),
+    confidence: normalizeConfidence(candidate.confidence),
+    originalConfidence: normalizeConfidence(candidate.originalConfidence),
+    evidenceType: cleanText(candidate.evidenceType, 120),
+    evidenceCategories: cleanTextArray(candidate.evidenceCategories, 10, 80),
+    reasons: cleanTextArray(candidate.reasons, 6, 700),
+    rankingNotes: cleanTextArray(candidate.rankingNotes, 6, 700),
+    sourceUrls: cleanTextArray(candidate.sourceUrls, 6, 500),
+    mapsQuery: cleanText(candidate.mapsQuery, 240),
+    searchQueries: cleanTextArray(candidate.searchQueries, 6, 300),
+  }
+}
+
+function cleanArticleCandidateForLog(candidate = {}) {
+  return {
+    name: cleanText(candidate.name, 160),
+    category: cleanText(candidate.category, 80),
+    neighborhood: cleanText(candidate.neighborhood, 120),
+    address: cleanText(candidate.address, 180),
+    whyRelevant: cleanText(candidate.whyRelevant, 700),
+    openingContext: cleanText(candidate.openingContext, 300),
+    sourceUrls: cleanTextArray(candidate.sourceUrls, 4, 500),
+  }
+}
+
+function cleanWebPageForLog(page = {}) {
+  return {
+    title: cleanText(page.title, 220),
+    source: cleanText(page.source, 120),
+    url: cleanText(page.url, 500),
+    snippet: cleanText(page.snippet, 900),
+    query: cleanText(page.query, 500),
+    searchLabel: cleanText(page.searchLabel, 80),
+  }
+}
+
+function cleanPhotoEvidenceForLog(photo = {}) {
+  return {
+    title: cleanText(photo.title, 220),
+    source: cleanText(photo.source, 120),
+    pageUrl: cleanText(photo.pageUrl, 500),
+    query: cleanText(photo.query, 500),
+    placeTitle: cleanText(photo.placeTitle, 220),
+    placeAddress: cleanText(photo.placeAddress, 220),
+  }
+}
+
+async function appendJsonl(logPath, record) {
+  await mkdir(dirname(logPath), { recursive: true })
+  await appendFile(logPath, `${JSON.stringify(record)}\n`, 'utf8')
+}
+
+async function appendRunLog(logPath, record) {
+  try {
+    await appendJsonl(logPath, record)
+  } catch (error) {
+    console.warn('Could not save local run log.', error)
+  }
+}
+
+function correctCandidatesFromVisibleText(candidates = [], imageEvidence = []) {
+  const visibleTexts = extractQuotedVisibleText([
+    ...imageEvidence,
+    ...candidates.flatMap((candidate) => [
+      candidate.name,
+      candidate.evidenceType,
+      ...(Array.isArray(candidate.reasons) ? candidate.reasons : []),
+    ]),
+  ])
+
+  if (!visibleTexts.length) return candidates
+
+  return candidates.map((candidate) => {
+    const candidateName = normalizeNameText(candidate.name)
+    const exactVisibleText = visibleTexts.find((visibleText) => {
+      const normalizedVisibleText = normalizeNameText(visibleText)
+      return (
+        normalizedVisibleText.length >= 4 &&
+        candidateName.startsWith(normalizedVisibleText) &&
+        candidateName !== normalizedVisibleText
+      )
+    })
+
+    if (!exactVisibleText) return candidate
+
+    const correctedName = titleCaseVisibleText(exactVisibleText)
+    return {
+      ...candidate,
+      name: correctedName,
+      confidence: Math.max(Number(candidate.confidence ?? 0), 82),
+      evidenceCategories: [
+        ...new Set([...(candidate.evidenceCategories ?? []), 'visible_text', 'packaging_logo']),
+      ],
+      reasons: [
+        `The uploaded image contains readable visible text that says ${correctedName}.`,
+        ...(Array.isArray(candidate.reasons) ? candidate.reasons : []),
+      ].slice(0, 2),
+      mapsQuery: [correctedName, candidate.address || candidate.neighborhood || 'San Francisco']
+        .filter(Boolean)
+        .join(' '),
+      searchQueries: [
+        `"${correctedName}" San Francisco restaurant cafe photos reviews`,
+        ...(Array.isArray(candidate.searchQueries) ? candidate.searchQueries : []),
+      ].slice(0, 3),
+    }
+  })
+}
+
+function buildFallbackCandidates(articleCandidates = []) {
+  return articleCandidates.slice(0, 5).map((candidate) => ({
+    id: '',
+    name: candidate.name,
+    category: candidate.category || 'Restaurant',
+    neighborhood: candidate.neighborhood || 'San Francisco',
+    address: candidate.address || '',
+    confidence: 64,
+    evidenceType: 'web',
+    evidenceCategories: ['web_source_match'],
+    reasons: [
+      candidate.whyRelevant || 'This venue was discovered from web evidence matching the uploaded image clues.',
+      candidate.openingContext || 'Needs visual confirmation before trusting the exact location.',
+    ].filter(Boolean).slice(0, 2),
+    sourceUrls: Array.isArray(candidate.sourceUrls) ? candidate.sourceUrls.slice(0, 3) : [],
+    comparisonPhotos: [],
+    mapsQuery: [candidate.name, candidate.address || candidate.neighborhood || 'San Francisco']
+      .filter(Boolean)
+      .join(' '),
+    searchQueries: [
+      [candidate.name, candidate.address || candidate.neighborhood, 'San Francisco photos reviews']
+        .filter(Boolean)
+        .join(' '),
+    ],
+  }))
+}
+
+function articleGroundingUrls(grounding = [], fieldPrefix = '') {
+  const urls = []
+
+  for (const item of Array.isArray(grounding) ? grounding : []) {
+    if (fieldPrefix && !String(item.field ?? '').startsWith(fieldPrefix)) continue
+    for (const citation of Array.isArray(item.citations) ? item.citations : []) {
+      const url = citation.url || citation.id
+      if (url) urls.push(String(url))
+    }
+  }
+
+  return [...new Set(urls)].slice(0, 4)
+}
+
+function buildArticleDiscoveryQuery(searchPlan) {
+  const evidence = [
+    searchPlan?.summary,
+    ...(Array.isArray(searchPlan?.imageEvidence) ? searchPlan.imageEvidence : []),
+  ]
+    .filter(Boolean)
+    .join('; ')
+
+  return [
+    'San Francisco recently opened new popular cafe coffee matcha bakery restaurant 2026',
+    'sources like The Infatuation Eater SF Standard SFGATE Chronicle Hoodline local food blogs',
+    'return single-location or newly opened venue candidates when possible',
+    evidence ? `uploaded photo clues: ${evidence}` : '',
+  ]
+    .filter(Boolean)
+    .join('. ')
+}
+
+export async function discoverArticleCandidates(searchPlan, searchClient = null) {
+  if (!searchClient) return { candidates: [], pages: [] }
+
+  const query = buildArticleDiscoveryQuery(searchPlan)
+  const result = await searchClient.search(query, {
+    type: 'deep',
+    numResults: 12,
+    contents: {
+      highlights: true,
+    },
+    outputSchema: {
+      type: 'object',
+      description:
+        'Recently opened, upcoming, or newly popular San Francisco cafe, coffee, matcha, bakery, or restaurant candidates from article-style sources.',
+      required: ['candidates'],
+      properties: {
+        candidates: {
+          type: 'array',
+          description: 'Article-backed venue candidates to verify later against public photos.',
+          items: {
+            type: 'object',
+            required: ['name', 'whyRelevant'],
+            properties: {
+              name: { type: 'string', description: 'Venue name' },
+              category: { type: 'string', description: 'Venue type such as Cafe or Bakery' },
+              neighborhood: { type: 'string', description: 'SF neighborhood if found' },
+              address: { type: 'string', description: 'Street address if found' },
+              whyRelevant: {
+                type: 'string',
+                description: 'Why the article makes this useful for this photo search',
+              },
+              openingContext: {
+                type: 'string',
+                description: 'Recent opening, upcoming opening, popularity, or guide context',
+              },
+            },
+          },
+        },
+      },
+    },
+  })
+
+  const grounding = result.output?.grounding ?? []
+  const rawCandidates = Array.isArray(result.output?.content?.candidates)
+    ? result.output.content.candidates
+    : []
+  const candidates = rawCandidates
+    .map((candidate, index) => {
+      const normalized = normalizeArticleCandidate(candidate)
+      return {
+        ...normalized,
+        sourceUrls: articleGroundingUrls(grounding, `candidates[${index}]`),
+      }
+    })
+    .filter((candidate) => candidate.name)
+
+  const pages = (Array.isArray(result.results) ? result.results : []).map((item) => {
+    const url = item.url || item.id
+    const highlights = Array.isArray(item.highlights) ? item.highlights : []
+    return {
+      title: String(item.title ?? 'Article candidate page'),
+      source: getSourceName(url, item.author),
+      url: String(url),
+      snippet: highlights.join(' ').slice(0, 900),
+      query,
+      searchLabel: 'article-discovery',
+    }
+  })
+
+  return { candidates: candidates.slice(0, 12), pages: pages.slice(0, 12) }
 }
 
 function normalizeEvidenceCategories(candidate) {
@@ -338,7 +997,7 @@ function normalizeEvidenceCategories(candidate) {
   )
 
   const hasReliableVisibleText =
-    /\b(readable|reads|says|spells|venue name|store name|sign says|label says|logo says|menu says|receipt says|visible sign)\b/.test(
+    /\b(readable|reads|says|spells|labeled|labelled|venue name|store name|sign says|label says|logo says|menu says|receipt says|visible sign|visible text|brand text|brand name|printed text|printed logo|visible logo|visible branding)\b/.test(
       text,
     ) && !/\b(blurred|unreadable|blank|white label|no readable)\b/.test(text)
 
@@ -431,7 +1090,7 @@ export function rerankCandidates(rawCandidates = [], options = {}) {
         evidenceCategoriesForCandidate.includes('dish_match') && strongEvidence.length === 0
       const hasSource = Array.isArray(candidate.sourceUrls) && candidate.sourceUrls.length > 0
       const hasReasons = Array.isArray(candidate.reasons) && candidate.reasons.length > 0
-      const baseConfidence = Math.max(0, Math.min(100, Number(candidate.confidence ?? 0)))
+      const baseConfidence = normalizeConfidence(candidate.confidence) ?? 0
       const evidenceScore = scoreEvidenceCategories(evidenceCategoriesForCandidate, {
         hasExternalPhotoMatch,
       })
@@ -486,6 +1145,10 @@ export function rerankCandidates(rawCandidates = [], options = {}) {
       }
     })
     .sort((a, b) => b._rankScore - a._rankScore || a._originalIndex - b._originalIndex)
+    .filter((candidate, index, candidates) => {
+      const key = candidateKey(candidate)
+      return key && candidates.findIndex((item) => candidateKey(item) === key) === index
+    })
     .map(({ _rankScore, _originalIndex, ...candidate }) => candidate)
 }
 
@@ -520,11 +1183,36 @@ function buildSourceSearches(rawQuery) {
   ]
 }
 
+function buildArticleCandidateQueries(articleCandidates = []) {
+  return articleCandidates.flatMap((candidate) => {
+    const identity = [candidate.name, candidate.address || candidate.neighborhood, 'San Francisco']
+      .filter(Boolean)
+      .join(' ')
+    if (!identity.trim()) return []
+
+    return [
+      `${identity} Google Maps reviews photos interior`,
+      `${identity} cafe coffee matcha interior photos reviews`,
+    ]
+  })
+}
+
+function buildEvidenceSearchQueries(searchPlanQueries = [], articleCandidates = []) {
+  const combined = [
+    ...buildArticleCandidateQueries(articleCandidates),
+    ...searchPlanQueries,
+  ]
+    .map((query) => String(query).trim())
+    .filter(Boolean)
+
+  return [...new Set(combined)].slice(0, 12)
+}
+
 async function describeForExternalPhotoSearch({
   visionClient,
   visionProvider,
   visionModel,
-  imageDataUrl,
+  uploadedImageViews,
 }) {
   const prompt = buildSearchPlanPrompt()
 
@@ -541,7 +1229,7 @@ async function describeForExternalPhotoSearch({
           role: 'user',
           content: [
             { type: 'text', text: prompt },
-            { type: 'image_url', image_url: { url: imageDataUrl, detail: 'high' } },
+            ...buildOpenRouterUploadedImageParts(uploadedImageViews),
           ],
         },
       ],
@@ -565,7 +1253,7 @@ async function describeForExternalPhotoSearch({
         role: 'user',
         content: [
           { type: 'input_text', text: prompt },
-          { type: 'input_image', image_url: imageDataUrl, detail: 'high' },
+          ...buildOpenAIUploadedImageParts(uploadedImageViews),
         ],
       },
     ],
@@ -576,78 +1264,255 @@ async function describeForExternalPhotoSearch({
   return normalizeSearchPlan(parseModelJson(result.output_text ?? '{}'))
 }
 
-export async function searchSerpApiPhotos(searchQueries) {
+export async function searchSerpApiPhotos(searchQueries, apiKey = process.env.SERPAPI_API_KEY) {
   const photos = []
   const seen = new Set()
   const seenPlaces = new Set()
-
-  for (const rawQuery of searchQueries.slice(0, 3)) {
+  const mapSearches = searchQueries.slice(0, 3).map(async (rawQuery, queryIndex) => {
     const query = `${rawQuery} San Francisco cafe restaurant`
     const url = new URL('https://serpapi.com/search.json')
     url.searchParams.set('engine', 'google_maps')
     url.searchParams.set('q', query)
     url.searchParams.set('ll', '@37.7749,-122.4194,12z')
     url.searchParams.set('hl', 'en')
-    url.searchParams.set('api_key', serpApiKey)
+    url.searchParams.set('api_key', apiKey)
 
     const response = await fetch(url)
-    if (!response.ok) continue
+    if (!response.ok) return []
     const result = await response.json()
     const places = Array.isArray(result.local_results) ? result.local_results : []
 
-    for (const place of places.slice(0, 3)) {
-      if (!place.data_id || seenPlaces.has(place.data_id)) continue
+    return places.slice(0, 3).map((place, placeIndex) => ({
+      place,
+      query,
+      queryIndex,
+      placeIndex,
+    }))
+  })
+
+  const settledMapSearches = await Promise.allSettled(mapSearches)
+  const places = settledMapSearches
+    .flatMap((settledSearch) =>
+      settledSearch.status === 'fulfilled' ? settledSearch.value : [],
+    )
+    .sort((a, b) => a.queryIndex - b.queryIndex || a.placeIndex - b.placeIndex)
+    .filter(({ place }) => {
+      if (!place.data_id || seenPlaces.has(place.data_id)) return false
       seenPlaces.add(place.data_id)
+      return true
+    })
+    .slice(0, 8)
 
-      const photosUrl = new URL('https://serpapi.com/search.json')
-      photosUrl.searchParams.set('engine', 'google_maps_photos')
-      photosUrl.searchParams.set('data_id', String(place.data_id))
-      photosUrl.searchParams.set('hl', 'en')
-      photosUrl.searchParams.set('api_key', serpApiKey)
+  const photoSearches = places.map(async ({ place, query, queryIndex, placeIndex }) => {
+    const photosUrl = new URL('https://serpapi.com/search.json')
+    photosUrl.searchParams.set('engine', 'google_maps_photos')
+    photosUrl.searchParams.set('data_id', String(place.data_id))
+    photosUrl.searchParams.set('hl', 'en')
+    photosUrl.searchParams.set('api_key', apiKey)
 
-      const photosResponse = await fetch(photosUrl)
-      if (!photosResponse.ok) continue
-      const photosResult = await photosResponse.json()
-      const mapsPhotos = Array.isArray(photosResult.photos) ? photosResult.photos : []
+    const photosResponse = await fetch(photosUrl)
+    if (!photosResponse.ok) return []
+    const photosResult = await photosResponse.json()
+    const mapsPhotos = Array.isArray(photosResult.photos) ? photosResult.photos : []
 
-      for (const photo of mapsPhotos.slice(0, 4)) {
-        const imageUrl = photo.image || photo.thumbnail
-        if (!imageUrl || seen.has(imageUrl)) continue
-        seen.add(imageUrl)
-        photos.push({
-          title: `${String(place.title ?? 'Google Maps place')} customer photo`,
-          source: 'Google Maps reviews/photos',
-          pageUrl: `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(
-            [place.title, place.address].filter(Boolean).join(' '),
-          )}`,
-          imageUrl: String(imageUrl),
-          thumbnailUrl: photo.thumbnail ? String(photo.thumbnail) : String(imageUrl),
-          query,
-          placeTitle: String(place.title ?? ''),
-          placeAddress: String(place.address ?? ''),
-          placeDataId: String(place.data_id),
-          placeId: place.place_id ? String(place.place_id) : undefined,
-          mapsQuery: [place.title, place.address].filter(Boolean).join(' '),
-          gpsCoordinates: place.gps_coordinates ?? null,
-        })
-        if (photos.length >= 18) return photos
+    return mapsPhotos.slice(0, 4).map((photo, photoIndex) => {
+      const imageUrl = photo.image || photo.thumbnail
+      return {
+        title: `${String(place.title ?? 'Google Maps place')} customer photo`,
+        source: 'Google Maps reviews/photos',
+        pageUrl: `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(
+          [place.title, place.address].filter(Boolean).join(' '),
+        )}`,
+        imageUrl: imageUrl ? String(imageUrl) : '',
+        thumbnailUrl: photo.thumbnail ? String(photo.thumbnail) : String(imageUrl),
+        query,
+        placeTitle: String(place.title ?? ''),
+        placeAddress: String(place.address ?? ''),
+        placeDataId: String(place.data_id),
+        placeId: place.place_id ? String(place.place_id) : undefined,
+        mapsQuery: [place.title, place.address].filter(Boolean).join(' '),
+        gpsCoordinates: place.gps_coordinates ?? null,
+        queryIndex,
+        placeIndex,
+        photoIndex,
       }
-    }
+    })
+  })
+
+  const settledPhotoSearches = await Promise.allSettled(photoSearches)
+  const candidatePhotos = settledPhotoSearches
+    .flatMap((settledSearch) =>
+      settledSearch.status === 'fulfilled' ? settledSearch.value : [],
+    )
+    .sort(
+      (a, b) =>
+        a.queryIndex - b.queryIndex ||
+        a.placeIndex - b.placeIndex ||
+        a.photoIndex - b.photoIndex,
+    )
+
+  for (const photo of candidatePhotos) {
+    if (!photo.imageUrl || seen.has(photo.imageUrl)) continue
+    seen.add(photo.imageUrl)
+    const { queryIndex, placeIndex, photoIndex, ...publicPhoto } = photo
+    photos.push(publicPhoto)
+    if (photos.length >= 18) return photos
   }
 
   return photos.slice(0, 18)
 }
 
-function createDefaultPhotoSearch() {
-  return serpApiKey
-    ? {
-        provider: 'serpapi-google-maps-photos',
-        search: searchSerpApiPhotos,
-      }
-    : null
+function normalizeMapPlaces(result) {
+  const localResults = result?.localResults
+  if (Array.isArray(result?.local_results)) return result.local_results
+  if (Array.isArray(localResults)) return localResults
+  if (Array.isArray(localResults?.places)) return localResults.places
+  if (Array.isArray(result?.places)) return result.places
+  return []
 }
 
-export async function searchExaWeb(searchQueries, searchClient = exaClient) {
+function normalizePlaceDataId(place) {
+  return place?.data_id ?? place?.dataId ?? place?.dataID ?? null
+}
+
+function normalizePlaceId(place) {
+  return place?.place_id ?? place?.placeId ?? null
+}
+
+function normalizeGpsCoordinates(place) {
+  return place?.gps_coordinates ?? place?.gpsCoordinates ?? place?.coordinates ?? null
+}
+
+function normalizeMapsPhotos(result) {
+  if (Array.isArray(result?.photos)) return result.photos
+  if (Array.isArray(result?.images)) return result.images
+  if (Array.isArray(result?.items)) return result.items
+  return []
+}
+
+function normalizePhotoImageUrl(photo) {
+  if (typeof photo === 'string') return photo
+  return photo?.image ?? photo?.url ?? photo?.fullImage ?? photo?.original ?? photo?.thumbnail ?? ''
+}
+
+function normalizePhotoThumbnailUrl(photo) {
+  if (typeof photo === 'string') return photo
+  return photo?.thumbnail ?? photo?.thumb ?? photo?.image ?? photo?.url ?? ''
+}
+
+export async function searchHasDataPhotos(searchQueries, apiKey = process.env.HASDATA_API_KEY) {
+  const photos = []
+  const seen = new Set()
+  const seenPlaces = new Set()
+  const mapSearches = searchQueries.slice(0, 3).map(async (rawQuery, queryIndex) => {
+    const query = `${rawQuery} San Francisco cafe restaurant`
+    const url = new URL('https://api.hasdata.com/scrape/google-maps/search')
+    url.searchParams.set('q', query)
+    url.searchParams.set('ll', '@37.7749,-122.4194,12z')
+    url.searchParams.set('hl', 'en')
+    url.searchParams.set('gl', 'us')
+
+    const response = await fetch(url, {
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': String(apiKey ?? ''),
+      },
+    })
+    if (!response.ok) return []
+    const result = await response.json()
+    const places = normalizeMapPlaces(result)
+
+    return places.slice(0, 3).map((place, placeIndex) => ({
+      place,
+      query,
+      queryIndex,
+      placeIndex,
+    }))
+  })
+
+  const settledMapSearches = await Promise.allSettled(mapSearches)
+  const places = settledMapSearches
+    .flatMap((settledSearch) =>
+      settledSearch.status === 'fulfilled' ? settledSearch.value : [],
+    )
+    .sort((a, b) => a.queryIndex - b.queryIndex || a.placeIndex - b.placeIndex)
+    .filter(({ place }) => {
+      const placeKey = normalizePlaceDataId(place) ?? normalizePlaceId(place)
+      if (!placeKey || seenPlaces.has(placeKey)) return false
+      seenPlaces.add(placeKey)
+      return true
+    })
+    .slice(0, 8)
+
+  const photoSearches = places.map(async ({ place, query, queryIndex, placeIndex }) => {
+    const dataId = normalizePlaceDataId(place)
+    const placeId = normalizePlaceId(place)
+    const photosUrl = new URL('https://api.hasdata.com/scrape/google-maps/photos')
+    if (dataId) photosUrl.searchParams.set('dataId', String(dataId))
+    if (!dataId && placeId) photosUrl.searchParams.set('placeId', String(placeId))
+    photosUrl.searchParams.set('hl', 'en')
+
+    const photosResponse = await fetch(photosUrl, {
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': String(apiKey ?? ''),
+      },
+    })
+    if (!photosResponse.ok) return []
+    const photosResult = await photosResponse.json()
+    const mapsPhotos = normalizeMapsPhotos(photosResult)
+
+    return mapsPhotos.slice(0, 4).map((photo, photoIndex) => {
+      const imageUrl = normalizePhotoImageUrl(photo)
+      const thumbnailUrl = normalizePhotoThumbnailUrl(photo)
+      const placeTitle = String(place.title ?? place.name ?? 'Google Maps place')
+      const placeAddress = String(place.address ?? place.fullAddress ?? '')
+      return {
+        title: `${placeTitle} customer photo`,
+        source: 'Google Maps reviews/photos',
+        pageUrl: `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(
+          [placeTitle, placeAddress].filter(Boolean).join(' '),
+        )}`,
+        imageUrl: imageUrl ? String(imageUrl) : '',
+        thumbnailUrl: thumbnailUrl ? String(thumbnailUrl) : String(imageUrl),
+        query,
+        placeTitle,
+        placeAddress,
+        placeDataId: dataId ? String(dataId) : undefined,
+        placeId: placeId ? String(placeId) : undefined,
+        mapsQuery: [placeTitle, placeAddress].filter(Boolean).join(' '),
+        gpsCoordinates: normalizeGpsCoordinates(place),
+        queryIndex,
+        placeIndex,
+        photoIndex,
+      }
+    })
+  })
+
+  const settledPhotoSearches = await Promise.allSettled(photoSearches)
+  const candidatePhotos = settledPhotoSearches
+    .flatMap((settledSearch) =>
+      settledSearch.status === 'fulfilled' ? settledSearch.value : [],
+    )
+    .sort(
+      (a, b) =>
+        a.queryIndex - b.queryIndex ||
+        a.placeIndex - b.placeIndex ||
+        a.photoIndex - b.photoIndex,
+    )
+
+  for (const photo of candidatePhotos) {
+    if (!photo.imageUrl || seen.has(photo.imageUrl)) continue
+    seen.add(photo.imageUrl)
+    const { queryIndex, placeIndex, photoIndex, ...publicPhoto } = photo
+    photos.push(publicPhoto)
+    if (photos.length >= 18) return photos
+  }
+
+  return photos.slice(0, 18)
+}
+
+export async function searchExaWeb(searchQueries, searchClient = null) {
   const pages = []
   const seen = new Set()
 
@@ -695,13 +1560,65 @@ export async function searchExaWeb(searchQueries, searchClient = exaClient) {
   return pages.slice(0, 20)
 }
 
-function createDefaultWebSearch() {
-  return exaClient
-    ? {
-        provider: 'exa-deep-highlights',
-        search: searchExaWeb,
-      }
-    : null
+export async function searchCeramicWeb(searchQueries, apiKey = process.env.CERAMIC_API_KEY) {
+  const pages = []
+  const seen = new Set()
+
+  if (!apiKey) return pages
+
+  const searches = searchQueries.slice(0, 3).flatMap(buildSourceSearches)
+  const settledSearches = await Promise.allSettled(
+    searches.map(async (search) => {
+      const response = await fetch('https://api.ceramic.ai/search', {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${apiKey}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ query: search.query }),
+      })
+      if (!response.ok) return []
+      const result = await response.json()
+      const results = Array.isArray(result?.result?.results) ? result.result.results : []
+
+      return results.map((item) => {
+        const url = item.url || item.id
+        return {
+          title: String(item.title ?? 'Candidate page'),
+          source: getSourceName(url, item.source),
+          url: String(url),
+          snippet: String(item.description ?? item.snippet ?? '').slice(0, 900),
+          query: search.query,
+          searchLabel: search.label,
+        }
+      })
+    }),
+  )
+
+  for (const settledSearch of settledSearches) {
+    if (settledSearch.status !== 'fulfilled') continue
+    for (const page of settledSearch.value) {
+      if (!page.url || seen.has(page.url)) continue
+      seen.add(page.url)
+      pages.push(page)
+      if (pages.length >= 20) return pages
+    }
+  }
+
+  return pages.slice(0, 20)
+}
+
+function appendUniqueWebEvidence(existingPages, nextPages) {
+  const seen = new Set(existingPages.map((page) => page.url).filter(Boolean))
+  const merged = [...existingPages]
+
+  for (const page of Array.isArray(nextPages) ? nextPages : []) {
+    if (!page?.url || seen.has(page.url)) continue
+    seen.add(page.url)
+    merged.push(page)
+  }
+
+  return merged
 }
 
 function providerWarning(providerName, error) {
@@ -723,6 +1640,17 @@ function analysisFailureMessage(error, visionProvider) {
       : typeof error?.message === 'string'
         ? error.message
         : ''
+  const causeText = [
+    message,
+    error?.cause?.message,
+    error?.cause?.cause?.message,
+    error?.cause?.code,
+    error?.cause?.cause?.code,
+    error?.cause?.hostname,
+    error?.cause?.cause?.hostname,
+  ]
+    .filter(Boolean)
+    .join(' ')
 
   if (status === 401 || /api key|unauthorized|authentication/i.test(message)) {
     return `${providerName} rejected the API key. Check the local .env key, then restart npm run dev.`
@@ -736,6 +1664,10 @@ function analysisFailureMessage(error, visionProvider) {
     return `${providerName} is rate limiting photo analysis. Wait a bit, then try the upload again.`
   }
 
+  if (/ENOTFOUND|getaddrinfo|fetch failed|Connection error|network|DNS|EAI_AGAIN/i.test(causeText)) {
+    return `${providerName} could not be reached from this computer. Your local app is running, but DNS/network lookup failed for the external AI/search provider. Check internet/VPN/DNS, then try again.`
+  }
+
   return 'The photo analysis failed. Try again in a moment or restart the dev server.'
 }
 
@@ -743,9 +1675,10 @@ async function analyzeWithProvider({
   visionClient,
   visionProvider,
   visionModel,
-  imageDataUrl,
+  uploadedImageViews,
   compactVenues,
   searchPlan = null,
+  articleCandidates = [],
   photoEvidence = [],
   webEvidence = [],
   includeExternalPhotoImages = true,
@@ -754,8 +1687,14 @@ async function analyzeWithProvider({
   const systemPrompt =
     'You identify likely San Francisco food venues from uploaded food, interior, storefront, menu, receipt, or street-context images. Use the uploaded image itself as the source of evidence, be honest about uncertainty, and use the provided venue list only as seed data. You may return web-discovered San Francisco venues outside the seed list when supported by web evidence.'
   const analysisPrompt =
-    photoEvidence.length > 0 || webEvidence.length > 0
-      ? buildSearchEvidencePrompt(compactVenues, searchPlan, photoEvidence, webEvidence)
+    photoEvidence.length > 0 || webEvidence.length > 0 || articleCandidates.length > 0
+      ? buildSearchEvidencePromptWithArticles(
+          compactVenues,
+          searchPlan,
+          articleCandidates,
+          photoEvidence,
+          webEvidence,
+        )
       : buildAnalysisPrompt(compactVenues)
 
   if (visionProvider === 'openrouter') {
@@ -773,13 +1712,7 @@ async function analyzeWithProvider({
               type: 'text',
               text: analysisPrompt,
             },
-            {
-              type: 'image_url',
-              image_url: {
-                url: imageDataUrl,
-                detail: 'high',
-              },
-            },
+            ...buildOpenRouterUploadedImageParts(uploadedImageViews),
             ...buildOpenRouterPhotoEvidenceParts(photoEvidence, includeExternalPhotoImages),
           ],
         },
@@ -828,11 +1761,7 @@ async function analyzeWithProvider({
             type: 'input_text',
             text: analysisPrompt,
           },
-          {
-            type: 'input_image',
-            image_url: imageDataUrl,
-            detail: 'high',
-          },
+          ...buildOpenAIUploadedImageParts(uploadedImageViews),
           ...buildOpenAIPhotoEvidenceParts(photoEvidence, includeExternalPhotoImages),
         ],
       },
@@ -848,11 +1777,24 @@ export function createApp(options = {}) {
   const hasOpenAIClient = Object.hasOwn(options, 'openAIClient')
   const hasVisionClient = Object.hasOwn(options, 'visionClient')
   const hasVisionProvider = Object.hasOwn(options, 'visionProvider')
-  const visionModel = options.visionModel ?? model
+  const defaultProviders =
+    options.providerConfig ??
+    createProviderConfig({
+      env: options.env ?? process.env,
+      createVisionClient: !hasOpenAIClient && !hasVisionClient,
+      searchFns: {
+        discoverArticleCandidates,
+        searchCeramicWeb,
+        searchExaWeb,
+        searchHasDataPhotos,
+        searchSerpApiPhotos,
+      },
+    })
+  const visionModel = options.visionModel ?? defaultProviders.visionModel
   const visionProvider =
     hasVisionProvider
       ? options.visionProvider
-      : provider ??
+      : defaultProviders.visionProvider ??
         (hasVisionClient
           ? options.visionClient
             ? 'openai'
@@ -864,18 +1806,25 @@ export function createApp(options = {}) {
     ? options.visionClient
     : hasOpenAIClient
       ? options.openAIClient
-      : createDefaultClient(visionProvider)
+      : defaultProviders.visionClient
   const visionFallbackModels = uniqueModels(
     options.visionFallbackModels ??
-      (visionProvider === 'openrouter' ? openRouterFallbackModels : []),
+      (visionProvider === 'openrouter' ? defaultProviders.visionFallbackModels : []),
   ).filter((fallbackModel) => fallbackModel !== visionModel)
   const visionModelAttempts = uniqueModels([visionModel, ...visionFallbackModels])
   const hasPhotoSearch = Object.hasOwn(options, 'photoSearch')
-  const photoSearch = hasPhotoSearch ? options.photoSearch : createDefaultPhotoSearch()
+  const photoSearch = hasPhotoSearch ? options.photoSearch : defaultProviders.photoSearch
   const hasWebSearch = Object.hasOwn(options, 'webSearch')
-  const webSearch = hasWebSearch ? options.webSearch : createDefaultWebSearch()
+  const webSearch = hasWebSearch ? options.webSearch : defaultProviders.webSearch
+  const hasArticleSearch = Object.hasOwn(options, 'articleSearch')
+  const articleSearch =
+    hasArticleSearch || hasPhotoSearch || hasWebSearch
+      ? options.articleSearch ?? null
+      : defaultProviders.articleSearch
 
   const app = express()
+  const allowedOrigins = parseAllowedOrigins(options.allowedOrigins ?? defaultAllowedOrigins.join(','))
+  applyCors(app, allowedOrigins)
 
   app.get('/api/health', (_request, response) => {
     response.json({
@@ -888,7 +1837,36 @@ export function createApp(options = {}) {
       photoSearchProvider: photoSearch?.provider ?? null,
       webSearchEnabled: Boolean(webSearch),
       webSearchProvider: webSearch?.provider ?? null,
+      articleSearchEnabled: Boolean(articleSearch),
+      articleSearchProvider: articleSearch?.provider ?? null,
     })
+  })
+
+  app.post('/api/feedback', express.json({ limit: '64kb' }), async (request, response) => {
+    let feedback
+    try {
+      feedback = normalizeFeedbackPayload(request.body)
+    } catch (error) {
+      response.status(400).json({
+        error: error instanceof Error ? error.message : 'Feedback payload was invalid.',
+      })
+      return
+    }
+
+    const logPath = options.feedbackLogPath ?? defaultFeedbackLogPath
+    const record = {
+      id: randomUUID(),
+      createdAt: new Date().toISOString(),
+      app: 'sf-food-guesser',
+      ...feedback,
+    }
+
+    try {
+      await appendJsonl(logPath, record)
+      response.status(201).json({ ok: true, id: record.id })
+    } catch {
+      response.status(500).json({ error: 'Could not save feedback locally.' })
+    }
   })
 
   app.post('/api/analyze-photo', upload.single('photo'), async (request, response) => {
@@ -924,24 +1902,34 @@ export function createApp(options = {}) {
       note: venue.note,
     }))
 
-    const imageDataUrl = `data:${request.file.mimetype};base64,${request.file.buffer.toString(
-      'base64',
-    )}`
+    const runId = randomUUID()
+    const runStartedAt = Date.now()
+    const uploadMetadata = {
+      mimeType: cleanText(request.file.mimetype, 120),
+      sizeBytes: request.file.size,
+    }
+    const runLogPath = options.runLogPath ?? defaultRunLogPath
+    const uploadedImageViews = await buildUploadedImageViews(request.file)
 
     try {
       let searchPlan = null
+      let articleCandidates = []
       let photoEvidence = []
       let webEvidence = []
       const providerWarnings = []
-      if (photoSearch?.search || webSearch?.search) {
+      if (photoSearch?.search || webSearch?.search || articleSearch?.search) {
         for (const modelAttempt of visionModelAttempts) {
           try {
-            searchPlan = await describeForExternalPhotoSearch({
-              visionClient,
-              visionProvider,
-              visionModel: modelAttempt,
-              imageDataUrl,
-            })
+            searchPlan = await withTimeout(
+              describeForExternalPhotoSearch({
+                visionClient,
+                visionProvider,
+                visionModel: modelAttempt,
+                uploadedImageViews,
+              }),
+              visionRequestTimeoutMs,
+              `search-plan:${modelAttempt}`,
+            )
             break
           } catch (error) {
             providerWarnings.push(providerWarning(`search-plan:${modelAttempt}`, error))
@@ -950,34 +1938,47 @@ export function createApp(options = {}) {
       }
 
       if (searchPlan) {
-        const evidenceSearches = []
+        const baseSearchQueries = searchPlan.searchQueries
+        const initialEvidenceSearches = []
+        if (articleSearch?.search) {
+          initialEvidenceSearches.push({
+            type: 'article',
+            provider: articleSearch.provider ?? 'article-search',
+            run: () =>
+              withTimeout(
+                articleSearch.search(searchPlan),
+                evidenceSearchTimeoutMs,
+                articleSearch.provider ?? 'article-search',
+              ),
+          })
+        }
         if (webSearch?.search) {
-          evidenceSearches.push({
+          initialEvidenceSearches.push({
             type: 'web',
             provider: webSearch.provider ?? 'web-search',
             run: () =>
               withTimeout(
-                webSearch.search(searchPlan.searchQueries),
+                webSearch.search(baseSearchQueries),
                 evidenceSearchTimeoutMs,
                 webSearch.provider ?? 'web-search',
               ),
           })
         }
-        if (photoSearch?.search) {
-          evidenceSearches.push({
+        if (!articleSearch?.search && photoSearch?.search) {
+          initialEvidenceSearches.push({
             type: 'photo',
             provider: photoSearch.provider ?? 'photo-search',
             run: () =>
               withTimeout(
-                photoSearch.search(searchPlan.searchQueries),
+                photoSearch.search(baseSearchQueries),
                 evidenceSearchTimeoutMs,
                 photoSearch.provider ?? 'photo-search',
               ),
           })
         }
 
-        const settledEvidence = await Promise.all(
-          evidenceSearches.map(async (search) => {
+        const settledInitialEvidence = await Promise.all(
+          initialEvidenceSearches.map(async (search) => {
             try {
               return {
                 status: 'fulfilled',
@@ -994,12 +1995,89 @@ export function createApp(options = {}) {
           }),
         )
 
-        for (const settledSearch of settledEvidence) {
+        for (const settledSearch of settledInitialEvidence) {
           if (settledSearch.status !== 'fulfilled') {
             providerWarnings.push(providerWarning(settledSearch.provider, settledSearch.error))
             continue
           }
-          if (settledSearch.type === 'web') webEvidence = settledSearch.results
+          if (settledSearch.type === 'article') {
+            articleCandidates = Array.isArray(settledSearch.results?.candidates)
+              ? settledSearch.results.candidates
+              : []
+            webEvidence = appendUniqueWebEvidence(
+              webEvidence,
+              Array.isArray(settledSearch.results?.pages) ? settledSearch.results.pages : [],
+            )
+          }
+          if (settledSearch.type === 'web') {
+            webEvidence = appendUniqueWebEvidence(webEvidence, settledSearch.results)
+          }
+          if (settledSearch.type === 'photo') photoEvidence = settledSearch.results
+        }
+
+        articleCandidates = mergeArticleCandidates(
+          articleCandidates,
+          discoverWebMentionCandidates(webEvidence, searchPlan),
+        )
+
+        const candidateSearchQueries = buildArticleCandidateQueries(articleCandidates)
+        const photoSearchQueries = buildEvidenceSearchQueries(
+          baseSearchQueries,
+          articleCandidates,
+        )
+        const followupEvidenceSearches = []
+
+        if (articleSearch?.search && photoSearch?.search) {
+          followupEvidenceSearches.push({
+            type: 'photo',
+            provider: photoSearch.provider ?? 'photo-search',
+            run: () =>
+              withTimeout(
+                photoSearch.search(photoSearchQueries),
+                evidenceSearchTimeoutMs,
+                photoSearch.provider ?? 'photo-search',
+              ),
+          })
+        }
+        if (webSearch?.search && candidateSearchQueries.length) {
+          followupEvidenceSearches.push({
+            type: 'web',
+            provider: webSearch.provider ?? 'web-search',
+            run: () =>
+              withTimeout(
+                webSearch.search(candidateSearchQueries),
+                evidenceSearchTimeoutMs,
+                webSearch.provider ?? 'web-search',
+              ),
+          })
+        }
+
+        const settledFollowupEvidence = await Promise.all(
+          followupEvidenceSearches.map(async (search) => {
+            try {
+              return {
+                status: 'fulfilled',
+                ...search,
+                results: await search.run(),
+              }
+            } catch (error) {
+              return {
+                status: 'rejected',
+                ...search,
+                error,
+              }
+            }
+          }),
+        )
+
+        for (const settledSearch of settledFollowupEvidence) {
+          if (settledSearch.status !== 'fulfilled') {
+            providerWarnings.push(providerWarning(settledSearch.provider, settledSearch.error))
+            continue
+          }
+          if (settledSearch.type === 'web') {
+            webEvidence = appendUniqueWebEvidence(webEvidence, settledSearch.results)
+          }
           if (settledSearch.type === 'photo') photoEvidence = settledSearch.results
         }
       }
@@ -1022,18 +2100,23 @@ export function createApp(options = {}) {
       for (const modelAttempt of visionModelAttempts) {
         for (const attempt of analysisAttempts) {
           try {
-            const outputText = await analyzeWithProvider({
-              visionClient,
-              visionProvider,
-              visionModel: modelAttempt,
-              imageDataUrl,
-              compactVenues,
-              searchPlan,
-              photoEvidence,
-              webEvidence,
-              includeExternalPhotoImages: attempt.includeExternalPhotoImages,
-              includeOpenRouterWebSearch: attempt.includeOpenRouterWebSearch,
-            })
+            const outputText = await withTimeout(
+              analyzeWithProvider({
+                visionClient,
+                visionProvider,
+                visionModel: modelAttempt,
+                uploadedImageViews,
+                compactVenues,
+                searchPlan,
+                articleCandidates,
+                photoEvidence,
+                webEvidence,
+                includeExternalPhotoImages: attempt.includeExternalPhotoImages,
+                includeOpenRouterWebSearch: attempt.includeOpenRouterWebSearch,
+              }),
+              visionRequestTimeoutMs,
+              `${attempt.label}:${modelAttempt}`,
+            )
             try {
               result = parseModelJson(outputText)
             } catch (parseError) {
@@ -1060,11 +2143,26 @@ export function createApp(options = {}) {
         }
         if (result) break
       }
-      if (!result) throw lastVisionError ?? new Error('No vision model returned an analysis.')
+      if (!result) {
+        if (articleCandidates.length) {
+          result = {
+            summary: searchPlan?.summary || 'Vision analysis failed, but web evidence returned venue candidates.',
+            imageEvidence: searchPlan?.imageEvidence ?? [],
+            candidates: [],
+            needsMoreEvidence: true,
+          }
+        } else {
+          throw lastVisionError ?? new Error('No vision model returned an analysis.')
+        }
+      }
       const photoEvidenceUrls = photoEvidence.flatMap((photo) =>
         [photo.pageUrl, photo.imageUrl, photo.thumbnailUrl].filter(Boolean),
       )
-      const candidates = rerankCandidates(Array.isArray(result.candidates) ? result.candidates : [], {
+      const modelCandidates = Array.isArray(result.candidates) ? result.candidates : []
+      const rawCandidates = modelCandidates.length
+        ? correctCandidatesFromVisibleText(modelCandidates, result.imageEvidence)
+        : buildFallbackCandidates(articleCandidates)
+      const candidates = rerankCandidates(rawCandidates, {
         seedVenueIds: compactVenues.map((venue) => venue.id),
         photoEvidenceUrls,
       })
@@ -1077,11 +2175,21 @@ export function createApp(options = {}) {
         candidates.length === 0 ||
         topConfidence < 80 ||
         closeCandidateCount > 1
-      response.json({
+      const responseBody = {
         ...result,
+        runId,
         candidates,
         needsMoreEvidence,
         searchPlan,
+        articleCandidates: articleCandidates.map((candidate) => ({
+          name: candidate.name,
+          category: candidate.category,
+          neighborhood: candidate.neighborhood,
+          address: candidate.address,
+          whyRelevant: candidate.whyRelevant,
+          openingContext: candidate.openingContext,
+          sourceUrls: candidate.sourceUrls,
+        })),
         photoEvidence: photoEvidence.map((photo) => ({
           title: photo.title,
           source: photo.source,
@@ -1101,15 +2209,107 @@ export function createApp(options = {}) {
         })),
         searchProvider: photoSearch?.provider ?? null,
         webSearchProvider: webSearch?.provider ?? null,
+        articleSearchProvider: articleSearch?.provider ?? null,
         visionModel: visionModelUsed,
         providerWarnings,
+      }
+      await appendRunLog(runLogPath, {
+        id: runId,
+        createdAt: new Date().toISOString(),
+        app: 'sf-food-guesser',
+        status: 'completed',
+        durationMs: Date.now() - runStartedAt,
+        upload: uploadMetadata,
+        imageViews: uploadedImageViews.map((view) => ({ label: cleanText(view.label, 300) })),
+        providers: {
+          visionProvider,
+          visionModel: visionModelUsed,
+          fallbackModels: visionFallbackModels,
+          searchProvider: photoSearch?.provider ?? null,
+          webSearchProvider: webSearch?.provider ?? null,
+          articleSearchProvider: articleSearch?.provider ?? null,
+        },
+        summary: cleanText(result.summary, 1000),
+        imageEvidence: cleanTextArray(result.imageEvidence, 12, 500),
+        needsMoreEvidence,
+        topConfidence,
+        closeCandidateCount,
+        candidates: candidates.map(cleanCandidateForLog),
+        searchPlan: searchPlan
+          ? {
+              summary: cleanText(searchPlan.summary, 1000),
+              imageEvidence: cleanTextArray(searchPlan.imageEvidence, 12, 500),
+              visibleText: cleanTextArray(searchPlan.visibleText, 8, 120),
+              searchQueries: cleanTextArray(searchPlan.searchQueries, 12, 500),
+              likelyVenueTypes: cleanTextArray(searchPlan.likelyVenueTypes, 8, 120),
+            }
+          : null,
+        articleCandidates: articleCandidates.map(cleanArticleCandidateForLog),
+        webEvidence: webEvidence.map(cleanWebPageForLog),
+        photoEvidence: photoEvidence.map(cleanPhotoEvidenceForLog),
+        providerWarnings: providerWarnings.map((warning) => ({
+          provider: cleanText(warning.provider, 160),
+          message: cleanText(warning.message, 800),
+        })),
       })
+      response.json(responseBody)
     } catch (error) {
       console.error(error)
-      response.status(500).json({
+      await appendRunLog(runLogPath, {
+        id: runId,
+        createdAt: new Date().toISOString(),
+        app: 'sf-food-guesser',
+        status: 'failed',
+        durationMs: Date.now() - runStartedAt,
+        upload: uploadMetadata,
+        imageViews: uploadedImageViews.map((view) => ({ label: cleanText(view.label, 300) })),
+        providers: {
+          visionProvider,
+          visionModel,
+          fallbackModels: visionFallbackModels,
+          searchProvider: photoSearch?.provider ?? null,
+          webSearchProvider: webSearch?.provider ?? null,
+          articleSearchProvider: articleSearch?.provider ?? null,
+        },
         error: analysisFailureMessage(error, visionProvider),
       })
+      response.status(500).json({
+        error: analysisFailureMessage(error, visionProvider),
+        runId,
+      })
     }
+  })
+
+  app.use((error, _request, response, next) => {
+    if (response.headersSent) {
+      next(error)
+      return
+    }
+
+    if (error instanceof multer.MulterError && error.code === 'LIMIT_FILE_SIZE') {
+      response.status(413).json({
+        error: 'That image is too large. Upload a photo under 12 MB.',
+      })
+      return
+    }
+
+    if (error?.status === 415 || error?.code === 'UNSUPPORTED_IMAGE_TYPE') {
+      response.status(415).json({
+        error:
+          error instanceof Error
+            ? error.message
+            : 'Unsupported image type. Upload a JPG, PNG, WebP, AVIF, GIF, HEIC, or HEIF image.',
+      })
+      return
+    }
+
+    if (error instanceof SyntaxError) {
+      response.status(400).json({ error: 'Request JSON was not valid.' })
+      return
+    }
+
+    console.error(error)
+    response.status(500).json({ error: 'The local API hit an unexpected error.' })
   })
 
   return app

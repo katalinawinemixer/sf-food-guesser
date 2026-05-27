@@ -1,6 +1,18 @@
 import request from 'supertest'
+import { mkdtemp, readFile, rm } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
-import { createApp, rerankCandidates, searchExaWeb, searchSerpApiPhotos } from './server.mjs'
+import {
+  createApp,
+  discoverArticleCandidates,
+  rerankCandidates,
+  searchCeramicWeb,
+  searchExaWeb,
+  searchHasDataPhotos,
+  searchSerpApiPhotos,
+} from './server.mjs'
+import { createProviderConfig, parseFallbackModels } from './providers.mjs'
 
 const pngPixel = Buffer.from(
   'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=',
@@ -8,6 +20,85 @@ const pngPixel = Buffer.from(
 )
 
 describe('SF Food Guesser API', () => {
+  it('creates isolated provider wrappers from environment keys', async () => {
+    const calls = []
+    const searchFns = {
+      discoverArticleCandidates: vi.fn(async () => []),
+      searchCeramicWeb: vi.fn(async () => []),
+      searchExaWeb: vi.fn(async () => []),
+      searchHasDataPhotos: vi.fn(async () => []),
+      searchSerpApiPhotos: vi.fn(async () => []),
+    }
+    const providers = createProviderConfig({
+      env: {
+        OPENROUTER_API_KEY: 'openrouter-key',
+        OPENROUTER_VISION_MODEL: 'qwen/qwen3-vl-32b-instruct',
+        OPENROUTER_FALLBACK_MODELS: ' google/gemma-3-4b-it:free, openai/gpt-4o-mini ',
+        HASDATA_API_KEY: 'hasdata-key',
+        SERPAPI_API_KEY: 'serpapi-key',
+        CERAMIC_API_KEY: 'ceramic-key',
+        EXA_API_KEY: 'exa-key',
+      },
+      searchFns,
+      createVisionClient: false,
+    })
+
+    calls.push(providers.photoSearch.provider)
+    calls.push(providers.webSearch.provider)
+    calls.push(providers.articleSearch.provider)
+    await providers.photoSearch.search(['photo query'])
+    await providers.webSearch.search(['web query'])
+    await providers.articleSearch.search({ summary: 'matcha' })
+
+    expect(providers.visionProvider).toBe('openrouter')
+    expect(providers.visionModel).toBe('qwen/qwen3-vl-32b-instruct')
+    expect(providers.visionFallbackModels).toEqual([
+      'google/gemma-3-4b-it:free',
+      'openai/gpt-4o-mini',
+    ])
+    expect(calls).toEqual([
+      'hasdata-google-maps-photos',
+      'ceramic-web-search',
+      'exa-article-discovery',
+    ])
+    expect(searchFns.searchHasDataPhotos).toHaveBeenCalledWith(['photo query'], 'hasdata-key')
+    expect(searchFns.searchSerpApiPhotos).not.toHaveBeenCalled()
+    expect(searchFns.searchCeramicWeb).toHaveBeenCalledWith(['web query'], 'ceramic-key')
+    expect(searchFns.searchExaWeb).not.toHaveBeenCalled()
+    expect(searchFns.discoverArticleCandidates).toHaveBeenCalledWith(
+      { summary: 'matcha' },
+      expect.objectContaining({ search: expect.any(Function) }),
+    )
+  })
+
+  it('falls back from Ceramic to Exa web search when Ceramic is not configured', async () => {
+    const searchFns = {
+      discoverArticleCandidates: vi.fn(async () => []),
+      searchExaWeb: vi.fn(async () => []),
+    }
+    const providers = createProviderConfig({
+      env: {
+        OPENAI_API_KEY: 'openai-key',
+        EXA_API_KEY: 'exa-key',
+      },
+      searchFns,
+      createVisionClient: false,
+    })
+
+    await providers.webSearch.search(['green tile cafe'])
+
+    expect(providers.visionProvider).toBe('openai')
+    expect(providers.webSearch.provider).toBe('exa-deep-highlights')
+    expect(searchFns.searchExaWeb).toHaveBeenCalledWith(
+      ['green tile cafe'],
+      expect.objectContaining({ search: expect.any(Function) }),
+    )
+  })
+
+  it('parses fallback model ids without keeping blank entries', () => {
+    expect(parseFallbackModels(' model-a, ,model-b ,, ')).toEqual(['model-a', 'model-b'])
+  })
+
   it('reports when vision is disabled', async () => {
     const response = await request(
       createApp({
@@ -31,6 +122,8 @@ describe('SF Food Guesser API', () => {
       photoSearchProvider: null,
       webSearchEnabled: false,
       webSearchProvider: null,
+      articleSearchEnabled: false,
+      articleSearchProvider: null,
     })
   })
 
@@ -58,6 +151,190 @@ describe('SF Food Guesser API', () => {
 
     expect(response.body.error).toMatch(/No photo/)
     expect(openAIClient.responses.create).not.toHaveBeenCalled()
+  })
+
+  it('rejects unsupported image uploads with a clear error', async () => {
+    const response = await request(createApp({ openAIClient: null, photoSearch: null }))
+      .post('/api/analyze-photo')
+      .attach('photo', Buffer.from('not an image'), {
+        filename: 'notes.txt',
+        contentType: 'text/plain',
+      })
+      .field('venues', '[]')
+      .expect(415)
+
+    expect(response.body.error).toMatch(/Unsupported image type/)
+  })
+
+  it('rejects oversized image uploads with a clear error', async () => {
+    const response = await request(createApp({ openAIClient: null, photoSearch: null }))
+      .post('/api/analyze-photo')
+      .attach('photo', Buffer.alloc(12 * 1024 * 1024 + 1), {
+        filename: 'large.jpg',
+        contentType: 'image/jpeg',
+      })
+      .field('venues', '[]')
+      .expect(413)
+
+    expect(response.body.error).toMatch(/under 12 MB/)
+  })
+
+  it('allows configured production origins and rejects unknown API origins', async () => {
+    await request(createApp({ openAIClient: null, photoSearch: null }))
+      .get('/api/health')
+      .set('Origin', 'http://127.0.0.1:5173')
+      .expect('Access-Control-Allow-Origin', 'http://127.0.0.1:5173')
+      .expect(200)
+
+    const response = await request(createApp({ openAIClient: null, photoSearch: null }))
+      .get('/api/health')
+      .set('Origin', 'https://not-this-app.example')
+      .expect(403)
+
+    expect(response.body.error).toMatch(/origin is not allowed/)
+  })
+
+  it('records guess feedback without storing uploaded photos', async () => {
+    const tempDir = await mkdtemp(join(tmpdir(), 'sf-food-feedback-'))
+    const feedbackLogPath = join(tempDir, 'feedback.jsonl')
+
+    try {
+      const response = await request(
+        createApp({
+          openAIClient: null,
+          photoSearch: null,
+          feedbackLogPath,
+        }),
+      )
+        .post('/api/feedback')
+        .send({
+          runId: 'run-123',
+          vote: 'incorrect',
+          rank: 1,
+          candidate: {
+            id: 'web:Souvla',
+            name: 'Souvla',
+            category: 'Restaurant',
+            neighborhood: 'San Francisco',
+            address: 'Address not confirmed',
+            confidence: 82,
+            evidenceCategories: ['visible_text', 'packaging_logo'],
+            reasons: ['The uploaded image contains readable visible text that says Souvla.'],
+          },
+          analysis: {
+            summary: 'Food spread with visible tray text.',
+            imageEvidence: ['SOUVLA text on tray'],
+            needsMoreEvidence: true,
+          },
+          providers: {
+            webSearchProvider: 'test-web',
+          },
+          photo: 'data:image/png;base64,should-not-be-stored',
+        })
+        .expect(201)
+
+      expect(response.body.ok).toBe(true)
+      const lines = (await readFile(feedbackLogPath, 'utf8')).trim().split('\n')
+      const record = JSON.parse(lines[0])
+
+      expect(record).toMatchObject({
+        app: 'sf-food-guesser',
+        runId: 'run-123',
+        vote: 'incorrect',
+        rank: 1,
+        candidate: {
+          name: 'Souvla',
+          confidence: 82,
+          evidenceCategories: ['visible_text', 'packaging_logo'],
+        },
+        analysis: {
+          summary: 'Food spread with visible tray text.',
+          imageEvidence: ['SOUVLA text on tray'],
+        },
+        providers: {
+          webSearchProvider: 'test-web',
+        },
+      })
+      expect(JSON.stringify(record)).not.toContain('should-not-be-stored')
+    } finally {
+      await rm(tempDir, { recursive: true, force: true })
+    }
+  })
+
+  it('records completed analysis runs without storing uploaded photos', async () => {
+    const tempDir = await mkdtemp(join(tmpdir(), 'sf-food-runs-'))
+    const runLogPath = join(tempDir, 'runs.jsonl')
+    const openAIClient = {
+      responses: {
+        create: vi.fn(async () => ({
+          output_text: JSON.stringify({
+            summary: 'A burger on a scalloped plate.',
+            imageEvidence: ['burger', 'scalloped plate'],
+            candidates: [
+              {
+                id: '',
+                name: 'RT Bistro',
+                category: 'Restaurant',
+                neighborhood: 'Hayes Valley',
+                address: '205 Oak St',
+                confidence: 76,
+                evidenceCategories: ['dish_match', 'web_source_match'],
+                reasons: ['The burger and plate match known photos.'],
+                sourceUrls: ['https://example.com/rt-bistro'],
+              },
+            ],
+            needsMoreEvidence: true,
+          }),
+        })),
+      },
+    }
+
+    try {
+      const response = await request(
+        createApp({
+          openAIClient,
+          visionModel: 'test-model',
+          visionProvider: 'openai',
+          photoSearch: null,
+          webSearch: null,
+          runLogPath,
+        }),
+      )
+        .post('/api/analyze-photo')
+        .attach('photo', pngPixel, { filename: 'food.png', contentType: 'image/png' })
+        .field('venues', '[]')
+        .expect(200)
+
+      expect(response.body.runId).toBeTruthy()
+      const lines = (await readFile(runLogPath, 'utf8')).trim().split('\n')
+      const record = JSON.parse(lines[0])
+
+      expect(record).toMatchObject({
+        id: response.body.runId,
+        app: 'sf-food-guesser',
+        status: 'completed',
+        upload: {
+          mimeType: 'image/png',
+        },
+        providers: {
+          visionProvider: 'openai',
+          visionModel: 'test-model',
+        },
+        summary: 'A burger on a scalloped plate.',
+        imageEvidence: ['burger', 'scalloped plate'],
+        candidates: [
+          {
+            name: 'RT Bistro',
+            confidence: 58,
+          },
+        ],
+      })
+      expect(record.upload.sizeBytes).toBeGreaterThan(0)
+      expect(JSON.stringify(record)).not.toContain('base64')
+      expect(JSON.stringify(record)).not.toContain('iVBOR')
+    } finally {
+      await rm(tempDir, { recursive: true, force: true })
+    }
   })
 
   it('returns parsed model JSON from the vision client', async () => {
@@ -326,6 +603,42 @@ describe('SF Food Guesser API', () => {
     expect(visionClient.chat.completions.create).toHaveBeenCalledTimes(2)
   })
 
+  it('returns a specific message when OpenRouter DNS lookup fails', async () => {
+    const dnsError = Object.assign(new Error('Connection error.'), {
+      cause: Object.assign(new TypeError('fetch failed'), {
+        cause: Object.assign(new Error('getaddrinfo ENOTFOUND openrouter.ai'), {
+          code: 'ENOTFOUND',
+          hostname: 'openrouter.ai',
+        }),
+      }),
+    })
+    const visionClient = {
+      chat: {
+        completions: {
+          create: vi.fn().mockRejectedValue(dnsError),
+        },
+      },
+    }
+
+    const response = await request(
+      createApp({
+        visionClient,
+        visionModel: 'openai/gpt-4o-mini',
+        visionFallbackModels: [],
+        visionProvider: 'openrouter',
+        photoSearch: null,
+        webSearch: null,
+      }),
+    )
+      .post('/api/analyze-photo')
+      .attach('photo', pngPixel, { filename: 'food.png', contentType: 'image/png' })
+      .field('venues', '[]')
+      .expect(500)
+
+    expect(response.body.error).toContain('OpenRouter could not be reached')
+    expect(response.body.error).toContain('DNS/network lookup failed')
+  })
+
   it('tries configured fallback vision models when the primary model is rate-limited', async () => {
     const rateLimitError = Object.assign(new Error('Provider returned error'), {
       status: 429,
@@ -579,6 +892,85 @@ describe('SF Food Guesser API', () => {
     )
   })
 
+  it('turns readable brand text into exact search queries', async () => {
+    const visionClient = {
+      chat: {
+        completions: {
+          create: vi
+            .fn()
+            .mockResolvedValueOnce({
+              choices: [
+                {
+                  message: {
+                    content: JSON.stringify({
+                      summary: 'A table spread with visible restaurant branding.',
+                      imageEvidence: ['blue-rim plates', 'visible tray text'],
+                      visibleText: ['Souvla'],
+                      searchQueries: ['San Francisco Greek counter blue rim plates photos'],
+                      likelyVenueTypes: ['Restaurant', 'Counter'],
+                    }),
+                  },
+                },
+              ],
+            })
+            .mockResolvedValueOnce({
+              choices: [
+                {
+                  message: {
+                    content: JSON.stringify({
+                      summary: 'Visible Souvla text identifies the restaurant brand.',
+                      imageEvidence: ['Readable Souvla text on the tray liner'],
+                      candidates: [
+                        {
+                          id: '',
+                          name: 'Souvla',
+                          category: 'Restaurant',
+                          neighborhood: 'San Francisco',
+                          address: '',
+                          confidence: 90,
+                          evidenceType: 'packaging',
+                          evidenceCategories: ['visible_text', 'packaging_logo'],
+                          reasons: ['The tray liner has readable visible branding that says Souvla.'],
+                          sourceUrls: ['https://www.souvla.com/'],
+                          comparisonPhotos: [],
+                        },
+                      ],
+                      needsMoreEvidence: true,
+                    }),
+                  },
+                },
+              ],
+            }),
+        },
+      },
+    }
+    const photoSearch = {
+      provider: 'mock-photo-search',
+      search: vi.fn(async () => []),
+    }
+
+    await request(
+      createApp({
+        visionClient,
+        visionModel: 'openai/gpt-4o-mini',
+        visionProvider: 'openrouter',
+        photoSearch,
+        webSearch: null,
+        articleSearch: null,
+      }),
+    )
+      .post('/api/analyze-photo')
+      .attach('photo', pngPixel, { filename: 'food.png', contentType: 'image/png' })
+      .field('venues', '[]')
+      .expect(200)
+
+    expect(photoSearch.search).toHaveBeenCalledWith([
+      '"Souvla" San Francisco restaurant cafe',
+      '"Souvla" San Francisco menu photos reviews',
+      'San Francisco Greek counter blue rim plates photos',
+    ])
+  })
+
   it('retries comparison without external image URLs when the image-heavy request fails', async () => {
     const visionClient = {
       chat: {
@@ -686,7 +1078,7 @@ describe('SF Food Guesser API', () => {
       (part) => part.type === 'image_url' && part.image_url.url.includes('example.com/photo-'),
     )
     const fallbackUploadedImages = fallbackRequest.messages[1].content.filter(
-      (part) => part.type === 'image_url' && part.image_url.url.startsWith('data:image/png'),
+      (part) => part.type === 'image_url' && part.image_url.url.startsWith('data:image/jpeg'),
     )
     expect(fallbackExternalImages).toHaveLength(0)
     expect(fallbackUploadedImages).toHaveLength(1)
@@ -738,6 +1130,108 @@ describe('SF Food Guesser API', () => {
       title: 'Green Tile Cafe customer photo',
       source: 'Google Maps reviews/photos',
       imageUrl: 'https://lh5.googleusercontent.com/p/interior=w1200-h900-k-no',
+      placeTitle: 'Green Tile Cafe',
+      placeAddress: '123 Valencia St, San Francisco, CA',
+    })
+
+    fetchMock.mockRestore()
+  })
+
+  it('starts Google Maps place searches in parallel before fetching review photos', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = new URL(String(input))
+      const engine = url.searchParams.get('engine')
+      const query = url.searchParams.get('q') ?? ''
+      const dataId = url.searchParams.get('data_id') ?? ''
+
+      if (engine === 'google_maps') {
+        const suffix = query.includes('second') ? 'second' : 'first'
+        return new Response(
+          JSON.stringify({
+            local_results: [
+              {
+                title: `${suffix} cafe`,
+                address: `${suffix} address, San Francisco, CA`,
+                data_id: `data-${suffix}`,
+              },
+            ],
+          }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } },
+        )
+      }
+
+      return new Response(
+        JSON.stringify({
+          photos: [
+            {
+              image: `https://lh5.googleusercontent.com/p/${dataId}=w1200-h900-k-no`,
+              thumbnail: `https://lh5.googleusercontent.com/p/${dataId}=w203-h152-k-no`,
+            },
+          ],
+        }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } },
+      )
+    })
+
+    const photos = await searchSerpApiPhotos(['first matcha counter', 'second matcha counter'])
+    const engines = fetchMock.mock.calls.map(([input]) =>
+      new URL(String(input)).searchParams.get('engine'),
+    )
+
+    expect(engines.slice(0, 2)).toEqual(['google_maps', 'google_maps'])
+    expect(engines).toContain('google_maps_photos')
+    expect(photos.map((photo) => photo.placeTitle)).toEqual(['first cafe', 'second cafe'])
+
+    fetchMock.mockRestore()
+  })
+
+  it('uses HasData Maps search before fetching Google review photos', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch')
+    fetchMock
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            localResults: [
+              {
+                title: 'Green Tile Cafe',
+                address: '123 Valencia St, San Francisco, CA',
+                dataId: '0xabc:0x123',
+                placeId: 'place-123',
+                gpsCoordinates: { latitude: 37.76, longitude: -122.42 },
+              },
+            ],
+          }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } },
+        ),
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            photos: [
+              {
+                image: 'https://lh5.googleusercontent.com/p/hasdata-interior=w1200-h900-k-no',
+                thumbnail: 'https://lh5.googleusercontent.com/p/hasdata-interior=w203-h152-k-no',
+              },
+            ],
+          }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } },
+        ),
+      )
+
+    const photos = await searchHasDataPhotos(['green tile matcha counter'])
+    const firstUrl = new URL(fetchMock.mock.calls[0][0])
+    const secondUrl = new URL(fetchMock.mock.calls[1][0])
+    const firstOptions = fetchMock.mock.calls[0][1]
+
+    expect(firstUrl.href).toContain('/scrape/google-maps/search')
+    expect(firstUrl.searchParams.get('q')).toContain('green tile matcha counter')
+    expect(firstOptions.headers).toHaveProperty('x-api-key')
+    expect(secondUrl.href).toContain('/scrape/google-maps/photos')
+    expect(secondUrl.searchParams.get('dataId')).toBe('0xabc:0x123')
+    expect(photos[0]).toMatchObject({
+      title: 'Green Tile Cafe customer photo',
+      source: 'Google Maps reviews/photos',
+      imageUrl: 'https://lh5.googleusercontent.com/p/hasdata-interior=w1200-h900-k-no',
       placeTitle: 'Green Tile Cafe',
       placeAddress: '123 Valencia St, San Francisco, CA',
     })
@@ -841,6 +1335,252 @@ describe('SF Food Guesser API', () => {
     expect(promptText).toContain('Black Counter Cafe review')
   })
 
+  it('uses article-discovered candidates to drive Google Maps photo verification', async () => {
+    const visionClient = {
+      chat: {
+        completions: {
+          create: vi
+            .fn()
+            .mockResolvedValueOnce({
+              choices: [
+                {
+                  message: {
+                    content: JSON.stringify({
+                      summary: 'Matcha drink inside a compact cafe prep area.',
+                      imageEvidence: ['iced matcha', 'brown bags on shelves'],
+                      searchQueries: ['San Francisco new matcha cafe brown bags shelves'],
+                      likelyVenueTypes: ['Cafe'],
+                    }),
+                  },
+                },
+              ],
+            })
+            .mockResolvedValueOnce({
+              choices: [
+                {
+                  message: {
+                    content: JSON.stringify({
+                      summary: 'Article discovery found the venue and Maps photos verified it.',
+                      imageEvidence: ['iced matcha', 'brown bags on shelves'],
+                      candidates: [
+                        {
+                          id: '',
+                          name: 'Kissaten Hifi',
+                          category: 'Cafe',
+                          neighborhood: 'Richmond',
+                          address: '189 6th Ave',
+                          confidence: 88,
+                          evidenceType: 'mixed',
+                          evidenceCategories: ['interior_match', 'web_source_match', 'dish_match'],
+                          reasons: [
+                            'Article search surfaced Kissaten Hifi as a recent SF matcha cafe.',
+                            'Google Maps customer photos were provided for visual comparison.',
+                          ],
+                          sourceUrls: ['https://www.theinfatuation.com/san-francisco/reviews/kissaten-hifi'],
+                          comparisonPhotos: [
+                            {
+                              title: 'Kissaten Hifi customer photo',
+                              source: 'Google Maps reviews/photos',
+                              url: 'https://maps.example/kissaten-photo',
+                              matchReason: 'Same compact prep shelf context.',
+                            },
+                          ],
+                        },
+                      ],
+                      needsMoreEvidence: false,
+                    }),
+                  },
+                },
+              ],
+            }),
+        },
+      },
+    }
+    const articleSearch = {
+      provider: 'mock-article-search',
+      search: vi.fn(async () => ({
+        candidates: [
+          {
+            name: 'Kissaten Hifi',
+            category: 'Cafe',
+            neighborhood: 'Richmond',
+            address: '189 6th Ave',
+            whyRelevant: 'Infatuation review says this is a recently opened matcha cafe.',
+            openingContext: 'Reviewed March 2026',
+            sourceUrls: ['https://www.theinfatuation.com/san-francisco/reviews/kissaten-hifi'],
+          },
+        ],
+        pages: [
+          {
+            title: 'Kissaten Hifi review',
+            source: 'theinfatuation.com',
+            url: 'https://www.theinfatuation.com/san-francisco/reviews/kissaten-hifi',
+            snippet: 'Recently opened matcha cafe.',
+            query: 'article discovery',
+            searchLabel: 'article-discovery',
+          },
+        ],
+      })),
+    }
+    const photoSearch = {
+      provider: 'mock-photo-search',
+      search: vi.fn(async () => [
+        {
+          title: 'Kissaten Hifi customer photo',
+          source: 'Google Maps reviews/photos',
+          pageUrl: 'https://maps.example/kissaten-photo',
+          imageUrl: 'https://maps.example/kissaten-photo.jpg',
+          thumbnailUrl: 'https://maps.example/kissaten-photo-thumb.jpg',
+          query: 'Kissaten Hifi 189 6th Ave San Francisco Google Maps reviews photos interior',
+          placeTitle: 'Kissaten Hifi',
+          placeAddress: '189 6th Ave, San Francisco, CA',
+        },
+      ]),
+    }
+
+    const response = await request(
+      createApp({
+        visionClient,
+        visionModel: 'openai/gpt-4o-mini',
+        visionProvider: 'openrouter',
+        articleSearch,
+        photoSearch,
+        webSearch: null,
+      }),
+    )
+      .post('/api/analyze-photo')
+      .attach('photo', pngPixel, { filename: 'food.png', contentType: 'image/png' })
+      .field('venues', '[]')
+      .expect(200)
+
+    expect(articleSearch.search).toHaveBeenCalledWith(
+      expect.objectContaining({
+        summary: 'Matcha drink inside a compact cafe prep area.',
+      }),
+    )
+    expect(photoSearch.search.mock.calls[0][0][0]).toContain('Kissaten Hifi')
+    expect(response.body.articleSearchProvider).toBe('mock-article-search')
+    expect(response.body.articleCandidates[0]).toMatchObject({
+      name: 'Kissaten Hifi',
+      sourceUrls: ['https://www.theinfatuation.com/san-francisco/reviews/kissaten-hifi'],
+    })
+    expect(response.body.webEvidence[0]).toMatchObject({
+      searchLabel: 'article-discovery',
+      source: 'theinfatuation.com',
+    })
+
+    const rankingRequest = visionClient.chat.completions.create.mock.calls[1][0]
+    const promptText = rankingRequest.messages[1].content[0].text
+    expect(promptText).toContain('Article-discovered candidate venues')
+    expect(promptText).toContain('Kissaten Hifi')
+  })
+
+  it('runs article discovery and base web search in parallel before candidate photo search', async () => {
+    const events = []
+    const visionClient = {
+      chat: {
+        completions: {
+          create: vi
+            .fn()
+            .mockResolvedValueOnce({
+              choices: [
+                {
+                  message: {
+                    content: JSON.stringify({
+                      summary: 'Matcha drink in a cafe interior.',
+                      imageEvidence: ['matcha drink', 'retail bags'],
+                      searchQueries: ['San Francisco recent matcha cafe retail bags'],
+                      likelyVenueTypes: ['Cafe'],
+                    }),
+                  },
+                },
+              ],
+            })
+            .mockResolvedValueOnce({
+              choices: [
+                {
+                  message: {
+                    content: JSON.stringify({
+                      summary: 'Parallel search completed.',
+                      imageEvidence: ['matcha drink', 'retail bags'],
+                      candidates: [
+                        {
+                          id: '',
+                          name: 'Parallel Cafe',
+                          category: 'Cafe',
+                          neighborhood: 'Richmond',
+                          address: '100 Example St',
+                          confidence: 72,
+                          evidenceType: 'mixed',
+                          evidenceCategories: ['web_source_match', 'dish_match'],
+                          reasons: ['Search providers returned candidate evidence.'],
+                          sourceUrls: ['https://example.com/parallel-cafe'],
+                        },
+                      ],
+                      needsMoreEvidence: true,
+                    }),
+                  },
+                },
+              ],
+            }),
+        },
+      },
+    }
+    const articleSearch = {
+      provider: 'slow-article-search',
+      search: vi.fn(async () => {
+        events.push('article-start')
+        await new Promise((resolve) => setTimeout(resolve, 10))
+        events.push('article-end')
+        return {
+          candidates: [
+            {
+              name: 'Parallel Cafe',
+              neighborhood: 'Richmond',
+              whyRelevant: 'Recently opened cafe from article discovery.',
+              sourceUrls: ['https://example.com/parallel-cafe'],
+            },
+          ],
+          pages: [],
+        }
+      }),
+    }
+    const webSearch = {
+      provider: 'mock-web-search',
+      search: vi.fn(async (queries) => {
+        events.push(queries.some((query) => query.includes('Parallel Cafe')) ? 'candidate-web' : 'base-web')
+        return []
+      }),
+    }
+    const photoSearch = {
+      provider: 'mock-photo-search',
+      search: vi.fn(async () => {
+        events.push('photo-search')
+        return []
+      }),
+    }
+
+    await request(
+      createApp({
+        visionClient,
+        visionModel: 'openai/gpt-4o-mini',
+        visionProvider: 'openrouter',
+        articleSearch,
+        webSearch,
+        photoSearch,
+      }),
+    )
+      .post('/api/analyze-photo')
+      .attach('photo', pngPixel, { filename: 'food.png', contentType: 'image/png' })
+      .field('venues', '[]')
+      .expect(200)
+
+    expect(events.indexOf('base-web')).toBeGreaterThan(events.indexOf('article-start'))
+    expect(events.indexOf('base-web')).toBeLessThan(events.indexOf('article-end'))
+    expect(events.indexOf('photo-search')).toBeGreaterThan(events.indexOf('article-end'))
+    expect(events.indexOf('candidate-web')).toBeGreaterThan(events.indexOf('article-end'))
+  })
+
   it('uses Exa deep search with highlights for web evidence', async () => {
     const exaClient = {
       search: vi.fn(async () => ({
@@ -885,6 +1625,106 @@ describe('SF Food Guesser API', () => {
       url: 'https://example.com/cafe-interior',
       searchLabel: 'broad-web',
       snippet: expect.stringContaining('Green tile wall'),
+    })
+  })
+
+  it('uses Ceramic web search as a low-cost broad evidence provider', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          result: {
+            results: [
+              {
+                title: 'Green Tile Cafe review',
+                url: 'https://example.com/green-tile-cafe-review',
+                description: 'A San Francisco cafe with green tile and pastry cases.',
+              },
+            ],
+          },
+        }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } },
+      ),
+    )
+
+    const pages = await searchCeramicWeb(['San Francisco cafe green tile interior'], 'test-key')
+    const [url, options] = fetchMock.mock.calls[0]
+
+    expect(url).toBe('https://api.ceramic.ai/search')
+    expect(options.method).toBe('POST')
+    expect(options.headers.Authorization).toBe('Bearer test-key')
+    expect(JSON.parse(options.body).query).toContain('San Francisco cafe green tile interior')
+    expect(pages[0]).toMatchObject({
+      title: 'Green Tile Cafe review',
+      source: 'example.com',
+      url: 'https://example.com/green-tile-cafe-review',
+      snippet: 'A San Francisco cafe with green tile and pastry cases.',
+    })
+
+    fetchMock.mockRestore()
+  })
+
+  it('uses Exa structured article discovery for recently opened cafe candidates', async () => {
+    const exaClient = {
+      search: vi.fn(async () => ({
+        output: {
+          content: {
+            candidates: [
+              {
+                name: 'Kissaten Hifi',
+                category: 'Cafe',
+                neighborhood: 'Richmond',
+                address: '189 6th Ave',
+                whyRelevant: 'A recently opened matcha cafe from an article-style review.',
+                openingContext: 'Reviewed March 2026',
+              },
+            ],
+          },
+          grounding: [
+            {
+              field: 'candidates[0].name',
+              citations: [
+                {
+                  url: 'https://www.theinfatuation.com/san-francisco/reviews/kissaten-hifi',
+                  title: 'Kissaten Hifi review',
+                },
+              ],
+            },
+          ],
+        },
+        results: [
+          {
+            title: 'Kissaten Hifi review',
+            url: 'https://www.theinfatuation.com/san-francisco/reviews/kissaten-hifi',
+            highlights: ['A recently opened matcha cafe in the Richmond.'],
+          },
+        ],
+      })),
+    }
+
+    const result = await discoverArticleCandidates(
+      {
+        summary: 'Iced matcha in a cafe prep area.',
+        imageEvidence: ['brown bags on shelves', 'tan aprons'],
+      },
+      exaClient,
+    )
+
+    expect(exaClient.search).toHaveBeenCalledWith(
+      expect.stringContaining('recently opened new popular cafe'),
+      expect.objectContaining({
+        type: 'deep',
+        numResults: 12,
+        contents: { highlights: true },
+        outputSchema: expect.any(Object),
+      }),
+    )
+    expect(result.candidates[0]).toMatchObject({
+      name: 'Kissaten Hifi',
+      sourceUrls: ['https://www.theinfatuation.com/san-francisco/reviews/kissaten-hifi'],
+    })
+    expect(result.pages[0]).toMatchObject({
+      searchLabel: 'article-discovery',
+      source: 'theinfatuation.com',
     })
   })
 
@@ -995,6 +1835,47 @@ describe('SF Food Guesser API', () => {
 
     expect(candidates[0].evidenceCategories).not.toContain('visible_text')
     expect(candidates[0].confidence).toBeLessThanOrEqual(72)
+  })
+
+  it('treats readable visible branding as identity evidence', () => {
+    const candidates = rerankCandidates([
+      {
+        id: '',
+        name: 'Souvla',
+        confidence: 88,
+        evidenceCategories: ['packaging_logo', 'dish_match'],
+        reasons: ['The tray liner has visible branding that says Souvla.'],
+        sourceUrls: ['https://www.souvla.com/'],
+      },
+    ])
+
+    expect(candidates[0].evidenceCategories).toContain('visible_text')
+    expect(candidates[0].confidence).toBeGreaterThan(58)
+    expect(candidates[0].rankingNotes).toContain('Matched visible text from the photo.')
+  })
+
+  it('does not keep duplicate candidate names after reranking', () => {
+    const candidates = rerankCandidates([
+      {
+        id: '',
+        name: 'Souvla',
+        confidence: 80,
+        evidenceCategories: ['visible_text', 'packaging_logo'],
+        reasons: ['The uploaded image contains readable visible text that says Souvla.'],
+        sourceUrls: ['https://www.souvla.com/'],
+      },
+      {
+        id: '',
+        name: 'Souvla',
+        confidence: 70,
+        evidenceCategories: ['packaging_logo'],
+        reasons: ['The tray liner has visible branding that says Souvla.'],
+        sourceUrls: ['https://www.souvla.com/'],
+      },
+    ])
+
+    expect(candidates).toHaveLength(1)
+    expect(candidates[0].name).toBe('Souvla')
   })
 
   it('does not trust invented non-seed ids as verified venues', () => {
