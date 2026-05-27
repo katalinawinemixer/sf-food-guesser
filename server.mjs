@@ -786,6 +786,7 @@ function cleanPhotoEvidenceForLog(photo = {}) {
 }
 
 async function appendJsonl(logPath, record) {
+  if (!logPath) return
   await mkdir(dirname(logPath), { recursive: true })
   await appendFile(logPath, `${JSON.stringify(record)}\n`, 'utf8')
 }

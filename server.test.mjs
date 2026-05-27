@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
 import {
-  createApp,
+  createApp as createServerApp,
   discoverArticleCandidates,
   rerankCandidates,
   searchCeramicWeb,
@@ -18,6 +18,14 @@ const pngPixel = Buffer.from(
   'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=',
   'base64',
 )
+
+function createApp(options = {}) {
+  return createServerApp({
+    feedbackLogPath: false,
+    runLogPath: false,
+    ...options,
+  })
+}
 
 describe('SF Food Guesser API', () => {
   it('creates isolated provider wrappers from environment keys', async () => {
