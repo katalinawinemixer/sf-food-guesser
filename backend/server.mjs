@@ -1,5 +1,5 @@
 import 'dotenv/config'
-import { appendFile, mkdir } from 'node:fs/promises'
+import { appendFile, mkdir, readFile } from 'node:fs/promises'
 import { randomUUID } from 'node:crypto'
 import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -901,6 +901,32 @@ async function appendRunLog(logPath, record) {
     await appendJsonl(logPath, record)
   } catch (error) {
     console.warn('Could not save local run log.', error)
+  }
+}
+
+async function hasExistingSuggestedCorrection(logPath, feedback) {
+  if (!logPath || feedback.vote !== 'suggested_answer' || !feedback.runId) return false
+
+  try {
+    const contents = await readFile(logPath, 'utf8')
+    return contents
+      .split('\n')
+      .filter(Boolean)
+      .some((line) => {
+        try {
+          const record = JSON.parse(line)
+          return (
+            record.vote === 'suggested_answer' &&
+            record.runId === feedback.runId &&
+            String(record.sessionId || '') === String(feedback.sessionId || '')
+          )
+        } catch {
+          return false
+        }
+      })
+  } catch (error) {
+    if (error?.code === 'ENOENT') return false
+    throw error
   }
 }
 
@@ -2024,14 +2050,18 @@ export function createApp(options = {}) {
     }
 
     const logPath = options.feedbackLogPath ?? defaultFeedbackLogPath
-    const record = {
-      id: randomUUID(),
-      createdAt: new Date().toISOString(),
-      app: 'sf-food-guesser',
-      ...feedback,
-    }
-
     try {
+      if (await hasExistingSuggestedCorrection(logPath, feedback)) {
+        response.status(409).json({ error: 'A correction was already submitted for this run.' })
+        return
+      }
+
+      const record = {
+        id: randomUUID(),
+        createdAt: new Date().toISOString(),
+        app: 'sf-food-guesser',
+        ...feedback,
+      }
       await appendJsonl(logPath, record)
       response.status(201).json({ ok: true, id: record.id })
     } catch {

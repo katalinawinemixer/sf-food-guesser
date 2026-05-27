@@ -340,6 +340,35 @@ describe('SF Food Guesser API', () => {
     }
   })
 
+  it('rejects duplicate suggested answers for the same run and anonymous session', async () => {
+    const tempDir = await mkdtemp(join(tmpdir(), 'sf-food-correction-duplicate-'))
+    const feedbackLogPath = join(tempDir, 'feedback.jsonl')
+    const app = createApp({
+      openAIClient: null,
+      photoSearch: null,
+      feedbackLogPath,
+    })
+    const payload = {
+      runId: 'run-correction',
+      sessionId: 'anonymous-session',
+      vote: 'suggested_answer',
+      suggestedVenue: {
+        name: 'Kissaten Hi-Fi',
+      },
+    }
+
+    try {
+      await request(app).post('/api/feedback').send(payload).expect(201)
+      const response = await request(app).post('/api/feedback').send(payload).expect(409)
+
+      expect(response.body.error).toMatch(/already submitted/)
+      const lines = (await readFile(feedbackLogPath, 'utf8')).trim().split('\n')
+      expect(lines).toHaveLength(1)
+    } finally {
+      await rm(tempDir, { recursive: true, force: true })
+    }
+  })
+
   it('records completed analysis runs without storing uploaded photos', async () => {
     const tempDir = await mkdtemp(join(tmpdir(), 'sf-food-runs-'))
     const runLogPath = join(tempDir, 'runs.jsonl')

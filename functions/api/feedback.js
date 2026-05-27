@@ -81,6 +81,18 @@ export async function onRequestPost({ request, env }) {
     )
   }
 
+  const suggestionKey =
+    feedback.vote === 'suggested_answer' && feedback.runId
+      ? `feedback-suggestion:${feedback.runId}:${feedback.sessionId || 'anonymous'}`
+      : null
+
+  if (suggestionKey && env.SF_FOOD_FEEDBACK_KV?.get) {
+    const existingSuggestion = await env.SF_FOOD_FEEDBACK_KV.get(suggestionKey)
+    if (existingSuggestion) {
+      return jsonResponse({ error: 'A correction was already submitted for this run.' }, 409)
+    }
+  }
+
   const record = {
     id: crypto.randomUUID(),
     createdAt: new Date().toISOString(),
@@ -89,6 +101,9 @@ export async function onRequestPost({ request, env }) {
   }
 
   if (env.SF_FOOD_FEEDBACK_KV?.put) {
+    if (suggestionKey) {
+      await env.SF_FOOD_FEEDBACK_KV.put(suggestionKey, record.id)
+    }
     await env.SF_FOOD_FEEDBACK_KV.put(`feedback:${record.createdAt}:${record.id}`, JSON.stringify(record))
     return jsonResponse({ ok: true, id: record.id, persisted: true }, 201)
   }

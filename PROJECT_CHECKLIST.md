@@ -190,7 +190,7 @@ order keeps the app honest first, then adds more search power and scale.
 
 - [x] Keep corrections as unverified user claims.
 - [x] Add anonymous local session IDs for feedback grouping.
-- [ ] Enforce one suggested correction per run.
+- [x] Enforce one suggested correction per run.
 - [ ] Add Cloudflare/IP/session rate limits and optional Turnstile only for
   suspicious behavior.
 - [ ] Ignore or downweight repeated contradictory corrections from the same

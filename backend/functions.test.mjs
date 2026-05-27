@@ -943,7 +943,8 @@ describe('Cloudflare Pages Functions API', () => {
       },
     })
     const body = await json(response)
-    const storedRecord = JSON.parse(put.mock.calls[0][1])
+    const feedbackPut = put.mock.calls.find(([key]) => String(key).startsWith('feedback:'))
+    const storedRecord = JSON.parse(feedbackPut[1])
 
     expect(response.status).toBe(201)
     expect(body.persisted).toBe(true)
@@ -989,9 +990,11 @@ describe('Cloudflare Pages Functions API', () => {
         SF_FOOD_FEEDBACK_KV: { put },
       },
     })
-    const storedRecord = JSON.parse(put.mock.calls[0][1])
+    const feedbackPut = put.mock.calls.find(([key]) => String(key).startsWith('feedback:'))
+    const storedRecord = JSON.parse(feedbackPut[1])
 
     expect(response.status).toBe(201)
+    expect(put).toHaveBeenCalledWith('feedback-suggestion:run-suggestion:anonymous-session', expect.any(String))
     expect(storedRecord).toMatchObject({
       runId: 'run-suggestion',
       sessionId: 'anonymous-session',
@@ -1011,5 +1014,33 @@ describe('Cloudflare Pages Functions API', () => {
       ],
     })
     expect(JSON.stringify(storedRecord)).not.toContain('should-not-store')
+  })
+
+  it('rejects duplicate suggested answer feedback in KV', async () => {
+    const get = vi.fn(async () => 'existing-feedback-id')
+    const put = vi.fn(async () => undefined)
+    const response = await feedbackPost({
+      request: new Request('https://sf-food-guesser.pages.dev/api/feedback', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          runId: 'run-suggestion',
+          sessionId: 'anonymous-session',
+          vote: 'suggested_answer',
+          suggestedVenue: {
+            name: 'Kissaten Hi-Fi',
+          },
+        }),
+      }),
+      env: {
+        SF_FOOD_FEEDBACK_KV: { get, put },
+      },
+    })
+    const body = await json(response)
+
+    expect(response.status).toBe(409)
+    expect(body.error).toMatch(/already submitted/)
+    expect(get).toHaveBeenCalledWith('feedback-suggestion:run-suggestion:anonymous-session')
+    expect(put).not.toHaveBeenCalled()
   })
 })
