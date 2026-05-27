@@ -133,7 +133,7 @@ function getSourceName(url, fallback = 'Exa') {
 }
 
 function uniqueModels(models) {
-  return [...new Set(models.map(String).map((item) => item.trim()).filter(Boolean))]
+  return [...new Set(models.map((model) => String(model).trim()).filter(Boolean))]
 }
 
 function withTimeout(promise, timeoutMs, label) {
@@ -509,8 +509,8 @@ function normalizeSearchPlan(plan) {
   const searchQueries = [...new Set([
     ...visibleTextQueries,
     ...(Array.isArray(plan.searchQueries)
-    ? plan.searchQueries.map(String).filter(Boolean).slice(0, 8)
-    : []),
+      ? plan.searchQueries.map(String).filter(Boolean).slice(0, 8)
+      : []),
   ])].slice(0, 8)
 
   return {
