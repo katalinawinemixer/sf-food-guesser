@@ -109,7 +109,7 @@ items were completed earlier out of order.
 - [x] Connect the Cloudflare Pages project to the `katalinawinemixer/sf-food-guesser` GitHub repo.
 - [x] Add a repeatable production check for HTTPS headers, API health, DNS, and same-app fingerprints.
 - [x] Validate DNS for `spotted-in-sf.com` and `www.spotted-in-sf.com` so both resolve to the Pages project.
-- [ ] Re-test production photo analysis on the custom domains after DNS validates.
+- [x] Re-test production photo analysis on the custom domains after DNS validates.
 
 ## 10. Future Accuracy Improvements
 
