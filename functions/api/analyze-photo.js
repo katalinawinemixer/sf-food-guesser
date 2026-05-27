@@ -46,7 +46,7 @@ function seedPhotoSearchQueries(venues = [], searchPlan = null) {
         score: matchedHintCount + (nameHit ? 4 : 0),
       }
     })
-    .filter(({ venue, score }) => score >= 2 && venue.name)
+    .filter(({ venue, score }) => score >= 1 && venue.name)
     .sort((a, b) => b.score - a.score || a.originalIndex - b.originalIndex)
     .slice(0, 4)
     .map(({ venue }) =>

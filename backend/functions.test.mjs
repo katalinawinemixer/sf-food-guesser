@@ -301,7 +301,7 @@ describe('Cloudflare Pages Functions API', () => {
           name: 'Kissaten HiFi',
           address: '189 6th Ave',
           neighborhood: 'Inner Richmond',
-          imageEvidenceHints: ['matcha', 'brown bags', 'tan aprons'],
+          imageEvidenceHints: ['matcha', 'sightglass'],
         },
       ]),
     )
