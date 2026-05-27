@@ -202,7 +202,7 @@ export function normalizeSearchPlan(result) {
   }
 }
 
-export function buildCloudflarePrompt(venues, webEvidence = [], searchPlan = null) {
+export function buildCloudflarePrompt(venues, webEvidence = [], searchPlan = null, photoEvidence = []) {
   const compactVenues = Array.isArray(venues)
     ? venues.slice(0, 120).map((venue) => ({
         id: venue.id,
@@ -222,6 +222,18 @@ export function buildCloudflarePrompt(venues, webEvidence = [], searchPlan = nul
         url: page.url,
         snippet: page.snippet,
         query: page.query,
+      }))
+    : []
+  const compactPhotoEvidence = Array.isArray(photoEvidence)
+    ? photoEvidence.slice(0, 10).map((photo) => ({
+        title: photo.title,
+        source: photo.source,
+        pageUrl: photo.pageUrl,
+        imageUrl: photo.imageUrl,
+        thumbnailUrl: photo.thumbnailUrl,
+        query: photo.query,
+        placeTitle: photo.placeTitle,
+        placeAddress: photo.placeAddress,
       }))
     : []
 
@@ -262,8 +274,25 @@ ${JSON.stringify(searchPlan ?? null).slice(0, 5000)}
 External web/article evidence:
 ${JSON.stringify(compactEvidence).slice(0, 12000)}
 
+External public photo evidence:
+${JSON.stringify(compactPhotoEvidence).slice(0, 8000)}
+
 Seed venues:
 ${JSON.stringify(compactVenues).slice(0, 18000)}`
+}
+
+export function buildCloudflarePhotoEvidenceParts(photoEvidence = []) {
+  return photoEvidence.slice(0, 4).flatMap((photo, index) => {
+    const imageUrl = photo.imageUrl || photo.thumbnailUrl
+    if (!imageUrl) return []
+    return [
+      {
+        type: 'text',
+        text: `External candidate photo ${index + 1}: ${photo.title || photo.placeTitle || 'public venue photo'} from ${photo.source || 'public photos'} at ${photo.pageUrl || imageUrl}. Compare against the uploaded image before trusting this candidate.`,
+      },
+      { type: 'image_url', image_url: { url: imageUrl, detail: 'low' } },
+    ]
+  })
 }
 
 export async function searchExaEvidence(searchPlan, env, fetchImpl = fetch) {
@@ -321,6 +350,143 @@ export async function searchExaEvidence(searchPlan, env, fetchImpl = fetch) {
       return true
     })
     .slice(0, 24)
+}
+
+function normalizeHasDataPlaces(result) {
+  if (Array.isArray(result?.localResults)) return result.localResults
+  if (Array.isArray(result?.localResults?.places)) return result.localResults.places
+  if (Array.isArray(result?.local_results)) return result.local_results
+  if (Array.isArray(result?.places)) return result.places
+  return []
+}
+
+function normalizeHasDataPhotos(result) {
+  if (Array.isArray(result?.photos)) return result.photos
+  if (Array.isArray(result?.images)) return result.images
+  if (Array.isArray(result?.items)) return result.items
+  return []
+}
+
+function hasDataPlaceKey(place) {
+  return place?.dataId ?? place?.data_id ?? place?.placeId ?? place?.place_id ?? ''
+}
+
+function hasDataPhotoUrl(photo) {
+  if (typeof photo === 'string') return photo
+  return photo?.image ?? photo?.url ?? photo?.fullImage ?? photo?.original ?? photo?.thumbnail ?? ''
+}
+
+function hasDataPhotoThumbnail(photo) {
+  if (typeof photo === 'string') return photo
+  return photo?.thumbnail ?? photo?.thumb ?? photo?.image ?? photo?.url ?? ''
+}
+
+export async function searchHasDataPhotoEvidence(searchPlan, env, fetchImpl = fetch) {
+  if (!env.HASDATA_API_KEY) return []
+  const queries = (searchPlan?.searchQueries ?? [])
+    .filter(Boolean)
+    .slice(0, 5)
+  if (!queries.length) return []
+
+  const mapSearches = queries.map(async (rawQuery, queryIndex) => {
+    const query = `${rawQuery} San Francisco cafe restaurant`
+    const url = new URL('https://api.hasdata.com/scrape/google-maps/search')
+    url.searchParams.set('q', query)
+    url.searchParams.set('ll', '@37.7749,-122.4194,12z')
+    url.searchParams.set('hl', 'en')
+    url.searchParams.set('gl', 'us')
+
+    const response = await fetchImpl(url, {
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': env.HASDATA_API_KEY,
+      },
+    })
+    if (!response.ok) return []
+    const result = await response.json().catch(() => ({}))
+    return normalizeHasDataPlaces(result).slice(0, 3).map((place, placeIndex) => ({
+      place,
+      query,
+      queryIndex,
+      placeIndex,
+    }))
+  })
+
+  const seenPlaces = new Set()
+  const settledMapSearches = await Promise.allSettled(mapSearches)
+  const places = settledMapSearches
+    .flatMap((settledSearch) =>
+      settledSearch.status === 'fulfilled' ? settledSearch.value : [],
+    )
+    .sort((a, b) => a.queryIndex - b.queryIndex || a.placeIndex - b.placeIndex)
+    .filter(({ place }) => {
+      const key = hasDataPlaceKey(place)
+      if (!key || seenPlaces.has(key)) return false
+      seenPlaces.add(key)
+      return true
+    })
+    .slice(0, 8)
+
+  const photoSearches = places.map(async ({ place, query, queryIndex, placeIndex }) => {
+    const dataId = place?.dataId ?? place?.data_id
+    const placeId = place?.placeId ?? place?.place_id
+    const photosUrl = new URL('https://api.hasdata.com/scrape/google-maps/photos')
+    if (dataId) photosUrl.searchParams.set('dataId', String(dataId))
+    if (!dataId && placeId) photosUrl.searchParams.set('placeId', String(placeId))
+    photosUrl.searchParams.set('hl', 'en')
+
+    const response = await fetchImpl(photosUrl, {
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': env.HASDATA_API_KEY,
+      },
+    })
+    if (!response.ok) return []
+    const result = await response.json().catch(() => ({}))
+    const photos = normalizeHasDataPhotos(result)
+    const placeTitle = String(place?.title ?? place?.name ?? 'Google Maps place')
+    const placeAddress = String(place?.address ?? place?.fullAddress ?? '')
+
+    return photos.slice(0, 4).map((photo, photoIndex) => {
+      const imageUrl = hasDataPhotoUrl(photo)
+      const thumbnailUrl = hasDataPhotoThumbnail(photo)
+      return {
+        title: `${placeTitle} customer photo`,
+        source: 'Google Maps reviews/photos',
+        pageUrl: `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(
+          [placeTitle, placeAddress].filter(Boolean).join(' '),
+        )}`,
+        imageUrl: imageUrl ? String(imageUrl) : '',
+        thumbnailUrl: thumbnailUrl ? String(thumbnailUrl) : String(imageUrl),
+        query,
+        placeTitle,
+        placeAddress,
+        queryIndex,
+        placeIndex,
+        photoIndex,
+      }
+    })
+  })
+
+  const seenPhotos = new Set()
+  const settledPhotoSearches = await Promise.allSettled(photoSearches)
+  return settledPhotoSearches
+    .flatMap((settledSearch) =>
+      settledSearch.status === 'fulfilled' ? settledSearch.value : [],
+    )
+    .sort(
+      (a, b) =>
+        a.queryIndex - b.queryIndex ||
+        a.placeIndex - b.placeIndex ||
+        a.photoIndex - b.photoIndex,
+    )
+    .filter((photo) => {
+      if (!photo.imageUrl || seenPhotos.has(photo.imageUrl)) return false
+      seenPhotos.add(photo.imageUrl)
+      return true
+    })
+    .map(({ queryIndex, placeIndex, photoIndex, ...photo }) => photo)
+    .slice(0, 18)
 }
 
 export function parseModelJson(outputText) {

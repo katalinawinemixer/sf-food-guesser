@@ -52,6 +52,8 @@ describe('Cloudflare Pages Functions API', () => {
       provider: 'openrouter',
       model: 'qwen/qwen3-vl-32b-instruct',
       fallbackModels: ['google/gemma-3-4b-it:free'],
+      photoSearchEnabled: false,
+      photoSearchProvider: null,
       webSearchProvider: 'openrouter-web-search',
     })
     expect(response.headers.get('Strict-Transport-Security')).toContain('includeSubDomains')
@@ -216,6 +218,35 @@ describe('Cloudflare Pages Functions API', () => {
         )
       }
 
+      if (String(url).includes('api.hasdata.com/scrape/google-maps/search')) {
+        return new Response(
+          JSON.stringify({
+            localResults: [
+              {
+                title: 'Kissaten HiFi',
+                address: '189 6th Ave, San Francisco, CA',
+                dataId: 'kissaten-data-id',
+              },
+            ],
+          }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } },
+        )
+      }
+
+      if (String(url).includes('api.hasdata.com/scrape/google-maps/photos')) {
+        return new Response(
+          JSON.stringify({
+            photos: [
+              {
+                image: 'https://lh5.googleusercontent.com/p/kissaten-interior=w1200-h900-k-no',
+                thumbnail: 'https://lh5.googleusercontent.com/p/kissaten-interior=w203-h152-k-no',
+              },
+            ],
+          }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } },
+        )
+      }
+
       const payload = JSON.parse(String(init.body))
       const isPlanningCall = !payload.tools
       return new Response(
@@ -273,14 +304,42 @@ describe('Cloudflare Pages Functions API', () => {
       env: usageEnv({
         OPENROUTER_VISION_MODEL: 'qwen/qwen3-vl-32b-instruct',
         EXA_API_KEY: 'test-exa-key',
+        HASDATA_API_KEY: 'test-hasdata-key',
       }),
     })
     const body = await json(response)
 
     expect(response.status).toBe(200)
     expect(fetchMock.mock.calls.filter(([url]) => String(url).includes('api.exa.ai'))).toHaveLength(2)
+    expect(
+      fetchMock.mock.calls.filter(([url]) =>
+        String(url).includes('api.hasdata.com/scrape/google-maps/search'),
+      ),
+    ).toHaveLength(2)
+    const finalPayload = JSON.parse(String(fetchMock.mock.calls.at(-1)?.[1]?.body))
+    expect(finalPayload.messages[1].content).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          type: 'text',
+          text: expect.stringContaining('External candidate photo 1'),
+        }),
+        expect.objectContaining({
+          type: 'image_url',
+          image_url: expect.objectContaining({
+            url: 'https://lh5.googleusercontent.com/p/kissaten-interior=w1200-h900-k-no',
+          }),
+        }),
+      ]),
+    )
     expect(body).toMatchObject({
       articleSearchProvider: 'exa-deep-highlights',
+      searchProvider: 'hasdata-google-maps-photos',
+      photoEvidence: [
+        expect.objectContaining({
+          placeTitle: 'Kissaten HiFi',
+          source: 'Google Maps reviews/photos',
+        }),
+      ],
       webEvidence: expect.arrayContaining([
         expect.objectContaining({
           source: 'exa',

@@ -1,5 +1,6 @@
 import {
   buildCloudflarePrompt,
+  buildCloudflarePhotoEvidenceParts,
   buildSearchPlanPrompt,
   disallowedOriginResponse,
   fileToDataUrl,
@@ -12,6 +13,7 @@ import {
   providerErrorMessage,
   providerFromEnv,
   searchExaEvidence,
+  searchHasDataPhotoEvidence,
   validateImageBytes,
   validateImageFile,
 } from './_shared.js'
@@ -73,6 +75,7 @@ export async function onRequestPost({ request, env }) {
   const providerWarnings = []
   let searchPlan = null
   let webEvidence = []
+  let photoEvidence = []
   let lastError = null
 
   for (const model of models) {
@@ -129,12 +132,24 @@ export async function onRequestPost({ request, env }) {
   }
 
   if (searchPlan) {
-    try {
-      webEvidence = await searchExaEvidence(searchPlan, env)
-    } catch (error) {
+    const [exaResult, photoResult] = await Promise.allSettled([
+      searchExaEvidence(searchPlan, env),
+      searchHasDataPhotoEvidence(searchPlan, env),
+    ])
+    if (exaResult.status === 'fulfilled') {
+      webEvidence = exaResult.value
+    } else {
       providerWarnings.push({
         provider: 'exa-deep-highlights',
-        message: String(error?.message ?? 'Exa evidence search failed.'),
+        message: String(exaResult.reason?.message ?? 'Exa evidence search failed.'),
+      })
+    }
+    if (photoResult.status === 'fulfilled') {
+      photoEvidence = photoResult.value
+    } else {
+      providerWarnings.push({
+        provider: 'hasdata-google-maps-photos',
+        message: String(photoResult.reason?.message ?? 'HasData photo evidence search failed.'),
       })
     }
   }
@@ -164,7 +179,8 @@ export async function onRequestPost({ request, env }) {
             {
               role: 'user',
               content: [
-                { type: 'text', text: buildCloudflarePrompt(venues, webEvidence, searchPlan) },
+                { type: 'text', text: buildCloudflarePrompt(venues, webEvidence, searchPlan, photoEvidence) },
+                ...buildCloudflarePhotoEvidenceParts(photoEvidence),
                 { type: 'image_url', image_url: { url: dataUrl, detail: 'high' } },
               ],
             },
@@ -214,11 +230,11 @@ export async function onRequestPost({ request, env }) {
       return jsonResponse({
         runId,
         ...analysis,
-        searchProvider: null,
+        searchProvider: env.HASDATA_API_KEY ? 'hasdata-google-maps-photos' : null,
         webSearchProvider: provider.provider === 'openrouter' ? 'openrouter-web-search' : null,
         articleSearchProvider: env.EXA_API_KEY ? 'exa-deep-highlights' : null,
         articleCandidates: [],
-        photoEvidence: [],
+        photoEvidence,
         webEvidence,
         searchPlan,
         providerWarnings,

@@ -31,10 +31,10 @@
   width: 42px;
   height: 42px;
   border-radius: 10px;
-  background: linear-gradient(140deg, #c47820, #e09030);
+  background: linear-gradient(140deg, #a84e28, #c46038);
   color: #ffffff;
   flex: 0 0 auto;
-  box-shadow: 0 4px 16px rgba(196, 120, 32, 0.42);
+  box-shadow: 0 4px 16px rgba(176, 72, 36, 0.42);
 }
 
 .brand h1,
@@ -64,9 +64,9 @@
   display: inline-flex;
   align-items: center;
   gap: 8px;
-  border: 1px solid rgba(212, 128, 32, 0.38);
-  background: rgba(212, 128, 32, 0.12);
-  color: #d49040;
+  border: 1px solid rgba(240, 232, 210, 0.18);
+  background: rgba(255, 255, 255, 0.07);
+  color: #c8bca8;
   border-radius: 999px;
   padding: 8px 12px;
   font-size: 13px;
@@ -117,6 +117,7 @@
   background: #252019;
   color: #c8bca8;
   cursor: pointer;
+  transition: border-color 140ms ease;
 }
 
 .category-grid button {
@@ -130,17 +131,20 @@
   padding: 8px;
   font-size: 13px;
   font-weight: 700;
-  transition: border-color 140ms ease, color 140ms ease;
+  transition: border-color 140ms ease, color 140ms ease, background 140ms ease;
 }
 
-.category-grid button:hover,
+.category-grid button:hover {
+  border-color: #5a8464;
+  color: #9ac8a4;
+}
+
 .icon-button:hover {
-  border-color: #c47820;
-  color: #e8a850;
+  border-color: #5a8464;
 }
 
 .upload-zone:hover {
-  border-color: #c47820;
+  border-color: #5a8464;
 }
 
 .photo-panel {
@@ -181,10 +185,10 @@
 }
 
 .upload-zone.dragging {
-  border-color: #c47820;
-  background: rgba(196, 120, 32, 0.10);
-  color: #e8a850;
-  box-shadow: inset 0 0 0 1px rgba(196, 120, 32, 0.20);
+  border-color: #5a8464;
+  background: rgba(61, 104, 69, 0.12);
+  color: #9ac8a4;
+  box-shadow: inset 0 0 0 1px rgba(90, 132, 100, 0.20);
 }
 
 .upload-zone.has-image {
@@ -224,8 +228,8 @@
   position: absolute;
   inset-inline: 0;
   height: 3px;
-  background: linear-gradient(90deg, transparent, #f0d090, transparent);
-  box-shadow: 0 0 18px rgba(240, 208, 144, 0.72);
+  background: linear-gradient(90deg, transparent, #f0e0c8, transparent);
+  box-shadow: 0 0 18px rgba(240, 224, 200, 0.70);
   animation: scan-photo 1.35s ease-in-out infinite;
 }
 
@@ -237,7 +241,7 @@
   gap: 8px;
   max-width: calc(100% - 28px);
   padding: 9px 11px;
-  border: 1px solid rgba(240, 208, 144, 0.28);
+  border: 1px solid rgba(240, 232, 210, 0.22);
   border-radius: 999px;
   background: rgba(20, 16, 8, 0.88);
   color: #f0e8d8;
@@ -278,23 +282,23 @@
 }
 
 .photo-status.nogps {
-  color: #e8a850;
-  background: rgba(212, 128, 32, 0.12);
+  color: #c89070;
+  background: rgba(176, 80, 48, 0.12);
 }
 
 .photo-status.error {
   color: #e87870;
-  background: rgba(220, 100, 90, 0.12);
+  background: rgba(220, 80, 70, 0.12);
 }
 
 .photo-status.setup {
-  color: #e8a850;
-  background: rgba(212, 128, 32, 0.12);
+  color: #c89070;
+  background: rgba(176, 80, 48, 0.12);
 }
 
 .photo-status.setup.offline {
   color: #e87870;
-  background: rgba(220, 100, 90, 0.12);
+  background: rgba(220, 80, 70, 0.12);
 }
 
 .submit-photo {
@@ -306,7 +310,7 @@
   margin-top: 10px;
   border: 1px solid transparent;
   border-radius: 10px;
-  background: linear-gradient(140deg, #b86820, #d4841e);
+  background: linear-gradient(140deg, #a84e28, #c46038);
   color: #ffffff;
   cursor: pointer;
   font: inherit;
@@ -314,18 +318,18 @@
   font-weight: 850;
   gap: 8px;
   letter-spacing: 0.01em;
-  box-shadow: 0 4px 22px rgba(196, 104, 24, 0.48), 0 1px 3px rgba(0, 0, 0, 0.22);
+  box-shadow: 0 4px 22px rgba(176, 72, 36, 0.46), 0 1px 3px rgba(0, 0, 0, 0.22);
   transition: opacity 160ms ease, box-shadow 160ms ease;
 }
 
 .submit-photo:hover:not(:disabled) {
   opacity: 0.92;
-  box-shadow: 0 6px 28px rgba(196, 104, 24, 0.58), 0 1px 3px rgba(0, 0, 0, 0.22);
+  box-shadow: 0 6px 28px rgba(176, 72, 36, 0.56), 0 1px 3px rgba(0, 0, 0, 0.22);
 }
 
 .submit-photo:disabled {
   cursor: not-allowed;
-  opacity: 0.38;
+  opacity: 0.36;
 }
 
 .submit-photo svg,
@@ -342,9 +346,9 @@
 }
 
 .vision-evidence span {
-  border: 1px solid rgba(212, 128, 32, 0.34);
-  background: rgba(212, 128, 32, 0.12);
-  color: #e8a850;
+  border: 1px solid rgba(240, 232, 210, 0.14);
+  background: rgba(255, 255, 255, 0.07);
+  color: #c8bca8;
   border-radius: 999px;
   font-size: 12px;
   line-height: 1;
@@ -392,8 +396,8 @@
 }
 
 .category-grid button.selected {
-  background: #c47820;
-  border-color: #c47820;
+  background: #3d6845;
+  border-color: #3d6845;
   color: #ffffff;
 }
 
@@ -549,10 +553,10 @@
   align-items: flex-start;
   gap: 8px;
   margin-bottom: 16px;
-  border: 1px solid #e8c07a;
+  border: 1px solid #d8c0a8;
   border-radius: 8px;
-  background: #fdf3e4;
-  color: #8a4e14;
+  background: #f8f0e8;
+  color: #7a4e38;
   padding: 10px 12px;
   font-size: 13px;
   line-height: 1.35;
@@ -601,9 +605,9 @@
 
 .freshness {
   padding: 8px 10px;
-  background: #fdf3e4;
-  color: #8a4e14;
-  border: 1px solid #e8c07a;
+  background: #f0ece6;
+  color: #5a4e42;
+  border: 1px solid #d8d0c4;
   white-space: nowrap;
 }
 
@@ -636,7 +640,7 @@
 
 .result-card:hover,
 .result-card.active {
-  border-color: #c47820;
+  border-color: #5a8464;
   box-shadow: 0 4px 12px rgba(30, 20, 8, 0.07), 0 16px 32px rgba(30, 20, 8, 0.09);
   transform: translateY(-1px);
 }
@@ -718,9 +722,9 @@
 
 .signature-list span {
   padding: 6px 8px;
-  color: #7a4e14;
-  background: #fdf3e4;
-  border: 1px solid #e8c07a;
+  color: #2a5e38;
+  background: #eaf3ec;
+  border: 1px solid #c0d8c4;
 }
 
 .feedback-panel {
@@ -894,7 +898,7 @@
   min-height: 260px;
   border: 1px solid #ebe7e2;
   border-radius: 12px;
-  background: linear-gradient(135deg, #eaf3ec, #fdf3e4);
+  background: linear-gradient(135deg, #eaf3ec, #f0f7ee);
   color: #6a5f52;
   text-align: center;
   padding: 28px;
@@ -906,7 +910,7 @@
   content: '';
   position: absolute;
   inset: 0;
-  background: linear-gradient(90deg, transparent, rgba(196, 120, 32, 0.08), transparent);
+  background: linear-gradient(90deg, transparent, rgba(90, 132, 100, 0.08), transparent);
   transform: translateX(-100%);
   animation: sweep-panel 1.8s ease-in-out infinite;
 }
@@ -921,7 +925,7 @@
   place-items: center;
   width: 58px;
   height: 58px;
-  border: 1px solid #e8c07a;
+  border: 1px solid #c0d8c4;
   border-radius: 999px;
   background: #ffffff;
   color: #2a5e38;
@@ -956,7 +960,7 @@
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  border: 1px solid #e8c07a;
+  border: 1px solid #c0d8c4;
   border-radius: 999px;
   background: rgba(255, 255, 255, 0.80);
   color: #2a5e38;
