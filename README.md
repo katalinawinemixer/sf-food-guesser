@@ -24,6 +24,7 @@ backend/           Local Express API, provider wiring, API tests
 functions/api/     Cloudflare Pages Functions for the production same-origin API
 docs/              Product and deployment notes
 scripts/           Secret scan and production health checks
+evaluation/        Evaluation photos and accuracy results
 data/              Ignored local run logs and feedback records
 ```
 
@@ -51,11 +52,9 @@ cp .env.example .env
 
 Replace `PASTE_YOUR_OPENROUTER_API_KEY_HERE` with your real OpenRouter key in
 `.env`. Optional keys are intentionally blank unless you have your own
-credentials for those providers. Then run:
-
-If you are using free OpenRouter vision models, set
-`OPENROUTER_FALLBACK_MODELS` to a comma-separated list of other vision model ids
-you want the backend to try when the primary model is rate-limited.
+credentials for those providers. If you are using free OpenRouter vision models,
+set `OPENROUTER_FALLBACK_MODELS` to a comma-separated list of model ids to try
+when the primary model is rate-limited. Then run:
 
 ```bash
 npm install
