@@ -101,24 +101,25 @@ never in the frontend code or `.env.example`:
 
 - `OPENROUTER_API_KEY`
 - `OPENAI_API_KEY` if using direct OpenAI instead of OpenRouter
-- `HASDATA_API_KEY` for the local Node API Google Maps/photo provider
+- `HASDATA_API_KEY` for Google Maps/customer photo evidence in local Node and
+  Cloudflare Pages
 - `CERAMIC_API_KEY` for the local Node API broad web provider
 - `EXA_API_KEY` for local Node article discovery and Cloudflare Pages Exa
   evidence search
 - `SERPAPI_API_KEY` if using the legacy local Node API Google Maps fallback
 
-The Cloudflare Pages project needs `OPENROUTER_API_KEY` and `EXA_API_KEY`
-uploaded as Pages secrets. `OPENROUTER_VISION_MODEL`,
+The Cloudflare Pages project needs `OPENROUTER_API_KEY`, `EXA_API_KEY`, and
+`HASDATA_API_KEY` uploaded as Pages secrets. `OPENROUTER_VISION_MODEL`,
 `OPENROUTER_FALLBACK_MODELS`, and optional Exa tuning vars are non-secret model
 or search settings in `wrangler.toml`.
 
 On Cloudflare Pages, the analysis flow is:
 
 1. Ask the vision model to create a photo-derived search plan.
-2. Run the generated Exa searches in parallel with `type: "deep"` and
-   `contents: { highlights: true }`.
-3. Send the uploaded photo, seed venues, search plan, and Exa evidence to the
-   final vision call for ranking.
+2. Run generated Exa searches and optional HasData Google Maps/photo searches in
+   parallel.
+3. Send the uploaded photo, seed venues, search plan, Exa evidence, and public
+   venue photos to the final vision call for ranking.
 
 ## Feedback Storage
 

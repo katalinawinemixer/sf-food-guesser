@@ -82,9 +82,10 @@ npm run deploy:cloudflare
 The deployed API lives under `/api` through `functions/api/`, so
 `VITE_API_BASE_URL` should stay blank for the normal Cloudflare deployment.
 Cloudflare runtime secrets are set on the Pages project, not committed to the
-repo. The Pages Function uses OpenRouter for vision and Exa for parallel
-photo-derived evidence searches when `EXA_API_KEY` is configured. Production
-feedback records use the `SF_FOOD_FEEDBACK_KV` binding.
+repo. The Pages Function uses OpenRouter for vision, Exa for parallel
+photo-derived evidence searches when `EXA_API_KEY` is configured, and HasData
+for Google Maps/customer photo evidence when `HASDATA_API_KEY` is configured.
+Production feedback records use the `SF_FOOD_FEEDBACK_KV` binding.
 
 Target production domains are `https://spotted-in-sf.com` and
 `https://www.spotted-in-sf.com`; both should serve the same Cloudflare Pages
