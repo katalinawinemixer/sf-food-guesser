@@ -131,7 +131,7 @@ order keeps the app honest first, then adds more search power and scale.
   uploaded photo itself has direct matching clues.
 - [x] Update the production prompt so seed menu items are never cited as visible
   photo evidence unless those exact details are in the uploaded image.
-- [ ] Split result reasons into `photoEvidence`, `externalEvidence`, and
+- [x] Split result reasons into `photoEvidence`, `externalEvidence`, and
   `rankingRules` internally so the UI never confuses venue metadata with upload
   evidence.
 
@@ -183,7 +183,7 @@ order keeps the app honest first, then adds more search power and scale.
 - [x] Maintain a source-backed SF seed venue file.
 - [ ] Add fields for `visualClues`, `menuClues`, `doNotInferFrom`,
   `multiLocation`, and source-backed confidence.
-- [ ] Add tests that prevent broad venue metadata from being treated as direct
+- [x] Add tests that prevent broad venue metadata from being treated as direct
   image evidence.
 
 ### 11.8 Abuse Protection Without Login

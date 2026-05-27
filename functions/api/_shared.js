@@ -320,7 +320,10 @@ Return strict JSON only:
       "address": "address if known, otherwise Address not confirmed",
       "confidence": 0,
       "evidenceCategories": ["visible_text", "interior_match", "storefront_match", "packaging_logo", "dish_match", "web_source_match"],
-      "reasons": ["specific reasons tied to the uploaded photo"],
+      "photoEvidence": ["specific facts visible in the uploaded photo only"],
+      "externalEvidence": ["specific supporting facts from web/search/photo evidence only"],
+      "rankingRules": ["short notes about confidence caps or uncertainty"],
+      "reasons": ["legacy combined reasons, keep concise"],
       "sourceUrls": ["source URLs if web/search evidence is used"],
       "mapsQuery": "venue San Francisco"
     }
@@ -331,6 +334,7 @@ Return strict JSON only:
 Ranking rules:
 - Prefer exact readable venue text, storefront, receipt/menu text, or matching interior evidence over generic dish similarity.
 - Never use a seed venue's known dishes as a reason unless those exact dish/interior details are visible in the uploaded photo.
+- Put uploaded-photo observations only in photoEvidence. Put articles, review pages, Maps/Yelp/public photos, or seed/source support only in externalEvidence. Put confidence caps and uncertainty in rankingRules.
 - Do not give a very high confidence score to a venue based only on packaging, cups, bottles, bags, or a partial logo. Keep those guesses moderate unless the exact venue name is visible.
 - Penalize guesses based only on generic coffee/matcha/pastry/cuisine.
 - Return up to three candidates. Use low confidence when evidence is weak.
@@ -619,10 +623,43 @@ export function parseModelJson(outputText) {
   return JSON.parse(String(outputText).slice(jsonStart, jsonEnd + 1))
 }
 
+function normalizeStringList(value, maxItems = 4) {
+  return Array.isArray(value)
+    ? value.map(String).map((item) => item.trim()).filter(Boolean).slice(0, maxItems)
+    : []
+}
+
+function reasonLooksExternal(reason) {
+  return /\b(web|source|article|review|public photo|google maps|maps|yelp|eater|infatuation|sf standard|sfgate|url|site|external)\b/i.test(
+    reason,
+  )
+}
+
+function explanationBuckets(candidate) {
+  const reasons = normalizeStringList(candidate?.reasons, 4)
+  const explicitPhotoEvidence = normalizeStringList(candidate?.photoEvidence, 5)
+  const explicitExternalEvidence = normalizeStringList(candidate?.externalEvidence, 5)
+  const rankingRules = [
+    ...normalizeStringList(candidate?.rankingRules, 5),
+    ...normalizeStringList(candidate?.rankingNotes, 5),
+  ].slice(0, 5)
+
+  const fallbackPhotoEvidence = reasons.filter((reason) => !reasonLooksExternal(reason)).slice(0, 4)
+  const fallbackExternalEvidence = reasons.filter(reasonLooksExternal).slice(0, 4)
+
+  return {
+    photoEvidence: explicitPhotoEvidence.length ? explicitPhotoEvidence : fallbackPhotoEvidence,
+    externalEvidence: explicitExternalEvidence.length ? explicitExternalEvidence : fallbackExternalEvidence,
+    rankingRules,
+    reasons,
+  }
+}
+
 export function normalizeCandidate(candidate) {
   const name = candidate?.name ? String(candidate.name) : ''
   const rawConfidence = Number(candidate?.confidence ?? 0)
   const confidence = rawConfidence > 0 && rawConfidence <= 1 ? rawConfidence * 100 : rawConfidence
+  const explanations = explanationBuckets(candidate)
   return {
     id: candidate?.id ? String(candidate.id) : '',
     name,
@@ -633,7 +670,10 @@ export function normalizeCandidate(candidate) {
     evidenceCategories: Array.isArray(candidate?.evidenceCategories)
       ? candidate.evidenceCategories.map(String).slice(0, 7)
       : [],
-    reasons: Array.isArray(candidate?.reasons) ? candidate.reasons.map(String).slice(0, 4) : [],
+    photoEvidence: explanations.photoEvidence,
+    externalEvidence: explanations.externalEvidence,
+    rankingRules: explanations.rankingRules,
+    reasons: explanations.reasons,
     sourceUrls: Array.isArray(candidate?.sourceUrls)
       ? candidate.sourceUrls.map(String).slice(0, 4)
       : [],
@@ -705,6 +745,15 @@ function seedVenueCandidates(seedVenues = [], options = {}) {
         address: venue.address,
         confidence,
         evidenceCategories,
+        photoEvidence: [
+          nameHit
+            ? `The uploaded photo evidence includes readable or model-reported text matching ${venue.name}.`
+            : `Seed venue matched direct photo clues: ${matchedHints.slice(0, 4).join(', ')}.`,
+        ],
+        externalEvidence: sourceHit
+          ? ['Web/source context supports checking this venue after the direct photo match.']
+          : [],
+        rankingRules: ['This seed venue is only a candidate because direct photo clues matched.'],
         reasons: [
           nameHit
             ? `The uploaded photo evidence includes readable or model-reported text matching ${venue.name}.`
@@ -776,9 +825,18 @@ function rankCandidates(candidates, seedVenueIds = []) {
                     : 54
                 : 100
 
+      const rankingRules = [
+        ...candidate.rankingRules,
+        ...(dishOnly ? ['Food/drink similarity alone is weak evidence, so this was ranked lower.'] : []),
+        ...(!hasSeedMatch && !hasIdentityEvidence
+          ? ['No readable venue name, GPS, or unique identity clue was verified, so this guess is capped.']
+          : []),
+      ].slice(0, 5)
+
       return {
         ...candidate,
         evidenceCategories: [...categories],
+        rankingRules,
         confidence: Math.round(Math.min(rawScore, confidenceCap)),
         _rankScore: Math.min(rawScore, confidenceCap),
         _originalIndex: originalIndex,

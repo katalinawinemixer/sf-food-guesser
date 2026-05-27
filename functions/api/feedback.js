@@ -22,6 +22,9 @@ function cleanCandidate(value = {}) {
       : null,
     locationVerified: value?.locationVerified === true,
     evidenceCategories: cleanStringArray(value?.evidenceCategories, 8, 80),
+    photoEvidence: cleanStringArray(value?.photoEvidence, 6, 500),
+    externalEvidence: cleanStringArray(value?.externalEvidence, 6, 500),
+    rankingRules: cleanStringArray(value?.rankingRules, 6, 500),
     reasons: cleanStringArray(value?.reasons, 8, 500),
   }
 }

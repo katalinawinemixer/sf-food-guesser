@@ -838,6 +838,35 @@ describe('Cloudflare Pages Functions API', () => {
     expect(result.candidates[0].name).toBe('RT Bistro')
   })
 
+  it('separates Cloudflare photo evidence, external evidence, and ranking rules', () => {
+    const result = normalizeAnalysis({
+      summary: 'Burger and fries on a wooden table.',
+      imageEvidence: ['burger', 'fries', 'wooden table'],
+      candidates: [
+        {
+          id: '',
+          name: 'RT Bistro',
+          confidence: 82,
+          evidenceCategories: ['dish_match', 'web_source_match'],
+          photoEvidence: ['The uploaded photo shows a burger and fries on a wooden table.'],
+          externalEvidence: ['A review page describes RT Bistro as serving a bistro burger.'],
+          rankingRules: ['No readable venue text was visible, so confidence is capped.'],
+          reasons: ['Legacy combined reason should not be needed by the UI.'],
+          sourceUrls: ['https://example.com/rt-bistro'],
+        },
+      ],
+    })
+
+    expect(result.candidates[0]).toMatchObject({
+      name: 'RT Bistro',
+      photoEvidence: ['The uploaded photo shows a burger and fries on a wooden table.'],
+      externalEvidence: ['A review page describes RT Bistro as serving a bistro burger.'],
+    })
+    expect(result.candidates[0].rankingRules).toEqual(
+      expect.arrayContaining(['No readable venue text was visible, so confidence is capped.']),
+    )
+  })
+
   it('rejects unsupported Cloudflare photo uploads before provider calls', async () => {
     const fetchMock = vi.spyOn(globalThis, 'fetch')
     const formData = new FormData()

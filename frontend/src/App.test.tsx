@@ -669,6 +669,9 @@ describe('SF Food Guesser photo flow', () => {
                 address: '123 Valencia St',
                 confidence: 83,
                 evidenceType: 'interior',
+                photoEvidence: ['The uploaded photo shows a blue cup beside a pastry case.'],
+                externalEvidence: ['Web search matched the blue cup and pastry case.'],
+                rankingRules: ['No readable venue name was visible, so this still needs confirmation.'],
                 reasons: ['Web search matched the blue cup and pastry case.'],
                 sourceUrls: ['https://example.com/hidden-blue-cup'],
                 mapsQuery: 'Hidden Blue Cup Cafe 123 Valencia St San Francisco',
@@ -703,7 +706,12 @@ describe('SF Food Guesser photo flow', () => {
     expect(screen.getAllByRole('link', { name: /Search Maps/i })[0]).toBeVisible()
     expect(screen.getByText('interior evidence')).toBeVisible()
     expect(screen.getByText('Web-discovered match')).toBeVisible()
+    expect(screen.getByText('From the uploaded photo')).toBeVisible()
+    expect(screen.getByText('The uploaded photo shows a blue cup beside a pastry case.')).toBeVisible()
+    expect(screen.getByText('External support')).toBeVisible()
     expect(screen.getByText(/Web search matched/)).toBeVisible()
+    expect(screen.getByText('Ranking notes')).toBeVisible()
+    expect(screen.getByText(/No readable venue name/)).toBeVisible()
   })
 
   it('keeps identification disabled when the OpenAI key is missing', async () => {

@@ -2236,6 +2236,30 @@ describe('SF Food Guesser API', () => {
     )
   })
 
+  it('separates local rerank explanation buckets for UI display', () => {
+    const candidates = rerankCandidates([
+      {
+        name: 'RT Bistro',
+        confidence: 82,
+        evidenceCategories: ['dish_match', 'web_source_match'],
+        photoEvidence: ['The uploaded photo shows a burger and fries on a wooden table.'],
+        externalEvidence: ['A review page describes RT Bistro as serving a bistro burger.'],
+        rankingRules: ['No readable venue text was visible, so confidence is capped.'],
+        reasons: ['Legacy combined reason.'],
+        sourceUrls: ['https://example.com/rt-bistro'],
+      },
+    ])
+
+    expect(candidates[0]).toMatchObject({
+      name: 'RT Bistro',
+      photoEvidence: ['The uploaded photo shows a burger and fries on a wooden table.'],
+      externalEvidence: ['A review page describes RT Bistro as serving a bistro burger.'],
+    })
+    expect(candidates[0].rankingRules).toEqual(
+      expect.arrayContaining(['No readable venue text was visible, so confidence is capped.']),
+    )
+  })
+
   it('continues analysis when a web evidence provider fails', async () => {
     const visionClient = {
       chat: {

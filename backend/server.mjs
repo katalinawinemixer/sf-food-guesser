@@ -365,7 +365,10 @@ Return strict JSON only with this shape:
       "confidence": 0-100,
       "evidenceType": "interior/storefront/menu/packaging/dish/gps/mixed",
       "evidenceCategories": ["visible_text", "interior_match", "web_source_match"],
-      "reasons": ["specific image evidence", "specific web evidence or seed dataset evidence"],
+      "photoEvidence": ["specific facts visible in the uploaded photo only"],
+      "externalEvidence": ["specific supporting facts from web/search/photo evidence only"],
+      "rankingRules": ["short notes about confidence caps or uncertainty"],
+      "reasons": ["legacy combined reasons, keep concise"],
       "sourceUrls": ["supporting URL"],
       "comparisonPhotos": [{"title": "photo title", "source": "Google Maps/Yelp/site/etc", "url": "page or image URL", "matchReason": "why this external photo visually matches"}],
       "mapsQuery": "venue name and address for maps",
@@ -386,6 +389,7 @@ Rules:
 - For interior photos, explicitly search for matching interiors and public customer/business photos; do not stop after matching the food item.
 - Prefer candidates with matching interior/storefront/photo-page evidence over candidates that only share a common dish.
 - Use evidenceCategories to make the evidence explicit. Choose from: visible_text, interior_match, storefront_match, packaging_logo, dish_match, gps_match, web_source_match.
+- Put uploaded-photo observations only in photoEvidence. Put articles, review pages, Google Maps/Yelp/public photos, or seed/source support only in externalEvidence. Put uncertainty and confidence caps in rankingRules.
 - Use dish_match only when the only strong overlap is the food or drink itself. Use interior_match, storefront_match, visible_text, or packaging_logo when those stronger clues are present.
 - Return 3-5 candidates when uncertainty remains.
 - Keep each candidate concise: at most 2 reasons, at most 3 sourceUrls, and at most 2 comparisonPhotos.
@@ -572,6 +576,39 @@ function normalizeArticleCandidate(candidate) {
   }
 }
 
+function normalizeStringList(value, maxItems = 4) {
+  return Array.isArray(value)
+    ? value.map(String).map((item) => item.trim()).filter(Boolean).slice(0, maxItems)
+    : []
+}
+
+function reasonLooksExternal(reason) {
+  return /\b(web|source|article|review|public photo|google maps|maps|yelp|eater|infatuation|sf standard|sfgate|url|site|external)\b/i.test(
+    reason,
+  )
+}
+
+function explanationBuckets(candidate = {}) {
+  const reasons = normalizeStringList(candidate.reasons, 4)
+  const explicitPhotoEvidence = normalizeStringList(candidate.photoEvidence, 5)
+  const explicitExternalEvidence = normalizeStringList(candidate.externalEvidence, 5)
+  const rankingRules = [
+    ...normalizeStringList(candidate.rankingRules, 5),
+    ...normalizeStringList(candidate.rankingNotes, 5),
+  ].slice(0, 5)
+
+  return {
+    photoEvidence: explicitPhotoEvidence.length
+      ? explicitPhotoEvidence
+      : reasons.filter((reason) => !reasonLooksExternal(reason)).slice(0, 4),
+    externalEvidence: explicitExternalEvidence.length
+      ? explicitExternalEvidence
+      : reasons.filter(reasonLooksExternal).slice(0, 4),
+    rankingRules,
+    reasons,
+  }
+}
+
 function candidateKey(candidate) {
   return String(candidate.name || candidate.id || '').trim().toLowerCase()
 }
@@ -747,6 +784,9 @@ function normalizeFeedbackPayload(body = {}) {
       confidence: normalizeConfidence(candidate.confidence),
       locationVerified: Boolean(candidate.locationVerified),
       evidenceCategories: cleanTextArray(candidate.evidenceCategories, 10, 80),
+      photoEvidence: cleanTextArray(candidate.photoEvidence, 6, 700),
+      externalEvidence: cleanTextArray(candidate.externalEvidence, 6, 700),
+      rankingRules: cleanTextArray(candidate.rankingRules, 6, 700),
       reasons: cleanTextArray(candidate.reasons, 6, 700),
       rankingNotes: cleanTextArray(candidate.rankingNotes, 6, 700),
       sourceUrls: cleanTextArray(candidate.sourceUrls, 6, 500),
@@ -767,6 +807,9 @@ function normalizeFeedbackPayload(body = {}) {
                 confidence: normalizeConfidence(lineupCandidate.confidence),
                 locationVerified: Boolean(lineupCandidate.locationVerified),
                 evidenceCategories: cleanTextArray(lineupCandidate.evidenceCategories, 10, 80),
+                photoEvidence: cleanTextArray(lineupCandidate.photoEvidence, 6, 700),
+                externalEvidence: cleanTextArray(lineupCandidate.externalEvidence, 6, 700),
+                rankingRules: cleanTextArray(lineupCandidate.rankingRules, 6, 700),
               },
             }
           })
@@ -802,6 +845,9 @@ function cleanCandidateForLog(candidate = {}) {
     originalConfidence: normalizeConfidence(candidate.originalConfidence),
     evidenceType: cleanText(candidate.evidenceType, 120),
     evidenceCategories: cleanTextArray(candidate.evidenceCategories, 10, 80),
+    photoEvidence: cleanTextArray(candidate.photoEvidence, 6, 700),
+    externalEvidence: cleanTextArray(candidate.externalEvidence, 6, 700),
+    rankingRules: cleanTextArray(candidate.rankingRules, 6, 700),
     reasons: cleanTextArray(candidate.reasons, 6, 700),
     rankingNotes: cleanTextArray(candidate.rankingNotes, 6, 700),
     sourceUrls: cleanTextArray(candidate.sourceUrls, 6, 500),
@@ -1155,6 +1201,7 @@ export function rerankCandidates(rawCandidates = [], options = {}) {
         evidenceCategoriesForCandidate.includes('dish_match') && strongEvidence.length === 0
       const hasSource = Array.isArray(candidate.sourceUrls) && candidate.sourceUrls.length > 0
       const hasReasons = Array.isArray(candidate.reasons) && candidate.reasons.length > 0
+      const explanations = explanationBuckets(candidate)
       const baseConfidence = normalizeConfidence(candidate.confidence) ?? 0
       const evidenceScore = scoreEvidenceCategories(evidenceCategoriesForCandidate, {
         hasExternalPhotoMatch,
@@ -1201,6 +1248,10 @@ export function rerankCandidates(rawCandidates = [], options = {}) {
           : []),
         ...(hasSource ? ['Supporting source links were found for this venue.'] : ['No supporting source link was returned for this candidate.']),
       ]
+      const rankingRules = [
+        ...explanations.rankingRules,
+        ...rankingNotes,
+      ].slice(0, 6)
 
       return {
         ...candidate,
@@ -1208,6 +1259,10 @@ export function rerankCandidates(rawCandidates = [], options = {}) {
         confidence: adjustedConfidence,
         originalConfidence: baseConfidence,
         evidenceCategories: evidenceCategoriesForCandidate,
+        photoEvidence: explanations.photoEvidence,
+        externalEvidence: explanations.externalEvidence,
+        reasons: explanations.reasons,
+        rankingRules,
         rankingNotes,
         _rankScore: adjustedScore,
         _originalIndex: originalIndex,

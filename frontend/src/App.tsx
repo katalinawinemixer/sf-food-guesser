@@ -237,6 +237,37 @@ function normalizeConfidence(value: unknown) {
   return Math.round(Math.max(0, Math.min(100, normalized)))
 }
 
+function normalizeStringList(value: unknown, maxItems = 4) {
+  return Array.isArray(value)
+    ? value.map(String).map((item) => item.trim()).filter(Boolean).slice(0, maxItems)
+    : []
+}
+
+function reasonLooksExternal(reason: string) {
+  return /\b(web|source|article|review|public photo|google maps|maps|yelp|eater|infatuation|sf standard|sfgate|url|site|external)\b/i.test(reason)
+}
+
+function candidateExplanationBuckets(candidate: Partial<VisionCandidate>) {
+  const reasons = normalizeStringList(candidate.reasons, 4)
+  const photoEvidence = normalizeStringList(candidate.photoEvidence, 5)
+  const externalEvidence = normalizeStringList(candidate.externalEvidence, 5)
+  const rankingRules = [
+    ...normalizeStringList(candidate.rankingRules, 5),
+    ...normalizeStringList(candidate.rankingNotes, 5),
+  ].slice(0, 5)
+
+  return {
+    photoEvidence: photoEvidence.length
+      ? photoEvidence
+      : reasons.filter((reason) => !reasonLooksExternal(reason)).slice(0, 4),
+    externalEvidence: externalEvidence.length
+      ? externalEvidence
+      : reasons.filter(reasonLooksExternal).slice(0, 4),
+    rankingRules,
+    reasons,
+  }
+}
+
 type VisionCandidate = {
   id: string
   name?: string
@@ -247,6 +278,9 @@ type VisionCandidate = {
   originalConfidence?: number
   evidenceType?: string
   evidenceCategories?: string[]
+  photoEvidence?: string[]
+  externalEvidence?: string[]
+  rankingRules?: string[]
   reasons: string[]
   rankingNotes?: string[]
   sourceUrls?: string[]
@@ -429,6 +463,9 @@ function getPhotoMatches(
         score: proximityScore,
         confidence: distanceConfidence,
         evidenceCategories: ['gps_match'],
+        photoEvidence: [`Photo GPS is ${formatDistance(distance)} from this venue.`],
+        externalEvidence: [],
+        rankingRules: ['Boosted for photo GPS.'],
         reasons: [`Photo GPS is ${formatDistance(distance)} from this venue.`],
         rankingNotes: ['Boosted for photo GPS.'],
       }
@@ -459,6 +496,10 @@ function getVisionMatches(
       const gpsBoost = distance === undefined ? 0 : Math.max(0, 35 - distance / 20)
       const confidence = candidate ? Math.min(98, candidate.confidence) : 0
       const visionReasons = candidate?.reasons ?? []
+      const photoEvidence = [
+        ...(candidate?.photoEvidence ?? []),
+        ...(distance !== undefined ? [`Photo GPS is ${formatDistance(distance)} away.`] : []),
+      ].slice(0, 5)
 
       return {
         venue: {
@@ -469,6 +510,9 @@ function getVisionMatches(
         score: (candidate?.confidence ?? 0) * 2 + gpsBoost,
         confidence,
         evidenceCategories: candidate?.evidenceCategories ?? [],
+        photoEvidence,
+        externalEvidence: candidate?.externalEvidence ?? [],
+        rankingRules: candidate?.rankingRules ?? candidate?.rankingNotes ?? [],
         reasons: [
           ...visionReasons,
           ...(distance !== undefined ? [`Photo GPS is ${formatDistance(distance)} away.`] : []),
@@ -506,6 +550,9 @@ function getVisionMatches(
         score: candidate.confidence * 2,
         confidence: Math.min(98, candidate.confidence),
         evidenceCategories: candidate.evidenceCategories ?? [],
+        photoEvidence: candidate.photoEvidence ?? [],
+        externalEvidence: candidate.externalEvidence ?? [],
+        rankingRules: candidate.rankingRules ?? candidate.rankingNotes ?? [],
         reasons: candidate.reasons.slice(0, 4),
         rankingNotes: candidate.rankingNotes ?? [],
         sourceUrls: candidate.sourceUrls ?? [],
@@ -535,6 +582,9 @@ function matchLineup(matches: MatchResult[]) {
       confidence: match.confidence,
       locationVerified: match.venue.locationVerified === true,
       evidenceCategories: match.evidenceCategories,
+      photoEvidence: match.photoEvidence,
+      externalEvidence: match.externalEvidence,
+      rankingRules: match.rankingRules,
     },
   }))
 }
@@ -623,9 +673,7 @@ async function analyzePhotoWithVision(file: File): Promise<VisionAnalysis> {
             evidenceCategories: Array.isArray(candidate.evidenceCategories)
               ? candidate.evidenceCategories.map(String).slice(0, 7)
               : [],
-            reasons: Array.isArray(candidate.reasons)
-              ? candidate.reasons.map(String).slice(0, 4)
-              : [],
+            ...candidateExplanationBuckets(candidate),
             rankingNotes: Array.isArray(candidate.rankingNotes)
               ? candidate.rankingNotes.map(String).slice(0, 4)
               : [],
@@ -939,6 +987,9 @@ function App() {
           confidence: match.confidence,
           locationVerified: match.venue.locationVerified === true,
           evidenceCategories: match.evidenceCategories,
+          photoEvidence: match.photoEvidence,
+          externalEvidence: match.externalEvidence,
+          rankingRules: match.rankingRules,
           reasons: match.reasons,
           rankingNotes: match.rankingNotes,
           sourceUrls: [
@@ -1364,6 +1415,16 @@ function App() {
             <div className="results-grid">
               {matches.map((match, index) => {
                 const feedback = feedbackByVenueId[match.venue.id]
+                const hasStructuredEvidence = Boolean(
+                  match.photoEvidence?.length || match.externalEvidence?.length || match.rankingRules?.length,
+                )
+                const photoEvidence = match.photoEvidence?.length
+                  ? match.photoEvidence
+                  : hasStructuredEvidence
+                    ? []
+                    : match.reasons
+                const externalEvidence = match.externalEvidence ?? []
+                const rankingRules = match.rankingRules?.length ? match.rankingRules : match.rankingNotes
 
                 return (
                   <article
@@ -1434,11 +1495,23 @@ function App() {
 
                     <ul className="reason-list">
                       <li className="reason-heading">Why this guess</li>
-                      {match.reasons.map((reason) => (
-                        <li key={reason}>{reason}</li>
+                      {photoEvidence.length ? (
+                        <li className="reason-section">From the uploaded photo</li>
+                      ) : null}
+                      {photoEvidence.map((reason) => (
+                        <li key={`photo-${reason}`}>{reason}</li>
                       ))}
-                      {match.rankingNotes.map((note) => (
-                        <li key={note}>{note}</li>
+                      {externalEvidence.length ? (
+                        <li className="reason-section">External support</li>
+                      ) : null}
+                      {externalEvidence.map((reason) => (
+                        <li key={`external-${reason}`}>{reason}</li>
+                      ))}
+                      {rankingRules.length ? (
+                        <li className="reason-section">Ranking notes</li>
+                      ) : null}
+                      {rankingRules.map((note) => (
+                        <li key={`rule-${note}`}>{note}</li>
                       ))}
                     </ul>
 
