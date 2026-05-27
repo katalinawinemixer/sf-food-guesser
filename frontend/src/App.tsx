@@ -833,252 +833,235 @@ function App() {
             <ChefHat size={20} strokeWidth={2.4} />
           </span>
           <div>
-            <h1>SF Food Guesser</h1>
-            <p>Upload a food photo to identify likely SF restaurants, cafes, bakeries, and counters using image evidence plus live web search.</p>
+            <h1>Spotted in SF</h1>
+            <p>Find the SF restaurant from a food photo.</p>
           </div>
         </div>
-        <div className="accuracy-pill">
-          <BadgeCheck size={17} />
-          <span>{venues.length} verified venue records</span>
-        </div>
+        <span className="venue-count">{venues.length} SF venues indexed</span>
       </header>
 
-      <section className="workspace">
-        <aside className="control-panel" aria-label="Photo identification controls">
-          <section className="photo-panel" aria-label="Photo upload">
-            <div className="photo-head">
-              <div>
-                <span className="eyebrow">Photo</span>
-                <h2>Find the place from a photo</h2>
-              </div>
-              {photo.status !== 'empty' ? (
-                <button
-                  className="icon-button"
-                  type="button"
-                  aria-label="Remove photo"
-                  onClick={clearPhoto}
-                  title="Remove photo"
-                >
-                  <X size={18} />
+      <div className="content">
+
+        {/* ── Upload ──────────────────────────────────── */}
+        <section className="upload-section">
+          <label
+            className={[
+              'upload-zone',
+              photo.previewUrl ? 'has-image' : '',
+              isDraggingPhoto ? 'dragging' : '',
+            ].join(' ').trim()}
+            onDragEnter={(event) => {
+              event.preventDefault()
+              setIsDraggingPhoto(true)
+            }}
+            onDragOver={(event) => {
+              event.preventDefault()
+              event.dataTransfer.dropEffect = 'copy'
+              setIsDraggingPhoto(true)
+            }}
+            onDragLeave={(event) => {
+              event.preventDefault()
+              if (event.currentTarget.contains(event.relatedTarget as Node)) return
+              setIsDraggingPhoto(false)
+            }}
+            onDrop={handlePhotoDrop}
+          >
+            {photo.previewUrl ? (
+              <span className="upload-preview">
+                <img src={photo.previewUrl} alt={photo.name ?? 'Uploaded food photo'} />
+                {photo.status === 'reading' ? (
+                  <span className="analysis-overlay" aria-label="Analyzing uploaded photo">
+                    <span className="scan-line" />
+                    <span className="analysis-badge">
+                      <LoaderCircle size={16} />
+                      Searching image and web evidence
+                    </span>
+                  </span>
+                ) : null}
+              </span>
+            ) : (
+              <span className="upload-empty">
+                <Upload size={36} />
+                <strong>{isDraggingPhoto ? 'Drop it here' : 'Drop a food photo here'}</strong>
+                <span>or click to browse · JPG, PNG, WebP, HEIC</span>
+                <em>Upload a photo. Get ranked SF venue matches with evidence.</em>
+              </span>
+            )}
+            <input
+              type="file"
+              accept="image/*,.heic,.heif"
+              onChange={(event) => handlePhotoFile(event.target.files?.[0])}
+            />
+          </label>
+
+          {photo.status !== 'empty' ? (
+            <div className="upload-controls">
+              {photo.status !== 'reading' ? (
+                <button className="clear-photo" type="button" aria-label="Remove photo" onClick={clearPhoto}>
+                  <X size={14} />
+                  Remove photo
                 </button>
               ) : null}
-            </div>
 
-            <label
-              className={[
-                'upload-zone',
-                photo.previewUrl ? 'has-image' : '',
-                isDraggingPhoto ? 'dragging' : '',
-              ].join(' ').trim()}
-              onDragEnter={(event) => {
-                event.preventDefault()
-                setIsDraggingPhoto(true)
-              }}
-              onDragOver={(event) => {
-                event.preventDefault()
-                event.dataTransfer.dropEffect = 'copy'
-                setIsDraggingPhoto(true)
-              }}
-              onDragLeave={(event) => {
-                event.preventDefault()
-                if (event.currentTarget.contains(event.relatedTarget as Node)) return
-                setIsDraggingPhoto(false)
-              }}
-              onDrop={handlePhotoDrop}
-            >
-              {photo.previewUrl ? (
-                <span className="upload-preview">
-                  <img src={photo.previewUrl} alt={photo.name ?? 'Uploaded food photo'} />
-                  {photo.status === 'reading' ? (
-                    <span className="analysis-overlay" aria-label="Analyzing uploaded photo">
-                      <span className="scan-line" />
-                      <span className="analysis-badge">
-                        <LoaderCircle size={16} />
-                        Searching image and web evidence
-                      </span>
-                    </span>
-                  ) : null}
-                </span>
-              ) : (
-                <span className="upload-empty">
-                  <Upload size={22} />
-                  <span>{isDraggingPhoto ? 'Drop it here' : 'Drop image here or choose'}</span>
-                </span>
-              )}
-              <input
-                type="file"
-                accept="image/*,.heic,.heif"
-                onChange={(event) => handlePhotoFile(event.target.files?.[0])}
-              />
-            </label>
-
-            {photo.status !== 'empty' ? (
               <div className={`photo-status ${photo.status}`}>
                 {photo.status === 'gps' ? <LocateFixed size={16} /> : <Camera size={16} />}
                 <span>{photo.message}</span>
               </div>
-            ) : null}
 
-            {apiHealth.status !== 'ready' ? (
-              <div className={`photo-status setup ${apiHealth.status}`}>
-                <Camera size={16} />
-                <span>
-                  {apiHealth.message ??
-                    'Checking whether photo identification is ready...'}
-                </span>
-              </div>
-            ) : null}
-
-            {photo.analysis?.imageEvidence.length ? (
-              <div className="vision-evidence" aria-label="Detected image evidence">
-                {photo.analysis.imageEvidence.map((evidence) => (
-                  <span key={evidence}>{evidence}</span>
-                ))}
-              </div>
-            ) : null}
-
-            {photo.analysis &&
-            (photo.analysis.articleCandidates?.length ||
-              photo.analysis.webEvidence?.length ||
-              photo.analysis.photoEvidence?.length) ? (
-              <div className="search-trail" aria-label="Search evidence trail">
-                <div className="search-trail-head">
-                  <Search size={15} />
-                  <span>Search trail</span>
+              {apiHealth.status !== 'ready' ? (
+                <div className={`photo-status setup ${apiHealth.status}`}>
+                  <Camera size={16} />
+                  <span>{apiHealth.message ?? 'Checking whether photo identification is ready...'}</span>
                 </div>
-                {photo.analysis.articleCandidates?.length ? (
-                  <p>
-                    {photo.analysis.articleSearchProvider ?? 'Article search'} found{' '}
-                    {photo.analysis.articleCandidates.length} article-backed venue candidates.
-                  </p>
-                ) : null}
-                {photo.analysis.webEvidence?.length ? (
-                  <p>
-                    {photo.analysis.webSearchProvider ?? 'Web search'} checked{' '}
-                    {photo.analysis.webEvidence.length} review/page results.
-                  </p>
-                ) : null}
-                {photo.analysis.photoEvidence?.length ? (
-                  <p>
-                    {photo.analysis.searchProvider ?? 'Photo search'} compared{' '}
-                    {photo.analysis.photoEvidence.length} public photos.
-                  </p>
-                ) : null}
-              </div>
-            ) : null}
+              ) : null}
 
-            <button
-              className="submit-photo"
-              type="button"
-              disabled={photo.status === 'reading' || !photoFile || apiHealth.status !== 'ready'}
-              onClick={submitPhoto}
-            >
-              {photo.status === 'reading' ? (
-                <>
-                  <LoaderCircle size={17} />
-                  Identifying...
-                </>
-              ) : (
-                'Identify restaurant'
-              )}
-            </button>
-          </section>
+              {photo.analysis?.imageEvidence.length ? (
+                <div className="vision-evidence" aria-label="Detected image evidence">
+                  {photo.analysis.imageEvidence.map((evidence) => (
+                    <span key={evidence}>{evidence}</span>
+                  ))}
+                </div>
+              ) : null}
 
-          <div className="filter-head">
-            <Filter size={17} />
-            <span>Type</span>
-          </div>
-          <div className="category-grid" aria-label="Venue type">
-            {categoryOptions.map((option) => (
+              {photo.analysis &&
+              (photo.analysis.articleCandidates?.length ||
+                photo.analysis.webEvidence?.length ||
+                photo.analysis.photoEvidence?.length) ? (
+                <div className="search-trail" aria-label="Search evidence trail">
+                  <div className="search-trail-head">
+                    <Search size={15} />
+                    <span>Search trail</span>
+                  </div>
+                  {photo.analysis.articleCandidates?.length ? (
+                    <p>
+                      {photo.analysis.articleSearchProvider ?? 'Article search'} found{' '}
+                      {photo.analysis.articleCandidates.length} article-backed venue candidates.
+                    </p>
+                  ) : null}
+                  {photo.analysis.webEvidence?.length ? (
+                    <p>
+                      {photo.analysis.webSearchProvider ?? 'Web search'} checked{' '}
+                      {photo.analysis.webEvidence.length} review/page results.
+                    </p>
+                  ) : null}
+                  {photo.analysis.photoEvidence?.length ? (
+                    <p>
+                      {photo.analysis.searchProvider ?? 'Photo search'} compared{' '}
+                      {photo.analysis.photoEvidence.length} public photos.
+                    </p>
+                  ) : null}
+                </div>
+              ) : null}
+
               <button
-                key={option}
-                className={option === category ? 'selected' : ''}
+                className="submit-photo"
                 type="button"
-                onClick={() => {
-                  setCategory(option)
-                  setActiveVenueId(nextMatches(option)[0]?.venue.id ?? null)
-                }}
+                disabled={photo.status === 'reading' || !photoFile || apiHealth.status !== 'ready'}
+                onClick={submitPhoto}
               >
-                {option}
+                {photo.status === 'reading' ? (
+                  <>
+                    <LoaderCircle size={17} />
+                    Identifying...
+                  </>
+                ) : (
+                  'Identify restaurant'
+                )}
               </button>
-            ))}
-          </div>
+            </div>
+          ) : null}
 
-          {activeMatch ? (
-            <section className="active-card" aria-live="polite">
-              <div className="active-meta">
+          {photo.status === 'empty' && apiHealth.status !== 'ready' ? (
+            <div className={`setup-notice ${apiHealth.status}`}>
+              <Camera size={14} />
+              <span>{apiHealth.message ?? 'Checking whether photo identification is ready...'}</span>
+            </div>
+          ) : null}
+        </section>
+
+        {/* ── First-run value prop ────────────────────── */}
+        {photo.status === 'empty' ? (
+          <div className="value-prop">
+            <span><Camera size={12} /> Reads image details</span>
+            <span><Search size={12} /> Searches web articles</span>
+            <span><Search size={12} /> Compares Google Maps photos</span>
+            <span><BadgeCheck size={12} /> Confidence-ranked results</span>
+          </div>
+        ) : null}
+
+        {/* ── Provider warning ────────────────────────── */}
+        {photo.analysis?.providerWarnings?.length ? (
+          <div className="provider-warning" role="status">
+            <Search size={15} />
+            <span>
+              Some web evidence was unavailable, so the app ranked using the image and remaining sources.
+            </span>
+          </div>
+        ) : null}
+
+        {/* ── Top match hero card ─────────────────────── */}
+        {activeMatch ? (
+          <section className="top-answer" aria-live="polite">
+            <div className="top-answer-body">
+              <span className="eyebrow">Top match</span>
+              <h2>{activeMatch.venue.name}</h2>
+              <p className="top-answer-location">{venueLocationLabel(activeMatch.venue)}</p>
+              {activeMatch.venue.note ? (
+                <p className="top-answer-note">{activeMatch.venue.note}</p>
+              ) : null}
+              <div className="top-meta">
                 <span>{activeMatch.venue.category}</span>
                 <span>{activeMatch.venue.neighborhood}</span>
               </div>
-              <h2>{activeMatch.venue.name}</h2>
-              <p>{activeMatch.venue.note}</p>
-              <div className="action-row">
+              <div className="top-actions">
                 <a href={activeMatch.venue.mapsUrl} target="_blank" rel="noreferrer">
-                  <MapPin size={16} />
+                  <MapPin size={15} />
                   {hasVerifiedCoordinates(activeMatch.venue) ? 'Maps' : 'Search Maps'}
                 </a>
                 <a href={activeMatch.venue.sourceUrl} target="_blank" rel="noreferrer">
-                  <ExternalLink size={16} />
+                  <ExternalLink size={15} />
                   Source
                 </a>
               </div>
-            </section>
-          ) : null}
-        </aside>
+            </div>
+            <div className="top-score">
+              <span>{confidenceLabel(activeMatch.confidence)}</span>
+              <strong>{activeMatch.confidence || '--'}%</strong>
+            </div>
+          </section>
+        ) : null}
 
-        <section className="main-panel">
-          {activeMatch ? (
-            <section className="answer-panel" aria-live="polite">
-              <div className="answer-copy">
-                <span className="eyebrow">Best guess to confirm</span>
-                <h2>{activeMatch.venue.name}</h2>
-                <p>{venueLocationLabel(activeMatch.venue)}</p>
+        {/* ── Results ─────────────────────────────────── */}
+        {matches.length ? (
+          <>
+            <div className="results-bar">
+              <div className="filter-row" aria-label="Venue type filter">
+                <span className="filter-label"><Filter size={13} /> Type</span>
+                {categoryOptions.map((option) => (
+                  <button
+                    key={option}
+                    className={option === category ? 'selected' : ''}
+                    type="button"
+                    onClick={() => {
+                      setCategory(option)
+                      setActiveVenueId(nextMatches(option)[0]?.venue.id ?? null)
+                    }}
+                  >
+                    {option}
+                  </button>
+                ))}
               </div>
-              <div className="answer-score">
-                <span>{confidenceLabel(activeMatch.confidence)}</span>
-                <strong>{activeMatch.confidence || '--'}%</strong>
-              </div>
-            </section>
-          ) : null}
-
-          {photo.analysis?.providerWarnings?.length ? (
-            <div className="provider-warning" role="status">
-              <Search size={15} />
-              <span>
-                Some web evidence was unavailable, so the app ranked using the image and
-                remaining sources.
+              <span className="freshness">
+                {photo.analysis ? 'Confirm before trusting' : photo.coords ? 'GPS-ranked' : ''}
               </span>
             </div>
-          ) : null}
 
-          <div className="results-head">
-            <div>
-              <span className="eyebrow">Guesses to confirm</span>
-              <h2>
-                {photo.analysis
-                  ? `${matches.length} venue guesses`
-                  : photo.coords
-                    ? `${matches.length} nearby candidates`
-                    : 'No results yet'}
-              </h2>
-            </div>
-            <span className="freshness">
-              {photo.analysis
-                ? 'Confirm the name/location before trusting it'
-                : photo.coords
-                  ? 'GPS-ranked against verified venues'
-                  : 'Waiting for photo analysis'}
-            </span>
-          </div>
+            {photo.analysis && matches.length ? (
+              <p className="guess-disclaimer">
+                Guesses from the uploaded photo and public evidence — confirm name and location before acting on them.
+              </p>
+            ) : null}
 
-          {photo.analysis && matches.length ? (
-            <p className="guess-disclaimer">
-              These are guesses from the uploaded photo and public evidence. If the top venue is
-              wrong, use this list to confirm which candidates were tried.
-            </p>
-          ) : null}
-
-          {matches.length ? (
             <div className="results-grid">
               {matches.map((match, index) => {
                 const feedback = feedbackByVenueId[match.venue.id]
@@ -1119,34 +1102,20 @@ function App() {
                       <span>{feedback ? feedbackLabel(feedback) : 'Was this it?'}</span>
                       <div className="feedback-buttons">
                         <button
-                          className={[
-                            'heart-button',
-                            'heart-correct',
-                            feedback?.vote === 'correct' ? 'selected' : '',
-                          ].join(' ').trim()}
+                          className={['heart-button', 'heart-correct', feedback?.vote === 'correct' ? 'selected' : ''].join(' ').trim()}
                           type="button"
                           aria-label={`Mark ${match.venue.name} correct`}
                           disabled={feedback?.status === 'saving'}
-                          onClick={(event) => {
-                            event.stopPropagation()
-                            void submitGuessFeedback(match, 'correct', index + 1)
-                          }}
+                          onClick={(event) => { event.stopPropagation(); void submitGuessFeedback(match, 'correct', index + 1) }}
                         >
                           <span aria-hidden="true">💗</span>
                         </button>
                         <button
-                          className={[
-                            'heart-button',
-                            'heart-wrong',
-                            feedback?.vote === 'incorrect' ? 'selected broken' : '',
-                          ].join(' ').trim()}
+                          className={['heart-button', 'heart-wrong', feedback?.vote === 'incorrect' ? 'selected broken' : ''].join(' ').trim()}
                           type="button"
                           aria-label={`Mark ${match.venue.name} incorrect`}
                           disabled={feedback?.status === 'saving'}
-                          onClick={(event) => {
-                            event.stopPropagation()
-                            void submitGuessFeedback(match, 'incorrect', index + 1)
-                          }}
+                          onClick={(event) => { event.stopPropagation(); void submitGuessFeedback(match, 'incorrect', index + 1) }}
                         >
                           <span aria-hidden="true">💔</span>
                         </button>
@@ -1156,10 +1125,7 @@ function App() {
                             type="button"
                             aria-label={`Undo feedback for ${match.venue.name}`}
                             disabled={feedback.status === 'saving'}
-                            onClick={(event) => {
-                              event.stopPropagation()
-                              void undoGuessFeedback(match, index + 1)
-                            }}
+                            onClick={(event) => { event.stopPropagation(); void undoGuessFeedback(match, index + 1) }}
                           >
                             Undo
                           </button>
@@ -1204,37 +1170,38 @@ function App() {
                 )
               })}
             </div>
-          ) : photo.status === 'reading' ? (
-            <section className="analysis-panel" aria-live="polite" aria-label="Analysis in progress">
-              <div className="analysis-orbit" aria-hidden="true">
-                <Search size={28} />
-              </div>
-              <h3>Analyzing and searching</h3>
-              <p>
-                Checking the uploaded image, interior details, public photo pages, and SF web
-                evidence. This can take a moment.
-              </p>
-              <div className="analysis-steps">
-                {analysisSteps.map((step) => (
-                  <span key={step}>
-                    <LoaderCircle size={14} />
-                    {step}
-                  </span>
-                ))}
-              </div>
-            </section>
-          ) : (
-            <section className="waiting-results">
-              <Camera size={26} />
-              <h3>Results will appear here</h3>
-              <p>
-                Once a photo is analyzed, this area shows ranked venue matches, evidence, and
-                source links.
-              </p>
-            </section>
-          )}
-        </section>
-      </section>
+          </>
+        ) : photo.status === 'reading' ? (
+          <section className="analysis-panel" aria-live="polite" aria-label="Analysis in progress">
+            <div className="analysis-orbit" aria-hidden="true">
+              <Search size={28} />
+            </div>
+            <h3>Analyzing and searching</h3>
+            <p>
+              Checking the uploaded image, interior details, public photo pages, and SF web evidence.
+              This can take a moment.
+            </p>
+            <div className="analysis-steps">
+              {analysisSteps.map((step) => (
+                <span key={step}>
+                  <LoaderCircle size={14} />
+                  {step}
+                </span>
+              ))}
+            </div>
+          </section>
+        ) : (photo.status === 'gps' || photo.status === 'nogps') ? (
+          <section className="waiting-results">
+            <Camera size={26} />
+            <h3>No venue matches found</h3>
+            <p>
+              The image was too ambiguous to rank a venue. Try a photo with visible signage,
+              menus, cups, or distinctive decor.
+            </p>
+          </section>
+        ) : null}
+
+      </div>
     </main>
   )
 }

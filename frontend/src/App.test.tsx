@@ -1,21 +1,9 @@
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
-import type { ReactNode } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import App from './App'
 
 vi.mock('exifr', () => ({
   gps: vi.fn(async () => undefined),
-}))
-
-vi.mock('react-leaflet', () => ({
-  CircleMarker: ({ children }: { children?: ReactNode }) => (
-    <div data-testid="circle-marker">{children}</div>
-  ),
-  MapContainer: ({ children }: { children?: ReactNode }) => (
-    <div aria-label="Venue map">{children}</div>
-  ),
-  Popup: ({ children }: { children?: ReactNode }) => <div>{children}</div>,
-  TileLayer: () => <div data-testid="tile-layer" />,
 }))
 
 describe('SF Food Guesser photo flow', () => {
@@ -38,13 +26,13 @@ describe('SF Food Guesser photo flow', () => {
 
     render(<App />)
 
-    expect(screen.getByRole('heading', { name: 'Find the place from a photo' })).toBeVisible()
-    expect(screen.getByText('Drop image here or choose')).toBeVisible()
-    expect(screen.getByText('No results yet')).toBeVisible()
-    expect(screen.getByText('Results will appear here')).toBeVisible()
+    expect(screen.getByRole('heading', { name: 'Spotted in SF' })).toBeVisible()
+    expect(screen.getByText('Drop a food photo here')).toBeVisible()
+    expect(screen.queryByText('No results yet')).not.toBeInTheDocument()
+    expect(screen.queryByText('Results will appear here')).not.toBeInTheDocument()
     expect(screen.queryByText('Upload a photo to start')).not.toBeInTheDocument()
     expect(screen.queryByText('Drop in a food photo')).not.toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'Identify restaurant' })).toBeDisabled()
+    expect(screen.queryByRole('button', { name: 'Identify restaurant' })).not.toBeInTheDocument()
     expect(screen.queryByRole('textbox')).not.toBeInTheDocument()
     expect(screen.queryByText(/Start with typed text/i)).not.toBeInTheDocument()
   })
@@ -152,7 +140,7 @@ describe('SF Food Guesser photo flow', () => {
     render(<App />)
 
     const file = new File(['fake image bytes'], 'pizza.png', { type: 'image/png' })
-    fireEvent.change(screen.getByLabelText(/Drop image here or choose/i), {
+    fireEvent.change(screen.getByLabelText(/Drop a food photo here/i), {
       target: { files: [file] },
     })
 
@@ -177,8 +165,7 @@ describe('SF Food Guesser photo flow', () => {
     expect(photoForm.has('description')).toBe(false)
 
     expect(screen.getByText(/Analyzed photo: A square slice/i)).toBeVisible()
-    expect(screen.getByText('Guesses to confirm')).toBeVisible()
-    expect(screen.getByText('Confirm the name/location before trusting it')).toBeVisible()
+    expect(screen.getByText('Confirm before trusting')).toBeVisible()
     expect(screen.getByText('square pizza')).toBeVisible()
     expect(screen.getAllByText('91%')[0]).toBeVisible()
     expect(screen.getByText(/The image shows a square focaccia-style pizza slice/i)).toBeVisible()
@@ -271,7 +258,7 @@ describe('SF Food Guesser photo flow', () => {
     render(<App />)
 
     const file = new File(['fake image bytes'], 'matcha.png', { type: 'image/png' })
-    fireEvent.change(screen.getByLabelText(/Drop image here or choose/i), {
+    fireEvent.change(screen.getByLabelText(/Drop a food photo here/i), {
       target: { files: [file] },
     })
 
@@ -301,7 +288,7 @@ describe('SF Food Guesser photo flow', () => {
     render(<App />)
 
     const file = new File(['fake image bytes'], 'latte.png', { type: 'image/png' })
-    const uploadZone = screen.getByText(/Drop image here or choose/i).closest('label')
+    const uploadZone = screen.getByText(/Drop a food photo here/i).closest('label')
     expect(uploadZone).not.toBeNull()
 
     fireEvent.drop(uploadZone as HTMLLabelElement, {
@@ -386,7 +373,7 @@ describe('SF Food Guesser photo flow', () => {
     render(<App />)
 
     const file = new File(['fake image bytes'], 'burger.png', { type: 'image/png' })
-    fireEvent.change(screen.getByLabelText(/Drop image here or choose/i), {
+    fireEvent.change(screen.getByLabelText(/Drop a food photo here/i), {
       target: { files: [file] },
     })
 
@@ -441,7 +428,7 @@ describe('SF Food Guesser photo flow', () => {
     render(<App />)
 
     const file = new File(['fake image bytes'], 'interior.png', { type: 'image/png' })
-    fireEvent.change(screen.getByLabelText(/Drop image here or choose/i), {
+    fireEvent.change(screen.getByLabelText(/Drop a food photo here/i), {
       target: { files: [file] },
     })
 
@@ -522,7 +509,7 @@ describe('SF Food Guesser photo flow', () => {
     render(<App />)
 
     const file = new File(['fake image bytes'], 'cafe.png', { type: 'image/png' })
-    fireEvent.change(screen.getByLabelText(/Drop image here or choose/i), {
+    fireEvent.change(screen.getByLabelText(/Drop a food photo here/i), {
       target: { files: [file] },
     })
 
@@ -557,7 +544,7 @@ describe('SF Food Guesser photo flow', () => {
     expect(await screen.findByText(/needs OPENROUTER_API_KEY or OPENAI_API_KEY/i)).toBeVisible()
 
     const file = new File(['fake image bytes'], 'latte.png', { type: 'image/png' })
-    fireEvent.change(screen.getByLabelText(/Drop image here or choose/i), {
+    fireEvent.change(screen.getByLabelText(/Drop a food photo here/i), {
       target: { files: [file] },
     })
 
