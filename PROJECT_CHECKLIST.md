@@ -117,3 +117,100 @@ items were completed earlier out of order.
 - [ ] Build a richer SF venue database from source-backed public pages.
 - [ ] Cache search results by query to reduce cost and latency.
 - [ ] Add image embedding comparison if a suitable provider is chosen.
+
+## 11. Accuracy Improvement Roadmap
+
+This is the next implementation sequence based on what is already built. The
+order keeps the app honest first, then adds more search power and scale.
+
+### 11.1 Separate Evidence From Guessing
+
+- [x] Keep internal evidence categories for OCR/visible text, GPS, packaging,
+  storefront, interior, dish, and web-source evidence.
+- [x] Stop seed venue source/search text from creating a candidate unless the
+  uploaded photo itself has direct matching clues.
+- [x] Update the production prompt so seed menu items are never cited as visible
+  photo evidence unless those exact details are in the uploaded image.
+- [ ] Split result reasons into `photoEvidence`, `externalEvidence`, and
+  `rankingRules` internally so the UI never confuses venue metadata with upload
+  evidence.
+
+### 11.2 Local Feedback Review Layer
+
+- [x] Record correct, incorrect, undo, and unverified suggested-answer feedback.
+- [x] Record a lineup snapshot with feedback so ranking failures can be reviewed
+  without storing uploaded images.
+- [x] Add a local review script that groups feedback by run and classifies:
+  rank-calibration failures, missing-candidate failures, all-wrong runs, and
+  confirmed top matches.
+- [ ] Add an optional admin-only review page later if manual review becomes
+  frequent enough to justify UI.
+
+### 11.3 More Honest Confidence And Result States
+
+- [x] Hide the top-match hero when top candidates are tied or nearly tied.
+- [ ] Rename or recalibrate labels so `Strong` requires identity-level evidence,
+  not just a high numeric score.
+- [ ] Add caps for source-only, seed-only, dish-only, and unverified-interior
+  guesses across both local Express and Cloudflare Functions code paths.
+
+### 11.4 Development-Only "Why Not" Debugging
+
+- [ ] Add a debug-only rejected/capped candidate report.
+- [ ] Show reasons such as `seed source text only`, `dish-only cap`,
+  `no identity clue`, or `OCR contradicted candidate`.
+- [ ] Keep this out of the normal user experience.
+
+### 11.5 Better Image Handling
+
+- [x] Keep the uploaded photo fully visible in the UI instead of cropping it.
+- [x] Add an OCR contact-sheet pass with full image and crop panels.
+- [ ] Add separate background/interior and food-only crop passes.
+- [ ] Add a high-contrast text crop pass for faint menu, cup, receipt, or sign
+  text.
+
+### 11.6 Stronger Candidate Generation
+
+- [x] Run article discovery, web search, and Google Maps/photo-style evidence in
+  parallel where possible.
+- [ ] Deduplicate candidates before final ranking across OCR, article, maps,
+  review, and seed lanes.
+- [ ] Build query lanes for exact OCR text, dish/menu terms, interior terms,
+  neighborhood/GPS clues, and recent-openings coverage.
+
+### 11.7 Verified Venue Dataset
+
+- [x] Maintain a source-backed SF seed venue file.
+- [ ] Add fields for `visualClues`, `menuClues`, `doNotInferFrom`,
+  `multiLocation`, and source-backed confidence.
+- [ ] Add tests that prevent broad venue metadata from being treated as direct
+  image evidence.
+
+### 11.8 Abuse Protection Without Login
+
+- [x] Keep corrections as unverified user claims.
+- [x] Add anonymous local session IDs for feedback grouping.
+- [ ] Enforce one suggested correction per run.
+- [ ] Add Cloudflare/IP/session rate limits and optional Turnstile only for
+  suspicious behavior.
+- [ ] Ignore or downweight repeated contradictory corrections from the same
+  anonymous session.
+
+### 11.9 More Transparent Results
+
+- [x] Show visual evidence, search trail, why-this-guess text, hearts, undo, and
+  correction suggestions.
+- [ ] Add compact evidence badges: OCR, Maps photos, Article, Dish, Interior,
+  GPS.
+- [ ] Change plain-language labels so the UI says `Best supported match`,
+  `Close guesses`, or `Needs confirmation` instead of overstating certainty.
+
+### 11.10 Benchmark Set
+
+- [ ] Create a small internal benchmark manifest for known photos such as
+  Souvla, Kissaten Hi-Fi, RT Bistro, misleading packaging, no-text interiors,
+  and multi-location venues.
+- [ ] Add a local benchmark runner that records whether the expected venue was
+  rank 1, present but lower-ranked, or missing.
+- [ ] Run the benchmark before ranking/search changes so improvements do not
+  just move errors around.
