@@ -38,10 +38,11 @@ Anonymous visitors get one photo analysis before the app prompts them to sign
 up. The API places a short in-flight hold when a request starts, then reserves
 that free attempt after validating the upload but before model/search providers
 are called. In production, a D1 unique insert acts as the atomic cross-isolate
-gate, with KV as a secondary durable record. Local development keeps matching
-in-memory records. The API also sets a `sf_food_free_photo_used` cookie so the
-browser can show the limit message immediately. Later anonymous analysis
-requests are blocked before provider calls.
+gate. The Cloudflare photo endpoint fails closed if the D1 binding or trusted
+client IP is missing. Local development keeps matching in-memory records. The
+API also sets a `sf_food_free_photo_used` cookie so the browser can show the
+limit message immediately. Later anonymous analysis requests are blocked before
+provider calls.
 
 For stronger interior/storefront matching, add optional provider keys locally.
 `HASDATA_API_KEY` is the cost-optimized Google Maps/photo provider: the backend
@@ -96,9 +97,8 @@ The deployed API lives under `/api` through `functions/api/`, so
 Cloudflare runtime secrets are set on the Pages project, not committed to the
 repo. The Pages Function uses OpenRouter for vision and Exa for parallel
 photo-derived evidence searches when `EXA_API_KEY` is configured. Production
-feedback records use the `SF_FOOD_FEEDBACK_KV` binding.
-Anonymous upload records use the `SF_FOOD_USAGE_DB` D1 binding plus the
-`SF_FOOD_USAGE_KV` binding.
+feedback records use the `SF_FOOD_FEEDBACK_KV` binding. Anonymous upload records
+use the `SF_FOOD_USAGE_DB` D1 binding.
 
 Target production domains are `https://spotted-in-sf.com` and
 `https://www.spotted-in-sf.com`; both should serve the same Cloudflare Pages

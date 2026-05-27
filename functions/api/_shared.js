@@ -5,7 +5,6 @@ const uploadLimitMessage = 'This public demo includes one photo analysis for now
 const anonymousUsagePrefix = 'anonymous-free-upload'
 const anonymousUsageHoldTtlMs = 2 * 60 * 1000
 const anonymousUsageHolds = new Map()
-const anonymousUsageFallbackRecords = new Map()
 const defaultCloudflareOrigins = [
   'https://spotted-in-sf.pages.dev',
   'https://spotted-in-sf.com',
@@ -72,8 +71,18 @@ export function freeUploadCookie() {
 export async function checkAnonymousUsageLimit(request, env, runId) {
   if (hasUsedFreeUpload(request)) return freeUploadLimitResponse(runId, 'cookie')
 
+  if (!clientIp(request)) {
+    return jsonResponse(
+      {
+        runId,
+        error: 'Anonymous upload limiting needs a trusted client IP before photo analysis can run.',
+      },
+      503,
+    )
+  }
+
   const database = anonymousUsageDatabase(env)
-  if (requiresAtomicUsageLimit(env) && !database) {
+  if (!database) {
     return jsonResponse(
       {
         runId,
@@ -87,27 +96,26 @@ export async function checkAnonymousUsageLimit(request, env, runId) {
   if (hasAnonymousUsageMapRecord(keys, anonymousUsageHolds)) {
     return freeUploadLimitResponse(runId, 'in_flight')
   }
-  if (hasAnonymousUsageMapRecord(keys, anonymousUsageFallbackRecords)) {
-    return freeUploadLimitResponse(runId, 'server_usage_record')
-  }
 
-  if (database) {
-    const existingRecord = await findD1UsageRecord(database, keys)
-    if (existingRecord) return freeUploadLimitResponse(runId, 'server_usage_record')
-  }
-
-  const store = anonymousUsageStore(env)
-  if (!store?.get) return null
-
-  for (const key of keys) {
-    if (await store.get(key)) return freeUploadLimitResponse(runId, 'server_usage_record')
-  }
+  const existingRecord = await findD1UsageRecord(database, keys)
+  if (existingRecord) return freeUploadLimitResponse(runId, 'server_usage_record')
 
   return null
 }
 
 export async function holdAnonymousUsageSlot(request, env, runId) {
   const keys = await anonymousUsageKeys(request, env)
+  if (!keys.length) {
+    return {
+      blockedResponse: jsonResponse(
+        {
+          runId,
+          error: 'Anonymous upload limiting needs a trusted client IP before photo analysis can run.',
+        },
+        503,
+      ),
+    }
+  }
   if (hasAnonymousUsageMapRecord(keys, anonymousUsageHolds)) {
     return { blockedResponse: freeUploadLimitResponse(runId, 'in_flight') }
   }
@@ -125,45 +133,32 @@ export async function holdAnonymousUsageSlot(request, env, runId) {
 export async function reserveAnonymousUsage(request, env, runId) {
   const keys = await anonymousUsageKeys(request, env)
   const database = anonymousUsageDatabase(env)
-
-  if (database) {
-    const reserved = await reserveD1UsageRecord(database, keys)
-    if (!reserved) return freeUploadLimitResponse(runId, 'server_usage_record')
-    return null
+  if (!keys.length) {
+    return jsonResponse(
+      {
+        runId,
+        error: 'Anonymous upload limiting needs a trusted client IP before photo analysis can run.',
+      },
+      503,
+    )
+  }
+  if (!database) {
+    return jsonResponse(
+      {
+        runId,
+        error: 'Anonymous upload limiting is not configured. Set SF_FOOD_USAGE_DB before enabling photo analysis.',
+      },
+      503,
+    )
   }
 
-  const store = anonymousUsageStore(env)
-
-  if (!store?.put) {
-    const expiresAt = Date.now() + freeUploadCookieMaxAge * 1000
-    for (const key of keys) anonymousUsageFallbackRecords.set(key, expiresAt)
-    return
-  }
-
-  await Promise.all(
-    keys.map((key) =>
-      store.put(
-        key,
-        JSON.stringify({
-          createdAt: new Date().toISOString(),
-          reason: 'anonymous_free_upload_used',
-        }),
-        { expirationTtl: freeUploadCookieMaxAge },
-      ),
-    ),
-  )
-}
-
-function anonymousUsageStore(env) {
-  return env.SF_FOOD_USAGE_KV || env.SF_FOOD_FEEDBACK_KV || null
+  const reserved = await reserveD1UsageRecord(database, keys)
+  if (!reserved) return freeUploadLimitResponse(runId, 'server_usage_record')
+  return null
 }
 
 function anonymousUsageDatabase(env) {
   return env.SF_FOOD_USAGE_DB || null
-}
-
-function requiresAtomicUsageLimit(env) {
-  return String(env.REQUIRE_ATOMIC_USAGE_LIMIT || '').toLowerCase() === 'true'
 }
 
 async function findD1UsageRecord(database, keys) {
@@ -244,14 +239,12 @@ async function anonymousUsageKeys(request, env) {
   const salt = env.ANON_USAGE_SALT || 'sf-food-guesser-anonymous-v1'
   const components = []
 
+  if (!ip) return []
   if (ip) components.push(['ip', ip])
   if (ip && userAgent) components.push(['ip-ua', `${ip}|${userAgent}`])
   if (ip && userAgent && acceptLanguage) {
     components.push(['ip-ua-lang', `${ip}|${userAgent}|${acceptLanguage}`])
   }
-
-  if (!components.length && userAgent) components.push(['ua', userAgent])
-  if (!components.length) components.push(['fallback', 'unknown-client'])
 
   return Promise.all(
     components.map(async ([label, value]) => `${anonymousUsagePrefix}:${label}:${await sha256Hex(`${salt}|${value}`)}`),
@@ -263,8 +256,6 @@ function clientIp(request) {
   if (cfIp) return cfIp
   const trueClientIp = normalizedHeader(request, 'true-client-ip')
   if (trueClientIp) return trueClientIp
-  const forwarded = normalizedHeader(request, 'x-forwarded-for')
-  if (forwarded) return forwarded.split(',')[0].trim()
   return ''
 }
 

@@ -12,13 +12,6 @@ async function json(response) {
   return response.json()
 }
 
-function emptyUsageKv() {
-  return {
-    get: vi.fn(async () => null),
-    put: vi.fn(async () => undefined),
-  }
-}
-
 function usageD1({ existingRecord = false, primaryInsertChanges = 1 } = {}) {
   return {
     prepare: vi.fn((sql) => ({
@@ -33,6 +26,26 @@ function usageD1({ existingRecord = false, primaryInsertChanges = 1 } = {}) {
         })),
       })),
     })),
+  }
+}
+
+function cloudflareHeaders(overrides = {}) {
+  const values = {
+    'cf-connecting-ip': '203.0.113.50',
+    'user-agent': 'vitest',
+    origin: 'https://spotted-in-sf.pages.dev',
+    ...overrides,
+  }
+  return {
+    get: (name) => values[name.toLowerCase()] ?? null,
+  }
+}
+
+function usageEnv(overrides = {}) {
+  return {
+    OPENROUTER_API_KEY: 'test-openrouter-key',
+    SF_FOOD_USAGE_DB: usageD1(),
+    ...overrides,
   }
 }
 
@@ -64,7 +77,6 @@ describe('Cloudflare Pages Functions API', () => {
   })
 
   it('analyzes an uploaded image through the OpenRouter-compatible endpoint', async () => {
-    const usageKv = emptyUsageKv()
     const fetchMock = vi
       .spyOn(globalThis, 'fetch')
       .mockResolvedValueOnce(
@@ -125,16 +137,11 @@ describe('Cloudflare Pages Functions API', () => {
     const response = await analyzePhotoPost({
       request: {
         formData: async () => formData,
-        headers: {
-          get: (name) =>
-            name.toLowerCase() === 'origin' ? 'https://sf-food-guesser.pages.dev' : null,
-        },
+        headers: cloudflareHeaders({ origin: 'https://sf-food-guesser.pages.dev' }),
       },
-      env: {
-        OPENROUTER_API_KEY: 'test-openrouter-key',
+      env: usageEnv({
         OPENROUTER_VISION_MODEL: 'qwen/qwen3-vl-32b-instruct',
-        SF_FOOD_USAGE_KV: usageKv,
-      },
+      }),
     })
     const body = await json(response)
     const [, requestInit] = fetchMock.mock.calls[1]
@@ -142,8 +149,6 @@ describe('Cloudflare Pages Functions API', () => {
 
     expect(response.status).toBe(200)
     expect(response.headers.get('Set-Cookie')).toContain('sf_food_free_photo_used=1')
-    expect(usageKv.get).toHaveBeenCalled()
-    expect(usageKv.put).toHaveBeenCalled()
     expect(fetchMock).toHaveBeenCalledTimes(2)
     expect(payload.tools[0].type).toBe('openrouter:web_search')
     expect(body).toMatchObject({
@@ -192,32 +197,20 @@ describe('Cloudflare Pages Functions API', () => {
     fetchMock.mockRestore()
   })
 
-  it('blocks Cloudflare photo analysis from server usage records even without the cookie', async () => {
-    const usageKv = {
-      get: vi.fn(async () => '1'),
-      put: vi.fn(async () => undefined),
-    }
+  it('blocks Cloudflare photo analysis from D1 usage records even without the cookie', async () => {
     const fetchMock = vi.spyOn(globalThis, 'fetch')
     const formData = vi.fn(async () => new FormData())
 
     const response = await analyzePhotoPost({
       request: {
         formData,
-        headers: {
-          get: (name) => {
-            const headers = {
-              'cf-connecting-ip': '203.0.113.10',
-              'user-agent': 'bypass-curl',
-              'accept-language': 'en-US',
-            }
-            return headers[name.toLowerCase()] ?? null
-          },
-        },
+        headers: cloudflareHeaders({
+          'cf-connecting-ip': '203.0.113.10',
+          'user-agent': 'bypass-curl',
+          'accept-language': 'en-US',
+        }),
       },
-      env: {
-        OPENROUTER_API_KEY: 'test-openrouter-key',
-        SF_FOOD_USAGE_KV: usageKv,
-      },
+      env: usageEnv({ SF_FOOD_USAGE_DB: usageD1({ existingRecord: true }) }),
     })
     const body = await json(response)
 
@@ -228,31 +221,72 @@ describe('Cloudflare Pages Functions API', () => {
     })
     expect(formData).not.toHaveBeenCalled()
     expect(fetchMock).not.toHaveBeenCalled()
-    expect(usageKv.put).not.toHaveBeenCalled()
 
     fetchMock.mockRestore()
   })
 
-  it('fails closed when atomic Cloudflare usage limiting is required but D1 is missing', async () => {
+  it('fails closed when Cloudflare D1 usage limiting is missing', async () => {
     const fetchMock = vi.spyOn(globalThis, 'fetch')
     const formData = vi.fn(async () => new FormData())
 
     const response = await analyzePhotoPost({
       request: {
         formData,
-        headers: {
-          get: () => null,
-        },
+        headers: cloudflareHeaders(),
       },
       env: {
         OPENROUTER_API_KEY: 'test-openrouter-key',
-        REQUIRE_ATOMIC_USAGE_LIMIT: 'true',
       },
     })
     const body = await json(response)
 
     expect(response.status).toBe(503)
     expect(body.error).toContain('Anonymous upload limiting is not configured')
+    expect(formData).not.toHaveBeenCalled()
+    expect(fetchMock).not.toHaveBeenCalled()
+
+    fetchMock.mockRestore()
+  })
+
+  it('fails closed without a trusted Cloudflare client IP', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch')
+    const formData = vi.fn(async () => new FormData())
+
+    const response = await analyzePhotoPost({
+      request: {
+        formData,
+        headers: cloudflareHeaders({ 'cf-connecting-ip': '' }),
+      },
+      env: usageEnv(),
+    })
+    const body = await json(response)
+
+    expect(response.status).toBe(503)
+    expect(body.error).toContain('trusted client IP')
+    expect(formData).not.toHaveBeenCalled()
+    expect(fetchMock).not.toHaveBeenCalled()
+
+    fetchMock.mockRestore()
+  })
+
+  it('does not trust x-forwarded-for alone for Cloudflare upload limiting', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch')
+    const formData = vi.fn(async () => new FormData())
+
+    const response = await analyzePhotoPost({
+      request: {
+        formData,
+        headers: cloudflareHeaders({
+          'cf-connecting-ip': '',
+          'x-forwarded-for': '203.0.113.99',
+        }),
+      },
+      env: usageEnv(),
+    })
+    const body = await json(response)
+
+    expect(response.status).toBe(503)
+    expect(body.error).toContain('trusted client IP')
     expect(formData).not.toHaveBeenCalled()
     expect(fetchMock).not.toHaveBeenCalled()
 
@@ -268,22 +302,15 @@ describe('Cloudflare Pages Functions API', () => {
     const response = await analyzePhotoPost({
       request: {
         formData: async () => formData,
-        headers: {
-          get: (name) => {
-            const headers = {
-              'cf-connecting-ip': '203.0.113.30',
-              'user-agent': 'parallel-cross-isolate-test',
-              origin: 'https://spotted-in-sf.com',
-            }
-            return headers[name.toLowerCase()] ?? null
-          },
-        },
+        headers: cloudflareHeaders({
+          'cf-connecting-ip': '203.0.113.30',
+          'user-agent': 'parallel-cross-isolate-test',
+          origin: 'https://spotted-in-sf.com',
+        }),
       },
-      env: {
-        OPENROUTER_API_KEY: 'test-openrouter-key',
+      env: usageEnv({
         SF_FOOD_USAGE_DB: usageD1({ primaryInsertChanges: 0 }),
-        REQUIRE_ATOMIC_USAGE_LIMIT: 'true',
-      },
+      }),
     })
     const body = await json(response)
 
@@ -298,7 +325,6 @@ describe('Cloudflare Pages Functions API', () => {
   })
 
   it('blocks concurrent Cloudflare first-upload attempts before duplicate provider calls', async () => {
-    const usageKv = emptyUsageKv()
     const fetchMock = vi
       .spyOn(globalThis, 'fetch')
       .mockResolvedValueOnce(
@@ -363,10 +389,7 @@ describe('Cloudflare Pages Functions API', () => {
         formData: () => delayedFormData,
         headers,
       },
-      env: {
-        OPENROUTER_API_KEY: 'test-openrouter-key',
-        SF_FOOD_USAGE_KV: usageKv,
-      },
+      env: usageEnv(),
     })
     await Promise.resolve()
 
@@ -375,10 +398,7 @@ describe('Cloudflare Pages Functions API', () => {
         formData: vi.fn(async () => formData),
         headers,
       },
-      env: {
-        OPENROUTER_API_KEY: 'test-openrouter-key',
-        SF_FOOD_USAGE_KV: usageKv,
-      },
+      env: usageEnv(),
     })
 
     releaseFormData(formData)
@@ -423,10 +443,6 @@ describe('Cloudflare Pages Functions API', () => {
   })
 
   it('rejects fake Cloudflare image uploads before model providers are called', async () => {
-    const usageKv = {
-      get: vi.fn(async () => null),
-      put: vi.fn(async () => undefined),
-    }
     const fetchMock = vi.spyOn(globalThis, 'fetch')
     const formData = new FormData()
     formData.set('photo', new File(['not really a png'], 'fake.png', { type: 'image/png' }))
@@ -435,22 +451,15 @@ describe('Cloudflare Pages Functions API', () => {
     const response = await analyzePhotoPost({
       request: {
         formData: async () => formData,
-        headers: {
-          get: (name) =>
-            name.toLowerCase() === 'cf-connecting-ip' ? '203.0.113.12' : null,
-        },
+        headers: cloudflareHeaders({ 'cf-connecting-ip': '203.0.113.12' }),
       },
-      env: {
-        OPENROUTER_API_KEY: 'test-openrouter-key',
-        SF_FOOD_USAGE_KV: usageKv,
-      },
+      env: usageEnv(),
     })
     const body = await json(response)
 
     expect(response.status).toBe(415)
     expect(body.error).toContain('did not look like a real image')
     expect(fetchMock).not.toHaveBeenCalled()
-    expect(usageKv.put).not.toHaveBeenCalled()
 
     fetchMock.mockRestore()
   })
@@ -525,16 +534,12 @@ describe('Cloudflare Pages Functions API', () => {
     const response = await analyzePhotoPost({
       request: {
         formData: async () => formData,
-        headers: {
-          get: () => 'https://spotted-in-sf.pages.dev',
-        },
+        headers: cloudflareHeaders(),
       },
-      env: {
-        OPENROUTER_API_KEY: 'test-openrouter-key',
+      env: usageEnv({
         OPENROUTER_VISION_MODEL: 'qwen/qwen3-vl-32b-instruct',
         EXA_API_KEY: 'test-exa-key',
-        SF_FOOD_USAGE_KV: emptyUsageKv(),
-      },
+      }),
     })
     const body = await json(response)
 
@@ -638,14 +643,9 @@ describe('Cloudflare Pages Functions API', () => {
     const response = await analyzePhotoPost({
       request: {
         formData: async () => formData,
-        headers: {
-          get: () => 'https://spotted-in-sf.pages.dev',
-        },
+        headers: cloudflareHeaders(),
       },
-      env: {
-        OPENROUTER_API_KEY: 'test-openrouter-key',
-        SF_FOOD_USAGE_KV: emptyUsageKv(),
-      },
+      env: usageEnv(),
     })
     const body = await json(response)
 
@@ -731,14 +731,9 @@ describe('Cloudflare Pages Functions API', () => {
     const response = await analyzePhotoPost({
       request: {
         formData: async () => formData,
-        headers: {
-          get: () => 'https://spotted-in-sf.pages.dev',
-        },
+        headers: cloudflareHeaders(),
       },
-      env: {
-        OPENROUTER_API_KEY: 'test-openrouter-key',
-        SF_FOOD_USAGE_KV: emptyUsageKv(),
-      },
+      env: usageEnv(),
     })
     const body = await json(response)
 
@@ -761,11 +756,9 @@ describe('Cloudflare Pages Functions API', () => {
     const response = await analyzePhotoPost({
       request: {
         formData: async () => formData,
-        headers: {
-          get: () => null,
-        },
+        headers: cloudflareHeaders(),
       },
-      env: { OPENROUTER_API_KEY: 'test-openrouter-key' },
+      env: usageEnv(),
     })
 
     expect(response.status).toBe(415)
