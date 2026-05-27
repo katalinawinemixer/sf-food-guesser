@@ -222,13 +222,11 @@ describe('Cloudflare Pages Functions API', () => {
         const query = new URL(String(url)).searchParams.get('q')
         return new Response(
           JSON.stringify({
-            localResults: [
-              {
-                title: query?.includes('Kissaten HiFi') ? 'Kissaten HiFi' : 'Generic Matcha Cafe',
-                address: '189 6th Ave, San Francisco, CA',
-                dataId: query?.includes('Kissaten HiFi') ? 'kissaten-data-id' : 'generic-data-id',
-              },
-            ],
+            placeResults: {
+              title: query?.includes('Kissaten HiFi') ? 'Kissaten HiFi' : 'Generic Matcha Cafe',
+              address: '189 6th Ave, San Francisco, CA',
+              dataId: query?.includes('Kissaten HiFi') ? 'kissaten-data-id' : 'generic-data-id',
+            },
           }),
           { status: 200, headers: { 'Content-Type': 'application/json' } },
         )

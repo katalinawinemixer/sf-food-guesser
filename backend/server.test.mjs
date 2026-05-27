@@ -1274,15 +1274,13 @@ describe('SF Food Guesser API', () => {
       .mockResolvedValueOnce(
         new Response(
           JSON.stringify({
-            localResults: [
-              {
-                title: 'Green Tile Cafe',
-                address: '123 Valencia St, San Francisco, CA',
-                dataId: '0xabc:0x123',
-                placeId: 'place-123',
-                gpsCoordinates: { latitude: 37.76, longitude: -122.42 },
-              },
-            ],
+            placeResults: {
+              title: 'Green Tile Cafe',
+              address: '123 Valencia St, San Francisco, CA',
+              dataId: '0xabc:0x123',
+              placeId: 'place-123',
+              gpsCoordinates: { latitude: 37.76, longitude: -122.42 },
+            },
           }),
           { status: 200, headers: { 'Content-Type': 'application/json' } },
         ),

@@ -353,7 +353,12 @@ export async function searchExaEvidence(searchPlan, env, fetchImpl = fetch) {
 }
 
 function normalizeHasDataPlaces(result) {
+  if (Array.isArray(result?.placeResults)) return result.placeResults
+  if (result?.placeResults && typeof result.placeResults === 'object') return [result.placeResults]
   if (Array.isArray(result?.localResults)) return result.localResults
+  if (result?.localResults && typeof result.localResults === 'object' && !Array.isArray(result.localResults?.places)) {
+    return [result.localResults]
+  }
   if (Array.isArray(result?.localResults?.places)) return result.localResults.places
   if (Array.isArray(result?.local_results)) return result.local_results
   if (Array.isArray(result?.places)) return result.places

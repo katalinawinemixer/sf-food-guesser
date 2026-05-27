@@ -1401,8 +1401,13 @@ export async function searchSerpApiPhotos(searchQueries, apiKey = process.env.SE
 
 function normalizeMapPlaces(result) {
   const localResults = result?.localResults
+  if (Array.isArray(result?.placeResults)) return result.placeResults
+  if (result?.placeResults && typeof result.placeResults === 'object') return [result.placeResults]
   if (Array.isArray(result?.local_results)) return result.local_results
   if (Array.isArray(localResults)) return localResults
+  if (localResults && typeof localResults === 'object' && !Array.isArray(localResults?.places)) {
+    return [localResults]
+  }
   if (Array.isArray(localResults?.places)) return localResults.places
   if (Array.isArray(result?.places)) return result.places
   return []
