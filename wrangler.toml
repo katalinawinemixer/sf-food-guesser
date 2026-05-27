@@ -1,6 +1,6 @@
 name = "spotted-in-sf"
 compatibility_date = "2026-05-27"
-pages_build_output_dir = "dist"
+pages_build_output_dir = "frontend/dist"
 
 [vars]
 # Set VITE_API_BASE_URL in the Cloudflare Pages dashboard at build time when the

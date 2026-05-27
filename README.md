@@ -4,8 +4,8 @@ A local React app for identifying likely SF restaurants, cafes, bakeries, and
 late-night counters from uploaded food photos.
 
 The app uses uploaded image analysis, optional GPS EXIF metadata, a
-source-backed seed venue dataset in `src/venues.ts`, and OpenRouter web search
-to find likely venues beyond the local seed list. It intentionally avoids
+source-backed seed venue dataset in `frontend/src/venues.ts`, and OpenRouter web
+search to find likely venues beyond the local seed list. It intentionally avoids
 live-hours and reservation claims because those change frequently.
 
 Submitting a photo sends it to the local API, which uses a vision model to
@@ -15,6 +15,20 @@ extra ranking signal.
 
 The repository only includes placeholder environment variables. Real keys stay
 in your local `.env`, which is ignored by git.
+
+## Repository Layout
+
+```text
+frontend/          React/Vite app, venue seed data, browser tests
+backend/           Local Express API, provider wiring, API tests
+functions/api/     Cloudflare Pages Functions for the production same-origin API
+docs/              Product and deployment notes
+scripts/           Secret scan and production health checks
+data/              Ignored local run logs and feedback records
+```
+
+`functions/` stays at the repo root because Cloudflare Pages expects that
+convention for Pages Functions.
 
 For stronger interior/storefront matching, add optional provider keys locally.
 `HASDATA_API_KEY` is the cost-optimized Google Maps/photo provider: the backend

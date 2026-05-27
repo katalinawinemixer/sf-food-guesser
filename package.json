@@ -4,17 +4,17 @@
   "version": "0.0.0",
   "type": "module",
   "scripts": {
-    "dev": "concurrently -k \"node server.mjs\" \"vite --host 127.0.0.1\"",
-    "dev:web": "vite --host 127.0.0.1",
-    "dev:api": "node server.mjs",
-    "dev:cloudflare": "npm run build && wrangler pages dev dist --compatibility-date=2026-05-27",
-    "build": "tsc -b && vite build",
-    "deploy:cloudflare": "npm run build && wrangler pages deploy dist --project-name spotted-in-sf",
+    "dev": "concurrently -k \"node backend/server.mjs\" \"vite --host 127.0.0.1 --port 5173 --strictPort --config frontend/vite.config.ts\"",
+    "dev:web": "vite --host 127.0.0.1 --port 5173 --strictPort --config frontend/vite.config.ts",
+    "dev:api": "node backend/server.mjs",
+    "dev:cloudflare": "npm run build && wrangler pages dev frontend/dist --compatibility-date=2026-05-27",
+    "build": "tsc -b frontend/tsconfig.json && vite build --config frontend/vite.config.ts",
+    "deploy:cloudflare": "npm run build && wrangler pages deploy frontend/dist --project-name spotted-in-sf",
     "lint": "eslint .",
     "check:production": "node scripts/production-check.mjs",
     "secret-scan": "node scripts/secret-scan.mjs",
-    "test": "vitest run && npm run lint && node --check server.mjs && npm run build",
-    "preview": "vite preview"
+    "test": "vitest run --config frontend/vite.config.ts && npm run lint && node --check backend/server.mjs && npm run build",
+    "preview": "vite preview --config frontend/vite.config.ts"
   },
   "dependencies": {
     "concurrently": "^9.2.1",

@@ -5,10 +5,11 @@
 The first deploy target is Cloudflare Pages for the React/Vite frontend plus
 same-origin Pages Functions for the production API.
 
-Local development still uses the Node/Express API in `server.mjs` because it has
-the richer local debugging and run-log flow. Production Pages Functions live in
-`functions/api/` and provide the deployed `/api/health`, `/api/analyze-photo`,
-and `/api/feedback` endpoints without putting API keys in the frontend build.
+Local development still uses the Node/Express API in `backend/server.mjs`
+because it has the richer local debugging and run-log flow. Production Pages
+Functions live in `functions/api/` and provide the deployed `/api/health`,
+`/api/analyze-photo`, and `/api/feedback` endpoints without putting API keys in
+the frontend build.
 
 ## Cloudflare Pages Frontend
 
@@ -21,7 +22,7 @@ npm run build
 Build output directory:
 
 ```text
-dist
+frontend/dist
 ```
 
 Direct upload:
@@ -30,7 +31,8 @@ Direct upload:
 npm run deploy:cloudflare
 ```
 
-The project includes `wrangler.toml` with `pages_build_output_dir = "dist"`.
+The project includes `wrangler.toml` with
+`pages_build_output_dir = "frontend/dist"`.
 
 Production domains:
 
@@ -42,8 +44,8 @@ so they serve the same app and same `/api` functions. If either custom domain is
 still pending in Cloudflare, verify that DNS records exist in the
 `spotted-in-sf.com` zone and point to the Pages project.
 
-Security headers are defined in `public/_headers` for static assets and in
-`functions/api/_shared.js` for API responses.
+Security headers are defined in `frontend/public/_headers` for static assets
+and in `functions/api/_shared.js` for API responses.
 
 The active Cloudflare Pages project is `spotted-in-sf`. It is connected to the
 private GitHub repository `katalinawinemixer/sf-food-guesser` and builds from
@@ -56,7 +58,7 @@ npm run build
 The output directory is:
 
 ```text
-dist
+frontend/dist
 ```
 
 Local Cloudflare preview:
@@ -125,10 +127,11 @@ Production feedback uses the `SF_FOOD_FEEDBACK_KV` KV binding configured in
 uploaded image data. If the KV binding is missing, feedback is accepted but only
 logged to Cloudflare logs with `persisted: false`.
 
-Provider selection is centralized in `providers.mjs`. The backend chooses the
-vision provider, fallback models, photo-search provider, web-search provider,
-and article-search provider from environment variables at startup, then passes
-those provider wrappers into the request flow.
+Provider selection for local development is centralized in
+`backend/providers.mjs`. The backend chooses the vision provider, fallback
+models, photo-search provider, web-search provider, and article-search provider
+from environment variables at startup, then passes those provider wrappers into
+the request flow.
 
 ## Before Deploying
 

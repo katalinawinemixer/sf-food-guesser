@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { onRequestGet as healthGet } from './functions/api/health.js'
-import { onRequestPost as analyzePhotoPost } from './functions/api/analyze-photo.js'
-import { onRequestPost as feedbackPost } from './functions/api/feedback.js'
+import { onRequestGet as healthGet } from '../functions/api/health.js'
+import { onRequestPost as analyzePhotoPost } from '../functions/api/analyze-photo.js'
+import { onRequestPost as feedbackPost } from '../functions/api/feedback.js'
 
 const pngPixel = Buffer.from(
   'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=',
