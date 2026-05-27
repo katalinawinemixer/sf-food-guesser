@@ -110,6 +110,7 @@ export async function onRequestPost({ request, env }) {
   let searchPlan = null
   let webEvidence = []
   let photoEvidence = []
+  let photoEvidenceDebug = null
   let lastError = null
 
   for (const model of models) {
@@ -166,18 +167,17 @@ export async function onRequestPost({ request, env }) {
   }
 
   if (searchPlan) {
+    const seededPhotoQueries = seedPhotoSearchQueries(venues, searchPlan)
+    const photoSearchPlan = {
+      ...searchPlan,
+      searchQueries: [
+        ...seededPhotoQueries,
+        ...(Array.isArray(searchPlan.searchQueries) ? searchPlan.searchQueries : []),
+      ],
+    }
     const [exaResult, photoResult] = await Promise.allSettled([
       searchExaEvidence(searchPlan, env),
-      searchHasDataPhotoEvidence(
-        {
-          ...searchPlan,
-          searchQueries: [
-            ...seedPhotoSearchQueries(venues, searchPlan),
-            ...(Array.isArray(searchPlan.searchQueries) ? searchPlan.searchQueries : []),
-          ],
-        },
-        env,
-      ),
+      searchHasDataPhotoEvidence(photoSearchPlan, env),
     ])
     if (exaResult.status === 'fulfilled') {
       webEvidence = exaResult.value
@@ -194,6 +194,12 @@ export async function onRequestPost({ request, env }) {
         provider: 'hasdata-google-maps-photos',
         message: String(photoResult.reason?.message ?? 'HasData photo evidence search failed.'),
       })
+    }
+    photoEvidenceDebug = {
+      seededQueryCount: seededPhotoQueries.length,
+      totalQueryCount: photoSearchPlan.searchQueries.length,
+      resultCount: photoEvidence.length,
+      firstSeededQuery: seededPhotoQueries[0] ?? null,
     }
   }
 
@@ -278,6 +284,7 @@ export async function onRequestPost({ request, env }) {
         articleSearchProvider: env.EXA_API_KEY ? 'exa-deep-highlights' : null,
         articleCandidates: [],
         photoEvidence,
+        photoEvidenceDebug,
         webEvidence,
         searchPlan,
         providerWarnings,
