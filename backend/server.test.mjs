@@ -1558,6 +1558,115 @@ describe('SF Food Guesser API', () => {
     expect(promptText).toContain('Kissaten Hifi')
   })
 
+  it('keeps raw visual search queries in the early photo-search batch when article candidates are noisy', async () => {
+    const visionClient = {
+      chat: {
+        completions: {
+          create: vi
+            .fn()
+            .mockResolvedValueOnce({
+              choices: [
+                {
+                  message: {
+                    content: JSON.stringify({
+                      summary: 'Matcha drink in a compact cafe with brown bags on shelves.',
+                      imageEvidence: ['iced matcha', 'brown coffee bags', 'tan aprons'],
+                      searchQueries: [
+                        'San Francisco matcha cafe brown bags shelves',
+                        'San Francisco cafe tan aprons stainless steel counter',
+                      ],
+                      likelyVenueTypes: ['Cafe'],
+                    }),
+                  },
+                },
+              ],
+            })
+            .mockResolvedValueOnce({
+              choices: [
+                {
+                  message: {
+                    content: JSON.stringify({
+                      summary: 'Noisy article candidates were compared with raw photo clues.',
+                      imageEvidence: ['iced matcha', 'brown coffee bags'],
+                      candidates: [
+                        {
+                          id: '',
+                          name: 'Cà Phê Việt',
+                          category: 'Cafe',
+                          neighborhood: 'Downtown',
+                          address: '121 New Montgomery St',
+                          confidence: 60,
+                          evidenceCategories: ['web_source_match', 'dish_match'],
+                          reasons: ['Article search surfaced a recent cafe candidate.'],
+                          sourceUrls: ['https://example.com/ca-phe-viet'],
+                        },
+                      ],
+                      needsMoreEvidence: true,
+                    }),
+                  },
+                },
+              ],
+            }),
+        },
+      },
+    }
+    const articleSearch = {
+      provider: 'mock-article-search',
+      search: vi.fn(async () => ({
+        candidates: [
+          {
+            name: 'Cà Phê Việt',
+            category: 'Cafe',
+            neighborhood: 'Downtown',
+            address: '121 New Montgomery St',
+            whyRelevant: 'Recent cafe article candidate.',
+            sourceUrls: ['https://example.com/ca-phe-viet'],
+          },
+          {
+            name: 'Elaichi Co.',
+            category: 'Cafe',
+            neighborhood: 'SoMa',
+            address: '360 3rd St',
+            whyRelevant: 'Recent chai cafe article candidate.',
+            sourceUrls: ['https://example.com/elaichi'],
+          },
+        ],
+        pages: [],
+      })),
+    }
+    const photoSearch = {
+      provider: 'mock-photo-search',
+      search: vi.fn(async () => []),
+    }
+
+    await request(
+      createApp({
+        visionClient,
+        visionModel: 'openai/gpt-4o-mini',
+        visionProvider: 'openrouter',
+        articleSearch,
+        photoSearch,
+        webSearch: null,
+      }),
+    )
+      .post('/api/analyze-photo')
+      .attach('photo', pngPixel, { filename: 'food.png', contentType: 'image/png' })
+      .field('venues', '[]')
+      .expect(200)
+
+    const photoQueries = photoSearch.search.mock.calls[0][0]
+    expect(photoQueries.slice(0, 5)).toEqual(
+      expect.arrayContaining([
+        expect.stringContaining('Cà Phê Việt'),
+        expect.stringContaining('Elaichi Co.'),
+        'San Francisco matcha cafe brown bags shelves',
+        'San Francisco cafe tan aprons stainless steel counter',
+      ]),
+    )
+    expect(photoQueries[0]).toBe('Cà Phê Việt San Francisco Google Maps reviews photos interior')
+    expect(photoQueries[1]).toBe('Elaichi Co. San Francisco Google Maps reviews photos interior')
+  })
+
   it('runs article discovery and base web search in parallel before candidate photo search', async () => {
     const events = []
     const visionClient = {

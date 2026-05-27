@@ -1213,22 +1213,31 @@ function buildSourceSearches(rawQuery) {
 
 function buildArticleCandidateQueries(articleCandidates = []) {
   return articleCandidates.flatMap((candidate) => {
-    const identity = [candidate.name, candidate.address || candidate.neighborhood, 'San Francisco']
+    const name = String(candidate.name ?? '').trim()
+    if (!name) return []
+    const context = [candidate.address || candidate.neighborhood, 'San Francisco']
       .filter(Boolean)
       .join(' ')
-    if (!identity.trim()) return []
 
     return [
-      `${identity} Google Maps reviews photos interior`,
-      `${identity} cafe coffee matcha interior photos reviews`,
+      `${name} San Francisco Google Maps reviews photos interior`,
+      [name, context, 'cafe coffee matcha interior photos reviews']
+        .filter(Boolean)
+        .join(' '),
     ]
   })
 }
 
 function buildEvidenceSearchQueries(searchPlanQueries = [], articleCandidates = []) {
+  const articleQueries = buildArticleCandidateQueries(articleCandidates)
+  const primaryArticleQueries = articleQueries.filter((_query, index) => index % 2 === 0)
+  const secondaryArticleQueries = articleQueries.filter((_query, index) => index % 2 === 1)
+  const baseQueries = searchPlanQueries.map((query) => String(query).trim()).filter(Boolean)
   const combined = [
-    ...buildArticleCandidateQueries(articleCandidates),
-    ...searchPlanQueries,
+    ...primaryArticleQueries,
+    ...baseQueries.slice(0, 4),
+    ...secondaryArticleQueries,
+    ...baseQueries.slice(4),
   ]
     .map((query) => String(query).trim())
     .filter(Boolean)
@@ -1296,7 +1305,7 @@ export async function searchSerpApiPhotos(searchQueries, apiKey = process.env.SE
   const photos = []
   const seen = new Set()
   const seenPlaces = new Set()
-  const mapSearches = searchQueries.slice(0, 3).map(async (rawQuery, queryIndex) => {
+  const mapSearches = searchQueries.slice(0, 5).map(async (rawQuery, queryIndex) => {
     const query = `${rawQuery} San Francisco cafe restaurant`
     const url = new URL('https://serpapi.com/search.json')
     url.searchParams.set('engine', 'google_maps')
@@ -1432,7 +1441,7 @@ export async function searchHasDataPhotos(searchQueries, apiKey = process.env.HA
   const photos = []
   const seen = new Set()
   const seenPlaces = new Set()
-  const mapSearches = searchQueries.slice(0, 3).map(async (rawQuery, queryIndex) => {
+  const mapSearches = searchQueries.slice(0, 5).map(async (rawQuery, queryIndex) => {
     const query = `${rawQuery} San Francisco cafe restaurant`
     const url = new URL('https://api.hasdata.com/scrape/google-maps/search')
     url.searchParams.set('q', query)
