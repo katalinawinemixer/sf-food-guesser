@@ -423,29 +423,43 @@ export async function searchHasDataPhotoEvidence(searchPlan, env, fetchImpl = fe
     url.searchParams.set('hl', 'en')
     url.searchParams.set('gl', 'us')
 
-    const response = await fetchImpl(url, {
-      headers: {
-        'Content-Type': 'application/json',
-        'x-api-key': env.HASDATA_API_KEY,
-      },
-    })
-    if (!response.ok) return []
-    const result = await response.json().catch(() => ({}))
-    const places = normalizeHasDataPlaces(result)
-    debug?.searches?.push?.({
-      status: response.status,
-      queryIndex,
-      placeCount: places.length,
-      topLevelKeys: Object.keys(result).slice(0, 8),
-      placeResultsType: Array.isArray(result?.placeResults) ? 'array' : typeof result?.placeResults,
-      localResultsType: Array.isArray(result?.localResults) ? 'array' : typeof result?.localResults,
-    })
-    return places.slice(0, 3).map((place, placeIndex) => ({
-      place,
-      query,
-      queryIndex,
-      placeIndex,
-    }))
+    try {
+      const response = await fetchImpl(url, {
+        headers: {
+          'Content-Type': 'application/json',
+          'x-api-key': env.HASDATA_API_KEY,
+        },
+      })
+      const result = await response.json().catch(() => ({}))
+      const places = response.ok ? normalizeHasDataPlaces(result) : []
+      debug?.searches?.push?.({
+        status: response.status,
+        ok: response.ok,
+        queryIndex,
+        placeCount: places.length,
+        topLevelKeys: Object.keys(result).slice(0, 8),
+        error: result?.message || result?.error || null,
+        placeResultsType: Array.isArray(result?.placeResults) ? 'array' : typeof result?.placeResults,
+        localResultsType: Array.isArray(result?.localResults) ? 'array' : typeof result?.localResults,
+      })
+      if (!response.ok) return []
+      return places.slice(0, 3).map((place, placeIndex) => ({
+        place,
+        query,
+        queryIndex,
+        placeIndex,
+      }))
+    } catch (error) {
+      debug?.searches?.push?.({
+        status: 0,
+        ok: false,
+        queryIndex,
+        placeCount: 0,
+        topLevelKeys: [],
+        error: String(error?.message ?? error),
+      })
+      return []
+    }
   })
 
   const seenPlaces = new Set()
