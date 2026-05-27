@@ -30,6 +30,7 @@ const allowedImageMimeTypes = new Set([
   'image/heif',
 ])
 const allowedImageExtensions = /\.(avif|gif|heic|heif|jpe?g|png|webp)$/i
+const visionNativeMimeTypes = new Set(['image/jpeg', 'image/jpg', 'image/png', 'image/webp'])
 
 function apiUrl(path: string) {
   return `${apiBaseUrl}${path}`
@@ -69,6 +70,72 @@ async function readApiError(response: Response) {
     return 'The AI provider is rate limiting photo analysis. Wait a bit, then try the upload again.'
   }
   return 'Photo analysis failed.'
+}
+
+function shouldTranscodeForVision(file: File) {
+  const mimeType = file.type.toLowerCase()
+  return !visionNativeMimeTypes.has(mimeType)
+}
+
+async function imageBitmapFromFile(file: File) {
+  if (typeof createImageBitmap !== 'function') return null
+
+  try {
+    return await createImageBitmap(file)
+  } catch {
+    return null
+  }
+}
+
+async function htmlImageFromFile(file: File) {
+  const objectUrl = URL.createObjectURL(file)
+  try {
+    const image = new Image()
+    await new Promise<void>((resolve, reject) => {
+      image.onload = () => resolve()
+      image.onerror = () => reject(new Error('Could not read this image for analysis.'))
+      image.src = objectUrl
+    })
+    return image
+  } finally {
+    URL.revokeObjectURL(objectUrl)
+  }
+}
+
+async function transcodeImageForVision(file: File) {
+  if (!shouldTranscodeForVision(file)) return file
+
+  const drawable = (await imageBitmapFromFile(file)) ?? (await htmlImageFromFile(file))
+  const width = drawable.width
+  const height = drawable.height
+  const canvas = document.createElement('canvas')
+  canvas.width = width
+  canvas.height = height
+  const context = canvas.getContext('2d')
+  if (!context) throw new Error('Could not prepare this image for analysis.')
+
+  context.drawImage(drawable, 0, 0, width, height)
+  if ('close' in drawable && typeof drawable.close === 'function') drawable.close()
+
+  const jpegBlob = await new Promise<Blob>((resolve, reject) => {
+    canvas.toBlob(
+      (blob) => {
+        if (blob) {
+          resolve(blob)
+          return
+        }
+        reject(new Error('Could not prepare this image for analysis.'))
+      },
+      'image/jpeg',
+      0.9,
+    )
+  })
+
+  const normalizedName = file.name.replace(/(\.jpe?g)?\.(avif|gif|heic|heif)$/i, '') || 'photo'
+  return new File([jpegBlob], `${normalizedName}.jpg`, {
+    type: 'image/jpeg',
+    lastModified: file.lastModified,
+  })
 }
 
 function normalizeConfidence(value: unknown) {
@@ -353,7 +420,7 @@ const analysisSteps = [
 
 async function analyzePhotoWithVision(file: File): Promise<VisionAnalysis> {
   const payload = new FormData()
-  payload.append('photo', file)
+  payload.append('photo', await transcodeImageForVision(file))
   payload.append(
     'venues',
     JSON.stringify(

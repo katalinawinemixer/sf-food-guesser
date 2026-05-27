@@ -14,6 +14,7 @@ describe('SF Food Guesser photo flow', () => {
 
   afterEach(() => {
     cleanup()
+    vi.unstubAllGlobals()
   })
 
   it('renders as a photo-first app without typed text-entry UI', () => {
@@ -95,6 +96,71 @@ describe('SF Food Guesser photo flow', () => {
     fireEvent.click(await screen.findByRole('button', { name: 'Identify restaurant' }))
 
     expect(await screen.findByText(/rate limiting photo analysis/i)).toBeVisible()
+  })
+
+  it('transcodes AVIF uploads to JPEG before sending them to analysis', async () => {
+    const closeBitmap = vi.fn()
+    vi.stubGlobal(
+      'createImageBitmap',
+      vi.fn(async () => ({ width: 12, height: 8, close: closeBitmap })),
+    )
+    const drawImage = vi.fn()
+    vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue({
+      drawImage,
+    } as unknown as CanvasRenderingContext2D)
+    vi.spyOn(HTMLCanvasElement.prototype, 'toBlob').mockImplementation(
+      (callback: BlobCallback) => {
+        callback(new Blob(['jpeg bytes'], { type: 'image/jpeg' }))
+      },
+    )
+    const fetchMock = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ ok: true, visionEnabled: true, model: 'test-model' }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        }),
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            runId: 'run-avif',
+            summary: 'A Souvla tray with blue-rim plates.',
+            imageEvidence: ['blue-rim plates'],
+            candidates: [
+              {
+                id: '',
+                name: 'Souvla',
+                confidence: 82,
+                reasons: ['The plates and food match Souvla.'],
+              },
+            ],
+            needsMoreEvidence: false,
+          }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } },
+        ),
+      )
+
+    render(<App />)
+
+    const file = new File(['avif bytes'], 'souvla.jpg.avif', { type: 'image/avif' })
+    fireEvent.change(screen.getByLabelText(/Drop a food photo here/i), {
+      target: { files: [file] },
+    })
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Identify restaurant' }))
+
+    await waitFor(() => {
+      expect(screen.getByRole('heading', { name: 'Souvla', level: 3 })).toBeVisible()
+    })
+
+    const photoRequest = fetchMock.mock.calls[1]?.[1] as RequestInit | undefined
+    const photoForm = photoRequest?.body as FormData
+    const uploadedPhoto = photoForm.get('photo') as File
+    expect(uploadedPhoto.name).toBe('souvla.jpg')
+    expect(uploadedPhoto.type).toBe('image/jpeg')
+    expect(drawImage).toHaveBeenCalled()
+    expect(closeBitmap).toHaveBeenCalled()
   })
 
   it('enables identification after selecting an image and renders vision-ranked results', async () => {
