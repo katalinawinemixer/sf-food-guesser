@@ -304,6 +304,7 @@ export function buildCloudflarePrompt(venues, webEvidence = [], searchPlan = nul
 
 Use the seed venue list only as hints. You may return San Francisco venues outside the seed list when the image or web evidence supports them.
 Use external evidence as leads, not truth: compare it against the uploaded image before ranking a venue.
+Do not cite seed venue signature items as if they were visible in the uploaded photo. A seed's menu items, cuisine, neighborhood, or source page can support a guess only after the uploaded photo itself has matching visual, text, GPS, storefront, or interior evidence.
 Treat visible text carefully. Exact storefront/menu/receipt/venue-name text is strong evidence. Generic words, partial brand marks, sauce bottles, packaged goods, delivery bags, cups, or third-party branding are not enough for very high confidence unless the exact venue name is readable or web/photo evidence confirms that branding belongs to the venue shown.
 
 Return strict JSON only:
@@ -329,6 +330,7 @@ Return strict JSON only:
 
 Ranking rules:
 - Prefer exact readable venue text, storefront, receipt/menu text, or matching interior evidence over generic dish similarity.
+- Never use a seed venue's known dishes as a reason unless those exact dish/interior details are visible in the uploaded photo.
 - Do not give a very high confidence score to a venue based only on packaging, cups, bottles, bags, or a partial logo. Keep those guesses moderate unless the exact venue name is visible.
 - Penalize guesses based only on generic coffee/matcha/pastry/cuisine.
 - Return up to three candidates. Use low confidence when evidence is weak.
@@ -665,15 +667,13 @@ function normalizeMatchText(value) {
 function seedVenueCandidates(seedVenues = [], options = {}) {
   const searchPlan = options.searchPlan ?? {}
   const webEvidence = Array.isArray(options.webEvidence) ? options.webEvidence : []
-  const haystack = normalizeMatchText(
+  const photoHaystack = normalizeMatchText(
     [
       options.summary,
       ...(Array.isArray(options.imageEvidence) ? options.imageEvidence : []),
       searchPlan.summary,
       ...(Array.isArray(searchPlan.imageEvidence) ? searchPlan.imageEvidence : []),
       ...(Array.isArray(searchPlan.visibleText) ? searchPlan.visibleText : []),
-      ...(Array.isArray(searchPlan.searchQueries) ? searchPlan.searchQueries : []),
-      ...webEvidence.flatMap((page) => [page.title, page.snippet, page.url]),
     ].join(' '),
   )
 
@@ -682,15 +682,21 @@ function seedVenueCandidates(seedVenues = [], options = {}) {
       const hints = Array.isArray(venue.imageEvidenceHints) ? venue.imageEvidenceHints : []
       const matchedHints = hints
         .map((hint) => normalizeMatchText(hint))
-        .filter((hint) => hint.length >= 4 && haystack.includes(hint))
+        .filter((hint) => hint.length >= 4 && photoHaystack.includes(hint))
       const venueName = normalizeMatchText(venue.name)
-      const nameHit = venueName && haystack.includes(venueName)
+      const nameHit = venueName && photoHaystack.includes(venueName)
       const sourceHit = webEvidence.some((page) =>
         normalizeMatchText([page.title, page.snippet, page.url].join(' ')).includes(venueName),
       )
-      if (matchedHints.length < 2 && !nameHit && !sourceHit) return null
+      if (matchedHints.length < 2 && !nameHit) return null
 
       const confidence = Math.min(94, 62 + matchedHints.length * 6 + (nameHit ? 10 : 0) + (sourceHit ? 8 : 0))
+      const evidenceCategories = [
+        ...(nameHit ? ['visible_text'] : []),
+        'interior_match',
+        'dish_match',
+        ...(sourceHit ? ['web_source_match'] : []),
+      ]
       return normalizeCandidate({
         id: venue.id,
         name: venue.name,
@@ -698,10 +704,14 @@ function seedVenueCandidates(seedVenues = [], options = {}) {
         neighborhood: venue.neighborhood,
         address: venue.address,
         confidence,
-        evidenceCategories: ['interior_match', 'dish_match', 'web_source_match'],
+        evidenceCategories,
         reasons: [
-          `Seed venue matched photo/search clues: ${matchedHints.slice(0, 4).join(', ') || venue.name}.`,
-          'Seed source and search context support checking this venue before generic lookalikes.',
+          nameHit
+            ? `The uploaded photo evidence includes readable or model-reported text matching ${venue.name}.`
+            : `Seed venue matched direct photo clues: ${matchedHints.slice(0, 4).join(', ')}.`,
+          sourceHit
+            ? 'Web/source context supports checking this venue after the direct photo match.'
+            : 'This seed venue is only a candidate because direct photo clues matched.',
         ],
         sourceUrls: venue.sourceUrl ? [venue.sourceUrl] : [],
         mapsQuery: [venue.name, venue.address, 'San Francisco'].filter(Boolean).join(' '),

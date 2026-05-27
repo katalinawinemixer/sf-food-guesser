@@ -724,16 +724,18 @@ function normalizeConfidence(value) {
 
 function normalizeFeedbackPayload(body = {}) {
   const vote = cleanText(body.vote, 20)
-  if (!['correct', 'incorrect', 'undo'].includes(vote)) {
-    throw new Error('Feedback vote must be correct, incorrect, or undo.')
+  if (!['correct', 'incorrect', 'undo', 'suggested_answer'].includes(vote)) {
+    throw new Error('Feedback vote must be correct, incorrect, undo, or suggested_answer.')
   }
 
   const candidate = body.candidate && typeof body.candidate === 'object' ? body.candidate : {}
   const analysis = body.analysis && typeof body.analysis === 'object' ? body.analysis : {}
   const providers = body.providers && typeof body.providers === 'object' ? body.providers : {}
+  const suggestedVenue = body.suggestedVenue && typeof body.suggestedVenue === 'object' ? body.suggestedVenue : {}
 
   return {
     runId: cleanText(body.runId, 120),
+    sessionId: cleanText(body.sessionId, 120),
     vote,
     rank: Number.isFinite(Number(body.rank)) ? Number(body.rank) : null,
     candidate: {
@@ -748,6 +750,33 @@ function normalizeFeedbackPayload(body = {}) {
       reasons: cleanTextArray(candidate.reasons, 6, 700),
       rankingNotes: cleanTextArray(candidate.rankingNotes, 6, 700),
       sourceUrls: cleanTextArray(candidate.sourceUrls, 6, 500),
+    },
+    lineup: Array.isArray(body.lineup)
+      ? body.lineup
+          .map((entry) => {
+            const lineupCandidate =
+              entry?.candidate && typeof entry.candidate === 'object' ? entry.candidate : {}
+            return {
+              rank: Number.isFinite(Number(entry?.rank)) ? Number(entry.rank) : null,
+              candidate: {
+                id: cleanText(lineupCandidate.id, 120),
+                name: cleanText(lineupCandidate.name, 160),
+                category: cleanText(lineupCandidate.category, 80),
+                neighborhood: cleanText(lineupCandidate.neighborhood, 120),
+                address: cleanText(lineupCandidate.address, 180),
+                confidence: normalizeConfidence(lineupCandidate.confidence),
+                locationVerified: Boolean(lineupCandidate.locationVerified),
+                evidenceCategories: cleanTextArray(lineupCandidate.evidenceCategories, 10, 80),
+              },
+            }
+          })
+          .slice(0, 5)
+      : [],
+    suggestedVenue: {
+      name: cleanText(suggestedVenue.name, 160),
+      neighborhoodOrAddress: cleanText(suggestedVenue.neighborhoodOrAddress, 220),
+      note: cleanText(suggestedVenue.note, 500),
+      verificationStatus: 'unverified_user_claim',
     },
     analysis: {
       summary: cleanText(analysis.summary, 1000),

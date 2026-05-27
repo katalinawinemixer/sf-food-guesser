@@ -789,6 +789,55 @@ describe('Cloudflare Pages Functions API', () => {
     expect(result.candidates[0].confidence).toBeLessThanOrEqual(72)
   })
 
+  it('does not add seed venues from source/search text without direct photo clues', () => {
+    const result = normalizeAnalysis(
+      {
+        summary: 'Burger and fries on a wooden table.',
+        imageEvidence: ['burger', 'fries', 'wooden table'],
+        candidates: [
+          {
+            id: '',
+            name: 'RT Bistro',
+            confidence: 82,
+            evidenceCategories: ['dish_match', 'web_source_match'],
+            reasons: ['The burger and fries match the article-backed venue.'],
+            sourceUrls: ['https://example.com/rt-bistro'],
+          },
+        ],
+      },
+      {
+        seedVenueIds: ['rintaro'],
+        seedVenues: [
+          {
+            id: 'rintaro',
+            name: 'Rintaro',
+            category: 'Restaurant',
+            neighborhood: 'Mission',
+            address: '82 14th St',
+            imageEvidenceHints: ['izakaya', 'yakitori', 'udon', 'japanese', 'mission', 'wood'],
+            sourceUrl: 'https://www.izakayarintaro.com/',
+          },
+        ],
+        searchPlan: {
+          summary: 'Burger and fries.',
+          imageEvidence: ['burger', 'fries'],
+          searchQueries: ['udon Japanese mission restaurant San Francisco'],
+        },
+        webEvidence: [
+          {
+            title: 'Rintaro Japanese izakaya in the Mission',
+            source: 'example.com',
+            url: 'https://example.com/rintaro',
+            snippet: 'Rintaro serves yakitori and handmade udon.',
+          },
+        ],
+      },
+    )
+
+    expect(result.candidates.map((candidate) => candidate.name)).not.toContain('Rintaro')
+    expect(result.candidates[0].name).toBe('RT Bistro')
+  })
+
   it('rejects unsupported Cloudflare photo uploads before provider calls', async () => {
     const fetchMock = vi.spyOn(globalThis, 'fetch')
     const formData = new FormData()
@@ -845,6 +894,61 @@ describe('Cloudflare Pages Functions API', () => {
         name: 'RT Bistro',
         confidence: 82,
       },
+    })
+    expect(JSON.stringify(storedRecord)).not.toContain('should-not-store')
+  })
+
+  it('persists suggested answer feedback as an unverified claim', async () => {
+    const put = vi.fn(async () => undefined)
+    const response = await feedbackPost({
+      request: new Request('https://sf-food-guesser.pages.dev/api/feedback', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          runId: 'run-suggestion',
+          sessionId: 'anonymous-session',
+          vote: 'suggested_answer',
+          suggestedVenue: {
+            name: 'Kissaten Hi-Fi',
+            neighborhoodOrAddress: '189 6th Ave',
+            note: 'Correct place according to user.',
+          },
+          lineup: [
+            {
+              rank: 1,
+              candidate: {
+                name: 'Wrong Cafe',
+                confidence: 78,
+              },
+            },
+          ],
+          photo: 'data:image/png;base64,should-not-store',
+        }),
+      }),
+      env: {
+        SF_FOOD_FEEDBACK_KV: { put },
+      },
+    })
+    const storedRecord = JSON.parse(put.mock.calls[0][1])
+
+    expect(response.status).toBe(201)
+    expect(storedRecord).toMatchObject({
+      runId: 'run-suggestion',
+      sessionId: 'anonymous-session',
+      vote: 'suggested_answer',
+      suggestedVenue: {
+        name: 'Kissaten Hi-Fi',
+        verificationStatus: 'unverified_user_claim',
+      },
+      lineup: [
+        {
+          rank: 1,
+          candidate: {
+            name: 'Wrong Cafe',
+            confidence: 78,
+          },
+        },
+      ],
     })
     expect(JSON.stringify(storedRecord)).not.toContain('should-not-store')
   })

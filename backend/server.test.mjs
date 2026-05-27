@@ -269,6 +269,77 @@ describe('SF Food Guesser API', () => {
     }
   })
 
+  it('records unverified suggested answers with a lineup snapshot', async () => {
+    const tempDir = await mkdtemp(join(tmpdir(), 'sf-food-correction-'))
+    const feedbackLogPath = join(tempDir, 'feedback.jsonl')
+
+    try {
+      await request(
+        createApp({
+          openAIClient: null,
+          photoSearch: null,
+          feedbackLogPath,
+        }),
+      )
+        .post('/api/feedback')
+        .send({
+          runId: 'run-correction',
+          sessionId: 'anonymous-session',
+          vote: 'suggested_answer',
+          suggestedVenue: {
+            name: 'Kissaten Hi-Fi',
+            neighborhoodOrAddress: '189 6th Ave',
+            note: 'Interior and cups match public photos.',
+          },
+          lineup: [
+            {
+              rank: 1,
+              candidate: {
+                name: 'Wrong Cafe One',
+                confidence: 78,
+                evidenceCategories: ['interior_match'],
+              },
+            },
+            {
+              rank: 2,
+              candidate: {
+                name: 'Wrong Cafe Two',
+                confidence: 78,
+                evidenceCategories: ['dish_match'],
+              },
+            },
+          ],
+          photo: 'data:image/png;base64,should-not-be-stored',
+        })
+        .expect(201)
+
+      const record = JSON.parse((await readFile(feedbackLogPath, 'utf8')).trim())
+
+      expect(record).toMatchObject({
+        runId: 'run-correction',
+        sessionId: 'anonymous-session',
+        vote: 'suggested_answer',
+        suggestedVenue: {
+          name: 'Kissaten Hi-Fi',
+          neighborhoodOrAddress: '189 6th Ave',
+          verificationStatus: 'unverified_user_claim',
+        },
+      })
+      expect(record.lineup).toEqual(expect.arrayContaining([
+          expect.objectContaining({
+            rank: 1,
+            candidate: expect.objectContaining({
+              name: 'Wrong Cafe One',
+              confidence: 78,
+            }),
+          }),
+      ]))
+      expect(JSON.stringify(record)).not.toContain('should-not-be-stored')
+    } finally {
+      await rm(tempDir, { recursive: true, force: true })
+    }
+  })
+
   it('records completed analysis runs without storing uploaded photos', async () => {
     const tempDir = await mkdtemp(join(tmpdir(), 'sf-food-runs-'))
     const runLogPath = join(tempDir, 'runs.jsonl')

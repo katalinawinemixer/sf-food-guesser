@@ -10,28 +10,47 @@ function cleanStringArray(value, maxItems = 8, maxLength = 300) {
     : []
 }
 
+function cleanCandidate(value = {}) {
+  return {
+    id: cleanText(value?.id, 160),
+    name: cleanText(value?.name, 160),
+    category: cleanText(value?.category, 80),
+    neighborhood: cleanText(value?.neighborhood, 120),
+    address: cleanText(value?.address, 220),
+    confidence: Number.isFinite(Number(value?.confidence))
+      ? Number(value.confidence)
+      : null,
+    locationVerified: value?.locationVerified === true,
+    evidenceCategories: cleanStringArray(value?.evidenceCategories, 8, 80),
+    reasons: cleanStringArray(value?.reasons, 8, 500),
+  }
+}
+
 function normalizeFeedback(body) {
   const vote = cleanText(body?.vote, 20)
-  if (!['correct', 'incorrect', 'undo'].includes(vote)) {
-    throw new Error('Feedback vote must be correct, incorrect, or undo.')
+  if (!['correct', 'incorrect', 'undo', 'suggested_answer'].includes(vote)) {
+    throw new Error('Feedback vote must be correct, incorrect, undo, or suggested_answer.')
   }
 
   return {
     runId: cleanText(body?.runId, 120),
+    sessionId: cleanText(body?.sessionId, 120),
     vote,
     rank: Number.isFinite(Number(body?.rank)) ? Number(body.rank) : null,
-    candidate: {
-      id: cleanText(body?.candidate?.id, 160),
-      name: cleanText(body?.candidate?.name, 160),
-      category: cleanText(body?.candidate?.category, 80),
-      neighborhood: cleanText(body?.candidate?.neighborhood, 120),
-      address: cleanText(body?.candidate?.address, 220),
-      confidence: Number.isFinite(Number(body?.candidate?.confidence))
-        ? Number(body.candidate.confidence)
-        : null,
-      locationVerified: body?.candidate?.locationVerified === true,
-      evidenceCategories: cleanStringArray(body?.candidate?.evidenceCategories, 8, 80),
-      reasons: cleanStringArray(body?.candidate?.reasons, 8, 500),
+    candidate: cleanCandidate(body?.candidate),
+    lineup: Array.isArray(body?.lineup)
+      ? body.lineup
+          .map((entry) => ({
+            rank: Number.isFinite(Number(entry?.rank)) ? Number(entry.rank) : null,
+            candidate: cleanCandidate(entry?.candidate),
+          }))
+          .slice(0, 5)
+      : [],
+    suggestedVenue: {
+      name: cleanText(body?.suggestedVenue?.name, 160),
+      neighborhoodOrAddress: cleanText(body?.suggestedVenue?.neighborhoodOrAddress, 220),
+      note: cleanText(body?.suggestedVenue?.note, 500),
+      verificationStatus: 'unverified_user_claim',
     },
     analysis: {
       summary: cleanText(body?.analysis?.summary, 1000),

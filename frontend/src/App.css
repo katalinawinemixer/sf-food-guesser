@@ -538,6 +538,26 @@
   letter-spacing: -1px;
 }
 
+.close-match-notice {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  max-width: 930px;
+  margin: 20px auto 0;
+  padding: 12px 14px;
+  border: 1px solid #dce5df;
+  border-radius: 8px;
+  background: #f8fbf9;
+  color: #506057;
+  font-size: 13px;
+  font-weight: 750;
+}
+
+.close-match-notice svg {
+  flex: 0 0 auto;
+  color: #789080;
+}
+
 /* ─── Results bar (filter + freshness) ─── */
 
 .results-bar {
@@ -835,6 +855,109 @@
 .undo-feedback:disabled {
   cursor: wait;
   opacity: 0.72;
+}
+
+.correction-card {
+  display: grid;
+  gap: 13px;
+  margin-top: 18px;
+  padding: 18px;
+  border: 1px solid #f1c8da;
+  border-radius: 8px;
+  background: #fff8fc;
+}
+
+.correction-card .eyebrow {
+  color: #a65077;
+  font-size: 11px;
+  font-weight: 900;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.correction-card h3 {
+  margin: 4px 0 0;
+  color: #1b2720;
+  font-size: 18px;
+}
+
+.correction-card p {
+  max-width: 680px;
+  margin: 6px 0 0;
+  color: #68766d;
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.correction-card label {
+  display: grid;
+  gap: 6px;
+  color: #7a405c;
+  font-size: 12px;
+  font-weight: 850;
+}
+
+.correction-card input,
+.correction-card textarea {
+  width: 100%;
+  border: 1px solid #ead4de;
+  border-radius: 8px;
+  background: #ffffff;
+  color: #1b2720;
+  font: inherit;
+  font-size: 14px;
+  padding: 10px 11px;
+  outline: none;
+}
+
+.correction-card textarea {
+  min-height: 78px;
+  resize: vertical;
+}
+
+.correction-card input:focus,
+.correction-card textarea:focus {
+  border-color: #df6fa3;
+  box-shadow: 0 0 0 3px rgba(223, 111, 163, 0.14);
+}
+
+.correction-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.correction-actions button {
+  min-height: 38px;
+  border: 0;
+  border-radius: 8px;
+  background: #14231b;
+  color: #fff8ea;
+  cursor: pointer;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 900;
+  padding: 0 14px;
+}
+
+.correction-actions button:disabled {
+  cursor: wait;
+  opacity: 0.72;
+}
+
+.correction-status {
+  color: #68766d;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.correction-status.saved {
+  color: #1f7a4f;
+}
+
+.correction-status.error {
+  color: #b7435a;
 }
 
 .reason-list {

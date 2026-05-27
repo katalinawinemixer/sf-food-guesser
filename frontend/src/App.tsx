@@ -1,4 +1,4 @@
-import { type DragEvent, useEffect, useMemo, useState } from 'react'
+import { type DragEvent, type FormEvent, useEffect, useMemo, useState } from 'react'
 import { gps } from 'exifr'
 import {
   ArrowUpRight,
@@ -328,6 +328,38 @@ type FeedbackState = {
   automatic?: boolean
 }
 
+type CorrectionState = {
+  status: 'idle' | 'saving' | 'saved' | 'error'
+  message?: string
+}
+
+type CorrectionDraft = {
+  name: string
+  neighborhoodOrAddress: string
+  note: string
+}
+
+const feedbackSessionStorageKey = 'sf-food-guesser-feedback-session'
+
+function createAnonymousSessionId() {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return crypto.randomUUID()
+  }
+  return `session-${Date.now()}-${Math.random().toString(16).slice(2)}`
+}
+
+function getFeedbackSessionId() {
+  try {
+    const existing = window.localStorage.getItem(feedbackSessionStorageKey)
+    if (existing) return existing
+    const sessionId = createAnonymousSessionId()
+    window.localStorage.setItem(feedbackSessionStorageKey, sessionId)
+    return sessionId
+  } catch {
+    return createAnonymousSessionId()
+  }
+}
+
 function hasVerifiedCoordinates(
   venue: MatchVenue,
 ): venue is MatchVenue & { lat: number; lng: number } {
@@ -487,6 +519,30 @@ function getVisionMatches(
       return b.confidence - a.confidence
     })
     .slice(0, 9)
+}
+
+type MatchResult = ReturnType<typeof getVisionMatches>[number] | ReturnType<typeof getPhotoMatches>[number]
+
+function matchLineup(matches: MatchResult[]) {
+  return matches.slice(0, 5).map((match, index) => ({
+    rank: index + 1,
+    candidate: {
+      id: match.venue.id,
+      name: match.venue.name,
+      category: match.venue.category,
+      neighborhood: match.venue.neighborhood,
+      address: match.venue.address,
+      confidence: match.confidence,
+      locationVerified: match.venue.locationVerified === true,
+      evidenceCategories: match.evidenceCategories,
+    },
+  }))
+}
+
+function hasDistinctTopMatch(matches: MatchResult[]) {
+  if (matches.length === 0) return false
+  if (matches.length === 1) return matches[0].confidence > 0
+  return matches[0].confidence - matches[1].confidence >= 5
 }
 
 function confidenceLabel(confidence: number) {
@@ -655,6 +711,13 @@ function App() {
   const [isDraggingPhoto, setIsDraggingPhoto] = useState(false)
   const [apiHealth, setApiHealth] = useState<ApiHealth>({ status: 'checking' })
   const [feedbackByVenueId, setFeedbackByVenueId] = useState<Record<string, FeedbackState>>({})
+  const [correctionDraft, setCorrectionDraft] = useState<CorrectionDraft>({
+    name: '',
+    neighborhoodOrAddress: '',
+    note: '',
+  })
+  const [correctionState, setCorrectionState] = useState<CorrectionState>({ status: 'idle' })
+  const feedbackSessionId = useMemo(() => getFeedbackSessionId(), [])
 
   const matches = useMemo(
     () =>
@@ -666,6 +729,14 @@ function App() {
     [category, photo.analysis, photo.coords],
   )
   const activeMatch = matches.find((match) => match.venue.id === activeVenueId) ?? matches[0]
+  const topMatch = hasDistinctTopMatch(matches) ? matches[0] : null
+  const allVisibleGuessesMarkedIncorrect =
+    matches.length > 0 &&
+    matches.every((match) => {
+      const feedback = feedbackByVenueId[match.venue.id]
+      return feedback?.vote === 'incorrect' && feedback.status !== 'saving'
+    }) &&
+    !matches.some((match) => feedbackByVenueId[match.venue.id]?.vote === 'correct')
 
   useEffect(() => {
     const previewUrl = photo.previewUrl
@@ -718,13 +789,19 @@ function App() {
         : []
   }
 
+  function resetFeedbackAndCorrections() {
+    setFeedbackByVenueId({})
+    setCorrectionDraft({ name: '', neighborhoodOrAddress: '', note: '' })
+    setCorrectionState({ status: 'idle' })
+  }
+
   function handlePhotoFile(file?: File) {
     if (!file) return
     const validationMessage = validatePhotoFile(file)
 
     if (validationMessage) {
       setPhotoFile(null)
-      setFeedbackByVenueId({})
+      resetFeedbackAndCorrections()
       setPhoto({
         status: 'error',
         name: file.name,
@@ -736,7 +813,7 @@ function App() {
 
     const previewUrl = URL.createObjectURL(file)
     setPhotoFile(file)
-    setFeedbackByVenueId({})
+    resetFeedbackAndCorrections()
     setPhoto({
       status: 'ready',
       name: file.name,
@@ -760,7 +837,7 @@ function App() {
     }
 
     setPhotoFile(null)
-    setFeedbackByVenueId({})
+    resetFeedbackAndCorrections()
     setPhoto({
       status: 'error',
       message: 'Drop a JPG, PNG, WebP, AVIF, GIF, HEIC, or HEIF image.',
@@ -777,7 +854,7 @@ function App() {
       previewUrl: photo.previewUrl,
       message: 'Analyzing this photo for image evidence...',
     })
-    setFeedbackByVenueId({})
+    resetFeedbackAndCorrections()
 
     const previewUrl = photo.previewUrl
     try {
@@ -836,7 +913,7 @@ function App() {
     setPhoto({ status: 'empty' })
     setPhotoFile(null)
     setActiveVenueId(null)
-    setFeedbackByVenueId({})
+    resetFeedbackAndCorrections()
   }
 
   async function recordGuessFeedback(
@@ -850,6 +927,7 @@ function App() {
       credentials: 'include',
       body: JSON.stringify({
         runId: photo.analysis?.runId,
+        sessionId: feedbackSessionId,
         vote,
         rank,
         candidate: {
@@ -868,6 +946,7 @@ function App() {
             ...('sourceUrls' in match && Array.isArray(match.sourceUrls) ? match.sourceUrls : []),
           ],
         },
+        lineup: matchLineup(matches),
         analysis: {
           summary: photo.analysis?.summary ?? '',
           imageEvidence: photo.analysis?.imageEvidence ?? [],
@@ -984,6 +1063,56 @@ function App() {
       })
       return updated
     })
+  }
+
+  async function submitSuggestedCorrection(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    const suggestedName = correctionDraft.name.trim()
+    if (!suggestedName) {
+      setCorrectionState({ status: 'error', message: 'Add the place name first.' })
+      return
+    }
+
+    setCorrectionState({ status: 'saving', message: 'Saving as an unverified suggestion...' })
+
+    try {
+      const response = await fetch(apiUrl('/api/feedback'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({
+          runId: photo.analysis?.runId,
+          sessionId: feedbackSessionId,
+          vote: 'suggested_answer',
+          rank: null,
+          candidate: {},
+          lineup: matchLineup(matches),
+          suggestedVenue: {
+            name: suggestedName,
+            neighborhoodOrAddress: correctionDraft.neighborhoodOrAddress.trim(),
+            note: correctionDraft.note.trim(),
+          },
+          analysis: {
+            summary: photo.analysis?.summary ?? '',
+            imageEvidence: photo.analysis?.imageEvidence ?? [],
+            needsMoreEvidence: photo.analysis?.needsMoreEvidence ?? false,
+          },
+          providers: {
+            searchProvider: photo.analysis?.searchProvider,
+            webSearchProvider: photo.analysis?.webSearchProvider,
+            articleSearchProvider: photo.analysis?.articleSearchProvider,
+          },
+        }),
+      })
+
+      if (!response.ok) throw new Error('Correction was not saved.')
+      setCorrectionState({
+        status: 'saved',
+        message: 'Saved as an unverified correction. It will need outside evidence before it can affect future rankings.',
+      })
+    } catch {
+      setCorrectionState({ status: 'error', message: 'Could not save that correction.' })
+    }
   }
 
   return (
@@ -1161,34 +1290,43 @@ function App() {
         ) : null}
 
         {/* ── Top match hero card ─────────────────────── */}
-        {activeMatch ? (
+        {topMatch ? (
           <section className="top-answer" aria-live="polite">
             <div className="top-answer-body">
               <span className="eyebrow">Top match</span>
-              <h2>{activeMatch.venue.name}</h2>
-              <p className="top-answer-location">{venueLocationLabel(activeMatch.venue)}</p>
-              {activeMatch.venue.note ? (
-                <p className="top-answer-note">{activeMatch.venue.note}</p>
+              <h2>{topMatch.venue.name}</h2>
+              <p className="top-answer-location">{venueLocationLabel(topMatch.venue)}</p>
+              {topMatch.venue.note ? (
+                <p className="top-answer-note">{topMatch.venue.note}</p>
               ) : null}
               <div className="top-meta">
-                <span>{activeMatch.venue.category}</span>
-                <span>{activeMatch.venue.neighborhood}</span>
+                <span>{topMatch.venue.category}</span>
+                <span>{topMatch.venue.neighborhood}</span>
               </div>
               <div className="top-actions">
-                <a href={activeMatch.venue.mapsUrl} target="_blank" rel="noreferrer">
+                <a href={topMatch.venue.mapsUrl} target="_blank" rel="noreferrer">
                   <MapPin size={15} />
-                  {hasVerifiedCoordinates(activeMatch.venue) ? 'Maps' : 'Search Maps'}
+                  {hasVerifiedCoordinates(topMatch.venue) ? 'Maps' : 'Search Maps'}
                 </a>
-                <a href={activeMatch.venue.sourceUrl} target="_blank" rel="noreferrer">
+                <a href={topMatch.venue.sourceUrl} target="_blank" rel="noreferrer">
                   <ExternalLink size={15} />
                   Source
                 </a>
               </div>
             </div>
             <div className="top-score">
-              <span>{confidenceLabel(activeMatch.confidence)}</span>
-              <strong>{activeMatch.confidence || '--'}%</strong>
+              <span>{confidenceLabel(topMatch.confidence)}</span>
+              <strong>{topMatch.confidence || '--'}%</strong>
             </div>
+          </section>
+        ) : null}
+
+        {matches.length > 0 && !topMatch ? (
+          <section className="close-match-notice" aria-live="polite">
+            <Search size={15} />
+            <span>
+              These guesses are too close to call, so there is no top match yet. Use the hearts to teach this run which one was right.
+            </span>
           </section>
         ) : null}
 
@@ -1331,6 +1469,64 @@ function App() {
                 )
               })}
             </div>
+            {allVisibleGuessesMarkedIncorrect ? (
+              <form className="correction-card" onSubmit={submitSuggestedCorrection}>
+                <div>
+                  <span className="eyebrow">None of these?</span>
+                  <h3>Add the correct place</h3>
+                  <p>
+                    This is saved as an unverified suggestion. It will need web/photo evidence before it can affect future rankings.
+                  </p>
+                </div>
+                <label>
+                  Place name
+                  <input
+                    value={correctionDraft.name}
+                    maxLength={160}
+                    placeholder="Kissaten Hi-Fi"
+                    onChange={(event) => {
+                      setCorrectionDraft((current) => ({ ...current, name: event.target.value }))
+                      if (correctionState.status === 'error') setCorrectionState({ status: 'idle' })
+                    }}
+                  />
+                </label>
+                <label>
+                  Neighborhood or address
+                  <input
+                    value={correctionDraft.neighborhoodOrAddress}
+                    maxLength={220}
+                    placeholder="Richmond, 189 6th Ave"
+                    onChange={(event) =>
+                      setCorrectionDraft((current) => ({
+                        ...current,
+                        neighborhoodOrAddress: event.target.value,
+                      }))
+                    }
+                  />
+                </label>
+                <label>
+                  Anything that proves it
+                  <textarea
+                    value={correctionDraft.note}
+                    maxLength={500}
+                    placeholder="The cup/interior matches their Google photos."
+                    onChange={(event) =>
+                      setCorrectionDraft((current) => ({ ...current, note: event.target.value }))
+                    }
+                  />
+                </label>
+                <div className="correction-actions">
+                  <button type="submit" disabled={correctionState.status === 'saving'}>
+                    {correctionState.status === 'saving' ? 'Saving...' : 'Submit correction'}
+                  </button>
+                  {correctionState.message ? (
+                    <span className={`correction-status ${correctionState.status}`}>
+                      {correctionState.message}
+                    </span>
+                  ) : null}
+                </div>
+              </form>
+            ) : null}
           </>
         ) : photo.status === 'reading' ? (
           <section className="analysis-panel" aria-live="polite" aria-label="Analysis in progress">

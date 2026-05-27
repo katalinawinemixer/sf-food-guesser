@@ -481,6 +481,110 @@ describe('SF Food Guesser photo flow', () => {
     expect(feedbackBodies.slice(3).map((body) => body.vote)).toEqual(['undo', 'undo', 'undo'])
   })
 
+  it('does not crown a top match on tied guesses and records unverified correction suggestions', async () => {
+    const feedbackBodies: Array<Record<string, unknown>> = []
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      if (input === '/api/health') {
+        return new Response(JSON.stringify({ ok: true, visionEnabled: true, model: 'test-model' }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        })
+      }
+
+      if (input === '/api/analyze-photo') {
+        return new Response(
+          JSON.stringify({
+            runId: 'run-tied',
+            summary: 'A matcha drink in a cafe with no readable text.',
+            imageEvidence: ['matcha drink', 'brown aprons'],
+            candidates: [
+              {
+                id: '',
+                name: 'Wrong Cafe One',
+                category: 'Cafe',
+                neighborhood: 'Mission',
+                address: 'Address not confirmed',
+                confidence: 78,
+                reasons: ['General matcha visual match.'],
+              },
+              {
+                id: '',
+                name: 'Wrong Cafe Two',
+                category: 'Cafe',
+                neighborhood: 'Richmond',
+                address: 'Address not confirmed',
+                confidence: 78,
+                reasons: ['General interior visual match.'],
+              },
+              {
+                id: '',
+                name: 'Wrong Cafe Three',
+                category: 'Cafe',
+                neighborhood: 'SoMa',
+                address: 'Address not confirmed',
+                confidence: 78,
+                reasons: ['General cafe visual match.'],
+              },
+            ],
+            needsMoreEvidence: true,
+          }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } },
+        )
+      }
+
+      if (input === '/api/feedback') {
+        feedbackBodies.push(JSON.parse(String(init?.body)))
+        return new Response(JSON.stringify({ ok: true, id: `feedback-${feedbackBodies.length}` }), {
+          status: 201,
+          headers: { 'Content-Type': 'application/json' },
+        })
+      }
+
+      throw new Error(`Unexpected request: ${String(input)}`)
+    })
+
+    render(<App />)
+
+    fireEvent.change(screen.getByLabelText(/Drop a food photo here/i), {
+      target: { files: [new File(['fake image bytes'], 'matcha.png', { type: 'image/png' })] },
+    })
+    fireEvent.click(await screen.findByRole('button', { name: 'Identify restaurant' }))
+
+    expect(await screen.findByText(/too close to call/i)).toBeVisible()
+    expect(screen.queryByText('Top match')).not.toBeInTheDocument()
+
+    fireEvent.click(screen.getByLabelText('Mark Wrong Cafe One incorrect'))
+    fireEvent.click(screen.getByLabelText('Mark Wrong Cafe Two incorrect'))
+    fireEvent.click(screen.getByLabelText('Mark Wrong Cafe Three incorrect'))
+
+    expect(await screen.findByRole('heading', { name: 'Add the correct place' })).toBeVisible()
+    fireEvent.change(screen.getByLabelText('Place name'), {
+      target: { value: 'Kissaten Hi-Fi' },
+    })
+    fireEvent.change(screen.getByLabelText('Neighborhood or address'), {
+      target: { value: '189 6th Ave' },
+    })
+    fireEvent.change(screen.getByLabelText('Anything that proves it'), {
+      target: { value: 'The interior and cups match public photos.' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Submit correction' }))
+
+    await waitFor(() => {
+      expect(screen.getByText(/Saved as an unverified correction/i)).toBeVisible()
+    })
+    const correction = feedbackBodies.at(-1)
+    expect(correction).toMatchObject({
+      runId: 'run-tied',
+      vote: 'suggested_answer',
+      suggestedVenue: {
+        name: 'Kissaten Hi-Fi',
+        neighborhoodOrAddress: '189 6th Ave',
+      },
+    })
+    expect(correction?.lineup).toHaveLength(3)
+    expect(JSON.stringify(correction)).not.toContain('fake image bytes')
+  })
+
   it('shows visible analysis progress while the photo request is running', async () => {
     let resolveAnalysis: (response: Response) => void = () => {}
     const analysisResponse = new Promise<Response>((resolve) => {
