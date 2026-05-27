@@ -110,6 +110,7 @@ export async function onRequestPost({ request, env }) {
   let searchPlan = null
   let webEvidence = []
   let photoEvidence = []
+  const shouldDebugPhotoEvidence = env.DEBUG_PHOTO_EVIDENCE === 'true'
   let photoEvidenceDebug = null
   let lastError = null
 
@@ -175,13 +176,15 @@ export async function onRequestPost({ request, env }) {
         ...(Array.isArray(searchPlan.searchQueries) ? searchPlan.searchQueries : []),
       ],
     }
-    const hasDataDebug = {
-      searches: [],
-      placeCount: 0,
-      inlinePhotoCount: 0,
-      endpointPhotoCount: 0,
-      photoEndpointStatuses: [],
-    }
+    const hasDataDebug = shouldDebugPhotoEvidence
+      ? {
+          searches: [],
+          placeCount: 0,
+          inlinePhotoCount: 0,
+          endpointPhotoCount: 0,
+          photoEndpointStatuses: [],
+        }
+      : null
     const [exaResult, photoResult] = await Promise.allSettled([
       searchExaEvidence(searchPlan, env),
       searchHasDataPhotoEvidence(photoSearchPlan, env, fetch, hasDataDebug),
@@ -202,12 +205,14 @@ export async function onRequestPost({ request, env }) {
         message: String(photoResult.reason?.message ?? 'HasData photo evidence search failed.'),
       })
     }
-    photoEvidenceDebug = {
-      seededQueryCount: seededPhotoQueries.length,
-      totalQueryCount: photoSearchPlan.searchQueries.length,
-      resultCount: photoEvidence.length,
-      firstSeededQuery: seededPhotoQueries[0] ?? null,
-      hasData: hasDataDebug,
+    if (shouldDebugPhotoEvidence) {
+      photoEvidenceDebug = {
+        seededQueryCount: seededPhotoQueries.length,
+        totalQueryCount: photoSearchPlan.searchQueries.length,
+        resultCount: photoEvidence.length,
+        firstSeededQuery: seededPhotoQueries[0] ?? null,
+        hasData: hasDataDebug,
+      }
     }
   }
 
@@ -292,7 +297,7 @@ export async function onRequestPost({ request, env }) {
         articleSearchProvider: env.EXA_API_KEY ? 'exa-deep-highlights' : null,
         articleCandidates: [],
         photoEvidence,
-        photoEvidenceDebug,
+        ...(photoEvidenceDebug ? { photoEvidenceDebug } : {}),
         webEvidence,
         searchPlan,
         providerWarnings,
