@@ -949,9 +949,7 @@ function App() {
               <div className="answer-copy">
                 <span className="eyebrow">Best guess to confirm</span>
                 <h2>{activeMatch.venue.name}</h2>
-                <p>
-                  {venueLocationLabel(activeMatch.venue)}
-                </p>
+                <p>{venueLocationLabel(activeMatch.venue)}</p>
               </div>
               <div className="answer-score">
                 <span>{confidenceLabel(activeMatch.confidence)}</span>
@@ -1042,8 +1040,8 @@ function App() {
                 {photo.analysis
                   ? `${matches.length} venue guesses`
                   : photo.coords
-                  ? `${matches.length} nearby candidates`
-                  : 'No results yet'}
+                    ? `${matches.length} nearby candidates`
+                    : 'No results yet'}
               </h2>
             </div>
             <span className="freshness">
@@ -1068,125 +1066,123 @@ function App() {
                 const feedback = feedbackByVenueId[match.venue.id]
 
                 return (
-              <article
-                className={[
-                  'result-card',
-                  match.venue.id === activeMatch?.venue.id ? 'active' : '',
-                  feedback?.vote ? `feedback-${feedback.vote}` : '',
-                ].join(' ').trim()}
-                key={match.venue.id}
-                onClick={() => setActiveVenueId(match.venue.id)}
-              >
-                <div className="result-top">
-                  <div>
-                    <span className="category">{match.venue.category}</span>
-                    <h3>{match.venue.name}</h3>
-                  </div>
-                  <div className="score">
-                    <span>{confidenceLabel(match.confidence)}</span>
-                    <strong>{match.confidence || '--'}%</strong>
-                  </div>
-                </div>
+                  <article
+                    className={[
+                      'result-card',
+                      match.venue.id === activeMatch?.venue.id ? 'active' : '',
+                      feedback?.vote ? `feedback-${feedback.vote}` : '',
+                    ].join(' ').trim()}
+                    key={match.venue.id}
+                    onClick={() => setActiveVenueId(match.venue.id)}
+                  >
+                    <div className="result-top">
+                      <div>
+                        <span className="category">{match.venue.category}</span>
+                        <h3>{match.venue.name}</h3>
+                      </div>
+                      <div className="score">
+                        <span>{confidenceLabel(match.confidence)}</span>
+                        <strong>{match.confidence || '--'}%</strong>
+                      </div>
+                    </div>
 
-                <p className="address">
-                  <MapPin size={15} />
-                  {venueLocationLabel(match.venue)}
-                </p>
+                    <p className="address">
+                      <MapPin size={15} />
+                      {venueLocationLabel(match.venue)}
+                    </p>
 
-                <div className="signature-list">
-                  {match.venue.signature.map((item) => (
-                    <span key={item}>{item}</span>
-                  ))}
-                </div>
+                    <div className="signature-list">
+                      {match.venue.signature.map((item) => (
+                        <span key={item}>{item}</span>
+                      ))}
+                    </div>
 
-                <div className="feedback-panel" aria-label={`Feedback for ${match.venue.name}`}>
-                  <span>
-                    {feedback ? feedbackLabel(feedback) : 'Was this it?'}
-                  </span>
-                  <div className="feedback-buttons">
-                    <button
-                      className={[
-                        'heart-button',
-                        'heart-correct',
-                        feedback?.vote === 'correct' ? 'selected' : '',
-                      ].join(' ').trim()}
-                      type="button"
-                      aria-label={`Mark ${match.venue.name} correct`}
-                      disabled={feedback?.status === 'saving'}
-                      onClick={(event) => {
-                        event.stopPropagation()
-                        void submitGuessFeedback(match, 'correct', index + 1)
-                      }}
-                    >
-                      <span aria-hidden="true">💗</span>
-                    </button>
-                    <button
-                      className={[
-                        'heart-button',
-                        'heart-wrong',
-                        feedback?.vote === 'incorrect' ? 'selected broken' : '',
-                      ].join(' ').trim()}
-                      type="button"
-                      aria-label={`Mark ${match.venue.name} incorrect`}
-                      disabled={feedback?.status === 'saving'}
-                      onClick={(event) => {
-                        event.stopPropagation()
-                        void submitGuessFeedback(match, 'incorrect', index + 1)
-                      }}
-                    >
-                      <span aria-hidden="true">💔</span>
-                    </button>
-                    {feedback ? (
-                      <button
-                        className="undo-feedback"
-                        type="button"
-                        aria-label={`Undo feedback for ${match.venue.name}`}
-                        disabled={feedback.status === 'saving'}
-                        onClick={(event) => {
-                          event.stopPropagation()
-                          void undoGuessFeedback(match, index + 1)
-                        }}
-                      >
-                        Undo
-                      </button>
+                    <div className="feedback-panel" aria-label={`Feedback for ${match.venue.name}`}>
+                      <span>{feedback ? feedbackLabel(feedback) : 'Was this it?'}</span>
+                      <div className="feedback-buttons">
+                        <button
+                          className={[
+                            'heart-button',
+                            'heart-correct',
+                            feedback?.vote === 'correct' ? 'selected' : '',
+                          ].join(' ').trim()}
+                          type="button"
+                          aria-label={`Mark ${match.venue.name} correct`}
+                          disabled={feedback?.status === 'saving'}
+                          onClick={(event) => {
+                            event.stopPropagation()
+                            void submitGuessFeedback(match, 'correct', index + 1)
+                          }}
+                        >
+                          <span aria-hidden="true">💗</span>
+                        </button>
+                        <button
+                          className={[
+                            'heart-button',
+                            'heart-wrong',
+                            feedback?.vote === 'incorrect' ? 'selected broken' : '',
+                          ].join(' ').trim()}
+                          type="button"
+                          aria-label={`Mark ${match.venue.name} incorrect`}
+                          disabled={feedback?.status === 'saving'}
+                          onClick={(event) => {
+                            event.stopPropagation()
+                            void submitGuessFeedback(match, 'incorrect', index + 1)
+                          }}
+                        >
+                          <span aria-hidden="true">💔</span>
+                        </button>
+                        {feedback ? (
+                          <button
+                            className="undo-feedback"
+                            type="button"
+                            aria-label={`Undo feedback for ${match.venue.name}`}
+                            disabled={feedback.status === 'saving'}
+                            onClick={(event) => {
+                              event.stopPropagation()
+                              void undoGuessFeedback(match, index + 1)
+                            }}
+                          >
+                            Undo
+                          </button>
+                        ) : null}
+                      </div>
+                    </div>
+
+                    <ul className="reason-list">
+                      <li className="reason-heading">Why this guess</li>
+                      {match.reasons.map((reason) => (
+                        <li key={reason}>{reason}</li>
+                      ))}
+                      {match.rankingNotes.map((note) => (
+                        <li key={note}>{note}</li>
+                      ))}
+                    </ul>
+
+                    {photo.analysis?.webEvidence?.length ? (
+                      <div className="evidence-sources" aria-label="Supporting web evidence">
+                        <span>Evidence checked</span>
+                        {photo.analysis.webEvidence.slice(0, 3).map((page) => (
+                          <a key={page.url} href={page.url} target="_blank" rel="noreferrer">
+                            {page.searchLabel ? `${page.searchLabel}: ` : ''}
+                            {page.source}
+                            <ArrowUpRight size={12} />
+                          </a>
+                        ))}
+                      </div>
                     ) : null}
-                  </div>
-                </div>
 
-                <ul className="reason-list">
-                  <li className="reason-heading">Why this guess</li>
-                  {match.reasons.map((reason) => (
-                    <li key={reason}>{reason}</li>
-                  ))}
-                  {match.rankingNotes.map((note) => (
-                    <li key={note}>{note}</li>
-                  ))}
-                </ul>
-
-                {photo.analysis?.webEvidence?.length ? (
-                  <div className="evidence-sources" aria-label="Supporting web evidence">
-                    <span>Evidence checked</span>
-                    {photo.analysis.webEvidence.slice(0, 3).map((page) => (
-                      <a key={page.url} href={page.url} target="_blank" rel="noreferrer">
-                        {page.searchLabel ? `${page.searchLabel}: ` : ''}
-                        {page.source}
-                        <ArrowUpRight size={12} />
+                    <div className="card-links">
+                      <a href={match.venue.sourceUrl} target="_blank" rel="noreferrer">
+                        Evidence
+                        <ArrowUpRight size={14} />
                       </a>
-                    ))}
-                  </div>
-                ) : null}
-
-                <div className="card-links">
-                  <a href={match.venue.sourceUrl} target="_blank" rel="noreferrer">
-                    Evidence
-                    <ArrowUpRight size={14} />
-                  </a>
-                  <a href={match.venue.mapsUrl} target="_blank" rel="noreferrer">
-                    {hasVerifiedCoordinates(match.venue) ? 'Map' : 'Search Maps'}
-                    <ArrowUpRight size={14} />
-                  </a>
-                </div>
-              </article>
+                      <a href={match.venue.mapsUrl} target="_blank" rel="noreferrer">
+                        {hasVerifiedCoordinates(match.venue) ? 'Map' : 'Search Maps'}
+                        <ArrowUpRight size={14} />
+                      </a>
+                    </div>
+                  </article>
                 )
               })}
             </div>
