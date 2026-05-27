@@ -50,8 +50,20 @@ for (const url of allUrls) {
     }
     if (!health.body.ok) failures.push(`${url}/api/health: ok was not true`)
     if (!health.body.visionEnabled) failures.push(`${url}/api/health: vision is not enabled`)
+    if (health.body.provider !== 'openrouter') {
+      failures.push(`${url}/api/health: OpenRouter provider is not active`)
+    }
+    if (!health.body.webSearchEnabled) {
+      failures.push(`${url}/api/health: OpenRouter web search is not enabled`)
+    }
     if (!health.body.articleSearchEnabled) {
       failures.push(`${url}/api/health: Exa article/evidence search is not enabled`)
+    }
+    if (!health.body.photoSearchEnabled) {
+      failures.push(`${url}/api/health: HasData Google Maps/photo evidence search is not enabled`)
+    }
+    if (health.body.photoSearchProvider !== 'hasdata-google-maps-photos') {
+      failures.push(`${url}/api/health: HasData photo provider is not active`)
     }
     app.fingerprint = fingerprintAssets(app.html)
     results.push(`${url}: fingerprint ${app.fingerprint}`)

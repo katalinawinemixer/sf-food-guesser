@@ -22,6 +22,40 @@ export function onRequestOptions() {
   return optionsResponse()
 }
 
+function seedPhotoSearchQueries(venues = [], searchPlan = null) {
+  const haystack = [
+    searchPlan?.summary,
+    ...(Array.isArray(searchPlan?.imageEvidence) ? searchPlan.imageEvidence : []),
+    ...(Array.isArray(searchPlan?.searchQueries) ? searchPlan.searchQueries : []),
+  ]
+    .join(' ')
+    .toLowerCase()
+
+  return venues
+    .map((venue, originalIndex) => {
+      const hints = Array.isArray(venue.imageEvidenceHints) ? venue.imageEvidenceHints : []
+      const matchedHintCount = hints.filter((hint) => {
+        const normalizedHint = String(hint).toLowerCase().trim()
+        return normalizedHint.length >= 4 && haystack.includes(normalizedHint)
+      }).length
+      const name = String(venue.name ?? '').trim()
+      const nameHit = name && haystack.includes(name.toLowerCase())
+      return {
+        venue,
+        originalIndex,
+        score: matchedHintCount + (nameHit ? 4 : 0),
+      }
+    })
+    .filter(({ venue, score }) => score >= 2 && venue.name)
+    .sort((a, b) => b.score - a.score || a.originalIndex - b.originalIndex)
+    .slice(0, 4)
+    .map(({ venue }) =>
+      [venue.name, venue.address, venue.neighborhood, 'San Francisco Google Maps reviews photos interior']
+        .filter(Boolean)
+        .join(' '),
+    )
+}
+
 export async function onRequestPost({ request, env }) {
   const provider = providerFromEnv(env)
   const runId = crypto.randomUUID()
@@ -134,7 +168,16 @@ export async function onRequestPost({ request, env }) {
   if (searchPlan) {
     const [exaResult, photoResult] = await Promise.allSettled([
       searchExaEvidence(searchPlan, env),
-      searchHasDataPhotoEvidence(searchPlan, env),
+      searchHasDataPhotoEvidence(
+        {
+          ...searchPlan,
+          searchQueries: [
+            ...seedPhotoSearchQueries(venues, searchPlan),
+            ...(Array.isArray(searchPlan.searchQueries) ? searchPlan.searchQueries : []),
+          ],
+        },
+        env,
+      ),
     ])
     if (exaResult.status === 'fulfilled') {
       webEvidence = exaResult.value

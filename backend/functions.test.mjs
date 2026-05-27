@@ -219,13 +219,14 @@ describe('Cloudflare Pages Functions API', () => {
       }
 
       if (String(url).includes('api.hasdata.com/scrape/google-maps/search')) {
+        const query = new URL(String(url)).searchParams.get('q')
         return new Response(
           JSON.stringify({
             localResults: [
               {
-                title: 'Kissaten HiFi',
+                title: query?.includes('Kissaten HiFi') ? 'Kissaten HiFi' : 'Generic Matcha Cafe',
                 address: '189 6th Ave, San Francisco, CA',
-                dataId: 'kissaten-data-id',
+                dataId: query?.includes('Kissaten HiFi') ? 'kissaten-data-id' : 'generic-data-id',
               },
             ],
           }),
@@ -294,7 +295,18 @@ describe('Cloudflare Pages Functions API', () => {
     })
     const formData = new FormData()
     formData.set('photo', new File([pngPixel], 'matcha.png', { type: 'image/png' }))
-    formData.set('venues', JSON.stringify([{ id: 'kissaten-hifi', name: 'Kissaten HiFi' }]))
+    formData.set(
+      'venues',
+      JSON.stringify([
+        {
+          id: 'kissaten-hifi',
+          name: 'Kissaten HiFi',
+          address: '189 6th Ave',
+          neighborhood: 'Inner Richmond',
+          imageEvidenceHints: ['matcha', 'brown bags', 'tan aprons'],
+        },
+      ]),
+    )
 
     const response = await analyzePhotoPost({
       request: {
@@ -311,11 +323,16 @@ describe('Cloudflare Pages Functions API', () => {
 
     expect(response.status).toBe(200)
     expect(fetchMock.mock.calls.filter(([url]) => String(url).includes('api.exa.ai'))).toHaveLength(2)
-    expect(
-      fetchMock.mock.calls.filter(([url]) =>
-        String(url).includes('api.hasdata.com/scrape/google-maps/search'),
+    const hasDataSearchCalls = fetchMock.mock.calls.filter(([url]) =>
+      String(url).includes('api.hasdata.com/scrape/google-maps/search'),
+    )
+    expect(hasDataSearchCalls.length).toBeGreaterThanOrEqual(3)
+    const firstHasDataSearchUrl = new URL(
+      String(
+        hasDataSearchCalls[0]?.[0],
       ),
-    ).toHaveLength(2)
+    )
+    expect(firstHasDataSearchUrl.searchParams.get('q')).toContain('Kissaten HiFi')
     const finalPayload = JSON.parse(String(fetchMock.mock.calls.at(-1)?.[1]?.body))
     expect(finalPayload.messages[1].content).toEqual(
       expect.arrayContaining([
