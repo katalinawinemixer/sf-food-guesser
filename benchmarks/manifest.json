@@ -1,0 +1,60 @@
+{
+  "version": 1,
+  "description": "Internal accuracy benchmark cases. Image files live in benchmarks/images/ and are intentionally git-ignored.",
+  "cases": [
+    {
+      "id": "souvla-visible-text",
+      "label": "Souvla with readable venue text",
+      "imagePath": "benchmarks/images/souvla-visible-text.jpg",
+      "expectedVenue": "Souvla",
+      "expectedAddress": "Multiple San Francisco locations",
+      "failureMode": "visible text missed or packaging text over-indexed",
+      "tags": ["visible_text", "multi_location", "restaurant"]
+    },
+    {
+      "id": "kissaten-hifi-interior-matcha",
+      "label": "Kissaten HiFi matcha with cafe prep interior",
+      "imagePath": "benchmarks/images/kissaten-hifi-interior-matcha.jpg",
+      "expectedVenue": "Kissaten HiFi",
+      "expectedAddress": "189 6th Ave",
+      "failureMode": "new cafe missed without recent-opening and Maps-photo evidence",
+      "tags": ["interior", "matcha", "recent_opening", "cafe"]
+    },
+    {
+      "id": "rt-bistro-burger",
+      "label": "RT Bistro burger/caviar-adjacent photo",
+      "imagePath": "benchmarks/images/rt-bistro-burger.jpg",
+      "expectedVenue": "RT Bistro",
+      "expectedAddress": "205 Oak St",
+      "failureMode": "generic burger or caviar keyword over-indexed",
+      "tags": ["dish", "article", "ranking_calibration"]
+    },
+    {
+      "id": "misleading-packaging-text",
+      "label": "Misleading packaging text that is not the venue name",
+      "imagePath": "benchmarks/images/misleading-packaging-text.jpg",
+      "expectedVenue": "",
+      "expectedAddress": "",
+      "failureMode": "third-party or partial packaging text treated as exact identity",
+      "tags": ["packaging", "negative_control"]
+    },
+    {
+      "id": "no-text-interior",
+      "label": "No readable text, interior-heavy cafe photo",
+      "imagePath": "benchmarks/images/no-text-interior.jpg",
+      "expectedVenue": "",
+      "expectedAddress": "",
+      "failureMode": "overconfident top match from weak interior similarity",
+      "tags": ["interior", "no_text", "uncertainty"]
+    },
+    {
+      "id": "multi-location-venue",
+      "label": "Multi-location venue where branch should need confirmation",
+      "imagePath": "benchmarks/images/multi-location-venue.jpg",
+      "expectedVenue": "Souvla",
+      "expectedAddress": "Multiple San Francisco locations",
+      "failureMode": "exact branch claimed without GPS/storefront/neighborhood evidence",
+      "tags": ["multi_location", "branch_uncertainty"]
+    }
+  ]
+}

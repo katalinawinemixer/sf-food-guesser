@@ -189,7 +189,7 @@ function cropBounds(metadata, leftRatio, topRatio, widthRatio, heightRatio) {
   return { left, top, width, height }
 }
 
-async function buildUploadedImageViews(file) {
+export async function buildUploadedImageViews(file) {
   const fallbackView = {
     label: 'full uploaded image, original encoding',
     dataUrl: imageDataUrl(file.buffer, file.mimetype || 'application/octet-stream'),
@@ -210,17 +210,37 @@ async function buildUploadedImageViews(file) {
       return [{ label: 'full uploaded image', dataUrl: imageDataUrl(fullImage) }]
     }
 
-    const crop = cropBounds(metadata, 0, 0.45, 0.62, 0.55)
-    const cropImage = await sharp(normalizedBuffer)
-      .extract(crop)
-      .resize({ width: 900, height: 680, fit: 'inside', withoutEnlargement: false })
-      .jpeg({ quality: 84 })
-      .toBuffer()
-    const fullMetadata = await sharp(fullImage).metadata()
-    const cropMetadata = await sharp(cropImage).metadata()
-    const gutter = 24
-    const canvasWidth = (fullMetadata.width ?? 900) + (cropMetadata.width ?? 900) + gutter
-    const canvasHeight = Math.max(fullMetadata.height ?? 680, cropMetadata.height ?? 680)
+    const panelWidth = 420
+    const panelHeight = 280
+    const buildPanel = async (bounds = null, highContrast = false) => {
+      let image = bounds ? sharp(normalizedBuffer).extract(bounds) : sharp(normalizedBuffer)
+      if (highContrast) {
+        image = image.grayscale().linear(1.85, -28).modulate({ brightness: 1.08 })
+      }
+      return image
+        .resize({
+          width: panelWidth,
+          height: panelHeight,
+          fit: bounds ? 'cover' : 'contain',
+          background: '#ffffff',
+          withoutEnlargement: false,
+        })
+        .jpeg({ quality: 84 })
+        .toBuffer()
+    }
+    const cropPanels = await Promise.all([
+      buildPanel(),
+      buildPanel(cropBounds(metadata, 0, 0, 1, 0.55)),
+      buildPanel(cropBounds(metadata, 0, 0.45, 1, 0.55)),
+      buildPanel(cropBounds(metadata, 0, 0, 0.55, 1)),
+      buildPanel(cropBounds(metadata, 0.45, 0, 0.55, 1)),
+      buildPanel(cropBounds(metadata, 0.18, 0.18, 0.64, 0.64)),
+      buildPanel(null, true),
+      buildPanel(cropBounds(metadata, 0, 0.45, 1, 0.55), true),
+      buildPanel(cropBounds(metadata, 0.15, 0.15, 0.7, 0.7), true),
+    ])
+    const canvasWidth = panelWidth * 3
+    const canvasHeight = panelHeight * 3
     const contactSheet = await sharp({
       create: {
         width: canvasWidth,
@@ -229,17 +249,20 @@ async function buildUploadedImageViews(file) {
         background: '#ffffff',
       },
     })
-      .composite([
-        { input: fullImage, left: 0, top: 0 },
-        { input: cropImage, left: (fullMetadata.width ?? 900) + gutter, top: 0 },
-      ])
+      .composite(
+        cropPanels.map((input, index) => ({
+          input,
+          left: (index % 3) * panelWidth,
+          top: Math.floor(index / 3) * panelHeight,
+        })),
+      )
       .jpeg({ quality: 84 })
       .toBuffer()
 
     return [
       {
         label:
-          'single contact sheet: left panel is the full uploaded image; right panel is a zoomed lower-left crop for tray, bag, receipt, label, and logo text',
+          'single contact sheet: row 1 has full image, background/interior crop, and foreground/food crop; row 2 has left, right, and center crops; row 3 has high-contrast full, foreground, and center text crops',
         dataUrl: imageDataUrl(contactSheet),
       },
     ]
@@ -347,9 +370,10 @@ Use interior/storefront evidence more heavily than generic dish evidence. A croi
 
 Treat visible text and branding carefully. Exact storefront/menu/receipt/venue-name text is strong evidence. Generic words, partial brand marks, sauce bottles, packaged goods, delivery bags, cups, or third-party branding are not enough for very high confidence unless the exact venue name is readable or web/photo evidence confirms that branding belongs to the venue shown.
 
-You may receive a contact sheet built from the same uploaded image: one panel is the full upload and another panel may be a zoomed crop. Inspect every panel. Small logo, tray, cup, bag, label, receipt, menu, or storefront text may only be readable in the zoomed panel.
+You may receive a contact sheet built from the same uploaded image. Inspect every panel: full image, background/interior crop, foreground/food crop, left/right/center crops, and high-contrast text crops. Small logo, tray, cup, bag, label, receipt, menu, or storefront text may only be readable in a crop or high-contrast panel.
 
 The JSON venue list below is only a seed dataset. It is not the full search space. If web evidence points to a better San Francisco venue that is not in the seed list, return it as a web-discovered candidate with no seed id.
+Seed fields named doNotInferFrom are negative constraints: do not use those clues as identity evidence unless stronger uploaded-photo or public-photo evidence confirms the venue.
 
 Return strict JSON only with this shape:
 {
@@ -404,7 +428,7 @@ ${JSON.stringify(compactVenues)}`
 function buildSearchPlanPrompt() {
   return `Look at the uploaded image and create a web/photo-search plan to identify the San Francisco restaurant, cafe, bakery, counter, or bar.
 
-You may receive a contact sheet built from the same uploaded image: one panel is the full upload and another panel may be a zoomed crop. Inspect every panel before writing the search plan. Small logo, tray, cup, bag, label, receipt, menu, or storefront text may only be readable in the zoomed panel.
+You may receive a contact sheet built from the same uploaded image. Inspect every panel before writing the search plan: full image, background/interior crop, foreground/food crop, left/right/center crops, and high-contrast text crops. Small logo, tray, cup, bag, label, receipt, menu, or storefront text may only be readable in a crop or high-contrast panel.
 
 Return strict JSON only:
 {
@@ -547,7 +571,7 @@ function normalizeSearchPlan(plan) {
       : []),
   ])].slice(0, 8)
 
-  return {
+  const normalizedPlan = {
     summary: String(plan.summary ?? ''),
     imageEvidence: Array.isArray(plan.imageEvidence)
       ? plan.imageEvidence.map(String).filter(Boolean).slice(0, 12)
@@ -558,6 +582,75 @@ function normalizeSearchPlan(plan) {
       ? plan.likelyVenueTypes.map(String).filter(Boolean).slice(0, 6)
       : [],
   }
+  return {
+    ...normalizedPlan,
+    queryLanes: buildEvidenceQueryLanes(normalizedPlan),
+  }
+}
+
+function uniqueQueries(queries, maxItems = 8) {
+  return [...new Set(queries.map((query) => String(query).trim()).filter(Boolean))].slice(0, maxItems)
+}
+
+export function buildEvidenceQueryLanes(searchPlan = {}, articleCandidates = []) {
+  const visibleText = Array.isArray(searchPlan.visibleText) ? searchPlan.visibleText : []
+  const imageText = [
+    searchPlan.summary,
+    ...(Array.isArray(searchPlan.imageEvidence) ? searchPlan.imageEvidence : []),
+  ].filter(Boolean).join(' ')
+  const modelQueries = Array.isArray(searchPlan.searchQueries) ? searchPlan.searchQueries : []
+  const interiorQuery = [
+    imageText,
+    'San Francisco cafe restaurant interior Google Maps Yelp photos reviews',
+  ].filter(Boolean).join(' ')
+  const dishQuery = [
+    imageText,
+    'San Francisco menu dish drink restaurant cafe',
+  ].filter(Boolean).join(' ')
+  const articleQueries = buildArticleCandidateQueries(articleCandidates)
+
+  return [
+    {
+      lane: 'exact_ocr_text',
+      queries: uniqueQueries(visibleText.flatMap((text) => [
+        `"${text}" San Francisco restaurant cafe`,
+        `"${text}" San Francisco menu photos reviews`,
+      ]), 6),
+    },
+    {
+      lane: 'general',
+      queries: uniqueQueries(modelQueries, 8),
+    },
+    {
+      lane: 'interior',
+      queries: uniqueQueries([
+        interiorQuery,
+        ...modelQueries.filter((query) =>
+          /\b(interior|counter|tile|wall|shelf|shelving|decor|storefront|photos|reviews)\b/i.test(query),
+        ),
+      ], 6),
+    },
+    {
+      lane: 'dish_menu',
+      queries: uniqueQueries([
+        dishQuery,
+        ...modelQueries.filter((query) =>
+          /\b(menu|dish|food|drink|coffee|matcha|latte|burger|pastry|sandwich|noodle)\b/i.test(query),
+        ),
+      ], 6),
+    },
+    {
+      lane: 'recent_openings',
+      queries: uniqueQueries([
+        `${imageText} San Francisco recently opened new popular cafe restaurant Eater Infatuation SF Standard SFGATE`,
+        ...articleQueries,
+      ], 8),
+    },
+  ].filter((lane) => lane.queries.length)
+}
+
+function flattenQueryLanes(queryLanes = [], maxItems = 12) {
+  return uniqueQueries(queryLanes.flatMap((lane) => lane.queries ?? []), maxItems)
 }
 
 function normalizeArticleCandidate(candidate) {
@@ -611,6 +704,52 @@ function explanationBuckets(candidate = {}) {
 
 function candidateKey(candidate) {
   return String(candidate.name || candidate.id || '').trim().toLowerCase()
+}
+
+function mergeUniqueStrings(...values) {
+  return [...new Set(values.flat().filter(Boolean).map(String))].slice(0, 12)
+}
+
+function mergeCandidateRecords(existing, incoming) {
+  const existingConfidence = normalizeConfidence(existing.confidence) ?? 0
+  const incomingConfidence = normalizeConfidence(incoming.confidence) ?? 0
+  const preferred = incomingConfidence > existingConfidence ? incoming : existing
+  const fallback = preferred === incoming ? existing : incoming
+
+  return {
+    ...fallback,
+    ...preferred,
+    id: existing.id || incoming.id || '',
+    confidence: Math.max(existingConfidence, incomingConfidence),
+    evidenceCategories: mergeUniqueStrings(existing.evidenceCategories ?? [], incoming.evidenceCategories ?? []),
+    photoEvidence: mergeUniqueStrings(existing.photoEvidence ?? [], incoming.photoEvidence ?? []).slice(0, 5),
+    externalEvidence: mergeUniqueStrings(existing.externalEvidence ?? [], incoming.externalEvidence ?? []).slice(0, 5),
+    rankingRules: mergeUniqueStrings(existing.rankingRules ?? [], incoming.rankingRules ?? []).slice(0, 6),
+    rankingNotes: mergeUniqueStrings(existing.rankingNotes ?? [], incoming.rankingNotes ?? []).slice(0, 6),
+    reasons: mergeUniqueStrings(existing.reasons ?? [], incoming.reasons ?? []).slice(0, 4),
+    sourceUrls: mergeUniqueStrings(existing.sourceUrls ?? [], incoming.sourceUrls ?? []).slice(0, 4),
+    searchQueries: mergeUniqueStrings(existing.searchQueries ?? [], incoming.searchQueries ?? []).slice(0, 6),
+    comparisonPhotos: [
+      ...new Map(
+        [...(existing.comparisonPhotos ?? []), ...(incoming.comparisonPhotos ?? [])]
+          .filter(Boolean)
+          .map((photo) => [photo.url || photo.pageUrl || photo.title, photo]),
+      ).values(),
+    ].slice(0, 4),
+  }
+}
+
+export function dedupeCandidatesBeforeRanking(candidates = []) {
+  const mergedByKey = new Map()
+
+  for (const candidate of candidates) {
+    const key = candidateKey(candidate)
+    if (!key) continue
+    const existing = mergedByKey.get(key)
+    mergedByKey.set(key, existing ? mergeCandidateRecords(existing, candidate) : candidate)
+  }
+
+  return [...mergedByKey.values()]
 }
 
 function mergeArticleCandidates(primaryCandidates = [], fallbackCandidates = []) {
@@ -1198,10 +1337,18 @@ function evidenceNote(category) {
 export function rerankCandidates(rawCandidates = [], options = {}) {
   const seedVenueIds = new Set(options.seedVenueIds ?? [])
   const trustedPhotoUrls = new Set(options.photoEvidenceUrls ?? [])
-
-  return rawCandidates
+  const ocrVisibleText = (options.ocrVisibleText ?? [])
+    .map((text) => normalizeNameText(text))
+    .filter((text) => text.length >= 4)
+  const rankedCandidates = dedupeCandidatesBeforeRanking(rawCandidates)
     .map((candidate, originalIndex) => {
       const evidenceCategoriesForCandidate = normalizeEvidenceCategories(candidate)
+      const rawEvidenceCategories = Array.isArray(candidate.evidenceCategories)
+        ? candidate.evidenceCategories.map((category) => String(category).toLowerCase())
+        : []
+      const visibleTextWasRemoved =
+        rawEvidenceCategories.includes('visible_text') &&
+        !evidenceCategoriesForCandidate.includes('visible_text')
       const strongEvidence = evidenceCategoriesForCandidate.filter(
         (category) => category !== 'dish_match',
       )
@@ -1215,6 +1362,13 @@ export function rerankCandidates(rawCandidates = [], options = {}) {
       const hasIdentityEvidence = evidenceCategoriesForCandidate.some((category) =>
         ['visible_text', 'gps_match'].includes(category),
       )
+      const normalizedCandidateName = normalizeNameText(candidate.name)
+      const ocrContradictedCandidate =
+        ocrVisibleText.length > 0 &&
+        normalizedCandidateName.length >= 4 &&
+        !ocrVisibleText.some(
+          (text) => normalizedCandidateName.includes(text) || text.includes(normalizedCandidateName),
+        )
       const hasLogoEvidence = evidenceCategoriesForCandidate.includes('packaging_logo')
       const isWebDiscovered = !hasSeedMatch
       const sourceOnly =
@@ -1294,6 +1448,18 @@ export function rerankCandidates(rawCandidates = [], options = {}) {
         ...explanations.rankingRules,
         ...rankingNotes,
       ].slice(0, 6)
+      const rankingDebugReasons = [
+        ...(visibleTextWasRemoved
+          ? ['visible text removed because exact candidate name was not readable']
+          : []),
+        ...(seedOnly ? ['seed source text only'] : []),
+        ...(sourceOnly ? ['source-only cap'] : []),
+        ...(dishOnly ? ['dish-only cap'] : []),
+        ...(hasUnverifiedVisualClaim ? ['unverified interior/storefront cap'] : []),
+        ...(!hasIdentityEvidence ? ['no identity clue'] : []),
+        ...(ocrContradictedCandidate ? ['OCR contradicted candidate'] : []),
+        ...(adjustedScore < rawAdjustedScore ? [`confidence capped at ${confidenceCap}`] : []),
+      ]
 
       return {
         ...candidate,
@@ -1306,16 +1472,57 @@ export function rerankCandidates(rawCandidates = [], options = {}) {
         reasons: explanations.reasons,
         rankingRules,
         rankingNotes,
+        rankingDebugReasons,
         _rankScore: adjustedScore,
+        _rawRankScore: rawAdjustedScore,
+        _confidenceCap: confidenceCap,
         _originalIndex: originalIndex,
       }
     })
     .sort((a, b) => b._rankScore - a._rankScore || a._originalIndex - b._originalIndex)
-    .filter((candidate, index, candidates) => {
-      const key = candidateKey(candidate)
-      return key && candidates.findIndex((item) => candidateKey(item) === key) === index
+
+  const seenCandidateKeys = new Set()
+  const keptCandidates = []
+  const debugReport = []
+
+  rankedCandidates.forEach((candidate) => {
+    const key = candidateKey(candidate)
+    const isDuplicate = !key || seenCandidateKeys.has(key)
+    const status = isDuplicate ? 'deduplicated' : 'kept'
+    if (!isDuplicate) {
+      seenCandidateKeys.add(key)
+      keptCandidates.push(candidate)
+    }
+    debugReport.push({
+      name: candidate.name,
+      status,
+      rank: status === 'kept' ? keptCandidates.length : null,
+      originalConfidence: candidate.originalConfidence,
+      finalConfidence: candidate.confidence,
+      rawRankScore: Math.round(candidate._rawRankScore),
+      confidenceCap: candidate._confidenceCap,
+      evidenceCategories: candidate.evidenceCategories,
+      reasons: [
+        ...(candidate.rankingDebugReasons ?? []),
+        ...(isDuplicate ? ['duplicate candidate removed before final ranking'] : []),
+      ],
     })
-    .map(({ _rankScore, _originalIndex, ...candidate }) => candidate)
+  })
+
+  if (Array.isArray(options.debugReport)) {
+    options.debugReport.push(...debugReport)
+  }
+
+  return keptCandidates.map(
+    ({
+      _rankScore,
+      _rawRankScore,
+      _confidenceCap,
+      _originalIndex,
+      rankingDebugReasons,
+      ...candidate
+    }) => candidate,
+  )
 }
 
 function buildSourceSearches(rawQuery) {
@@ -2018,6 +2225,9 @@ export function createApp(options = {}) {
     hasArticleSearch || hasPhotoSearch || hasWebSearch
       ? options.articleSearch ?? null
       : defaultProviders.articleSearch
+  const debugRanking =
+    options.debugRanking === true ||
+    String((options.env ?? process.env).DEBUG_RANKING ?? '').toLowerCase() === 'true'
   const app = express()
   const allowedOrigins = parseAllowedOrigins(options.allowedOrigins ?? defaultAllowedOrigins.join(','))
   applyCors(app, allowedOrigins)
@@ -2107,6 +2317,11 @@ export function createApp(options = {}) {
       address: venue.address,
       signature: venue.signature,
       imageEvidenceHints: venue.imageEvidenceHints,
+      visualClues: venue.visualClues,
+      menuClues: venue.menuClues,
+      doNotInferFrom: venue.doNotInferFrom,
+      multiLocation: venue.multiLocation,
+      sourceConfidence: venue.sourceConfidence,
       note: venue.note,
     }))
 
@@ -2146,7 +2361,11 @@ export function createApp(options = {}) {
       }
 
       if (searchPlan) {
-        const baseSearchQueries = searchPlan.searchQueries
+        searchPlan = {
+          ...searchPlan,
+          queryLanes: buildEvidenceQueryLanes(searchPlan),
+        }
+        const baseSearchQueries = flattenQueryLanes(searchPlan.queryLanes)
         const initialEvidenceSearches = []
         if (articleSearch?.search) {
           initialEvidenceSearches.push({
@@ -2228,9 +2447,13 @@ export function createApp(options = {}) {
           discoverWebMentionCandidates(webEvidence, searchPlan),
         )
 
+        searchPlan = {
+          ...searchPlan,
+          queryLanes: buildEvidenceQueryLanes(searchPlan, articleCandidates),
+        }
         const candidateSearchQueries = buildArticleCandidateQueries(articleCandidates)
         const photoSearchQueries = buildEvidenceSearchQueries(
-          baseSearchQueries,
+          flattenQueryLanes(searchPlan.queryLanes),
           articleCandidates,
         )
         const followupEvidenceSearches = []
@@ -2370,9 +2593,12 @@ export function createApp(options = {}) {
       const rawCandidates = modelCandidates.length
         ? correctCandidatesFromVisibleText(modelCandidates, result.imageEvidence)
         : buildFallbackCandidates(articleCandidates)
+      const rankingDebug = debugRanking ? [] : null
       const candidates = rerankCandidates(rawCandidates, {
         seedVenueIds: compactVenues.map((venue) => venue.id),
         photoEvidenceUrls,
+        ocrVisibleText: searchPlan?.visibleText ?? [],
+        debugReport: rankingDebug,
       })
       const topConfidence = candidates[0]?.confidence ?? 0
       const closeCandidateCount = candidates.filter(
@@ -2420,6 +2646,7 @@ export function createApp(options = {}) {
         articleSearchProvider: articleSearch?.provider ?? null,
         visionModel: visionModelUsed,
         providerWarnings,
+        ...(rankingDebug ? { rankingDebug } : {}),
       }
       await appendRunLog(runLogPath, {
         id: runId,
@@ -2449,6 +2676,12 @@ export function createApp(options = {}) {
               imageEvidence: cleanTextArray(searchPlan.imageEvidence, 12, 500),
               visibleText: cleanTextArray(searchPlan.visibleText, 8, 120),
               searchQueries: cleanTextArray(searchPlan.searchQueries, 12, 500),
+              queryLanes: Array.isArray(searchPlan.queryLanes)
+                ? searchPlan.queryLanes.map((lane) => ({
+                    lane: cleanText(lane.lane, 80),
+                    queries: cleanTextArray(lane.queries, 8, 500),
+                  }))
+                : [],
               likelyVenueTypes: cleanTextArray(searchPlan.likelyVenueTypes, 8, 120),
             }
           : null,

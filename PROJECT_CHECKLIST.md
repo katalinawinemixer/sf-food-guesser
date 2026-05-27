@@ -123,6 +123,24 @@ items were completed earlier out of order.
 This is the next implementation sequence based on what is already built. The
 order keeps the app honest first, then adds more search power and scale.
 
+Current 10-item implementation order:
+
+1. [x] Separate uploaded-photo evidence from external/seed evidence.
+2. [x] Add a local feedback review layer for ranking mistakes.
+3. [x] Recalibrate confidence so the app does not overstate certainty.
+4. [x] Add development-only ranking debug output for capped/rejected guesses.
+5. [x] Add stronger crop passes for interiors, food-only regions, and faint text.
+6. [x] Deduplicate and lane candidates across OCR, article, Maps/review photos,
+   web, and seed sources before final ranking.
+7. [x] Enrich the source-backed SF venue dataset with visual/menu/non-inference
+   fields.
+8. [x] Add abuse protection without login: Cloudflare rate limits and
+   contradictory-feedback downweighting.
+9. [x] Improve result transparency with compact evidence badges and clearer
+   result-state labels.
+10. [x] Add a benchmark manifest and runner before making further ranking/search
+    changes.
+
 ### 11.1 Separate Evidence From Guessing
 
 - [x] Keep internal evidence categories for OCR/visible text, GPS, packaging,
@@ -156,32 +174,32 @@ order keeps the app honest first, then adds more search power and scale.
 
 ### 11.4 Development-Only "Why Not" Debugging
 
-- [ ] Add a debug-only rejected/capped candidate report.
-- [ ] Show reasons such as `seed source text only`, `dish-only cap`,
+- [x] Add a debug-only rejected/capped candidate report.
+- [x] Show reasons such as `seed source text only`, `dish-only cap`,
   `no identity clue`, or `OCR contradicted candidate`.
-- [ ] Keep this out of the normal user experience.
+- [x] Keep this out of the normal user experience.
 
 ### 11.5 Better Image Handling
 
 - [x] Keep the uploaded photo fully visible in the UI instead of cropping it.
 - [x] Add an OCR contact-sheet pass with full image and crop panels.
-- [ ] Add separate background/interior and food-only crop passes.
-- [ ] Add a high-contrast text crop pass for faint menu, cup, receipt, or sign
+- [x] Add separate background/interior and food-only crop passes.
+- [x] Add a high-contrast text crop pass for faint menu, cup, receipt, or sign
   text.
 
 ### 11.6 Stronger Candidate Generation
 
 - [x] Run article discovery, web search, and Google Maps/photo-style evidence in
   parallel where possible.
-- [ ] Deduplicate candidates before final ranking across OCR, article, maps,
+- [x] Deduplicate candidates before final ranking across OCR, article, maps,
   review, and seed lanes.
-- [ ] Build query lanes for exact OCR text, dish/menu terms, interior terms,
+- [x] Build query lanes for exact OCR text, dish/menu terms, interior terms,
   neighborhood/GPS clues, and recent-openings coverage.
 
 ### 11.7 Verified Venue Dataset
 
 - [x] Maintain a source-backed SF seed venue file.
-- [ ] Add fields for `visualClues`, `menuClues`, `doNotInferFrom`,
+- [x] Add fields for `visualClues`, `menuClues`, `doNotInferFrom`,
   `multiLocation`, and source-backed confidence.
 - [x] Add tests that prevent broad venue metadata from being treated as direct
   image evidence.
@@ -191,26 +209,26 @@ order keeps the app honest first, then adds more search power and scale.
 - [x] Keep corrections as unverified user claims.
 - [x] Add anonymous local session IDs for feedback grouping.
 - [x] Enforce one suggested correction per run.
-- [ ] Add Cloudflare/IP/session rate limits and optional Turnstile only for
+- [x] Add Cloudflare/IP/session rate limits and optional Turnstile only for
   suspicious behavior.
-- [ ] Ignore or downweight repeated contradictory corrections from the same
+- [x] Ignore or downweight repeated contradictory corrections from the same
   anonymous session.
 
 ### 11.9 More Transparent Results
 
 - [x] Show visual evidence, search trail, why-this-guess text, hearts, undo, and
   correction suggestions.
-- [ ] Add compact evidence badges: OCR, Maps photos, Article, Dish, Interior,
+- [x] Add compact evidence badges: OCR, Maps photos, Article, Dish, Interior,
   GPS.
-- [ ] Change plain-language labels so the UI says `Best supported match`,
+- [x] Change plain-language labels so the UI says `Best supported match`,
   `Close guesses`, or `Needs confirmation` instead of overstating certainty.
 
 ### 11.10 Benchmark Set
 
-- [ ] Create a small internal benchmark manifest for known photos such as
+- [x] Create a small internal benchmark manifest for known photos such as
   Souvla, Kissaten Hi-Fi, RT Bistro, misleading packaging, no-text interiors,
   and multi-location venues.
-- [ ] Add a local benchmark runner that records whether the expected venue was
+- [x] Add a local benchmark runner that records whether the expected venue was
   rank 1, present but lower-ranked, or missing.
-- [ ] Run the benchmark before ranking/search changes so improvements do not
+- [x] Run the benchmark before ranking/search changes so improvements do not
   just move errors around.

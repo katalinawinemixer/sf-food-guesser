@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { onRequestGet as healthGet } from '../functions/api/health.js'
 import { onRequestPost as analyzePhotoPost } from '../functions/api/analyze-photo.js'
 import { onRequestPost as feedbackPost } from '../functions/api/feedback.js'
-import { normalizeAnalysis } from '../functions/api/_shared.js'
+import { buildCloudflareQueryLanes, normalizeAnalysis } from '../functions/api/_shared.js'
 
 const pngPixel = Buffer.from(
   'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=',
@@ -147,7 +147,7 @@ describe('Cloudflare Pages Functions API', () => {
       ],
       webSearchProvider: 'openrouter-web-search',
       searchPlan: {
-        searchQueries: ['San Francisco matcha brown coffee bags tan aprons cafe'],
+        searchQueries: expect.arrayContaining(['San Francisco matcha brown coffee bags tan aprons cafe']),
       },
     })
 
@@ -527,7 +527,7 @@ describe('Cloudflare Pages Functions API', () => {
     const body = await json(response)
 
     expect(response.status).toBe(200)
-    expect(fetchMock.mock.calls.filter(([url]) => String(url).includes('api.exa.ai'))).toHaveLength(2)
+    expect(fetchMock.mock.calls.filter(([url]) => String(url).includes('api.exa.ai')).length).toBeGreaterThanOrEqual(2)
     const hasDataSearchCalls = fetchMock.mock.calls.filter(([url]) =>
       String(url).includes('api.hasdata.com/scrape/google-maps/search'),
     )
@@ -898,6 +898,99 @@ describe('Cloudflare Pages Functions API', () => {
     expect(result.candidates.find((candidate) => candidate.name === 'Article Only Cafe')?.confidence).toBeLessThanOrEqual(38)
   })
 
+  it('keeps Cloudflare ranking debug behind an explicit flag', () => {
+    const payload = {
+      summary: 'Burger and fries with OCR reading RT Bistro.',
+      imageEvidence: ['burger', 'fries'],
+      candidates: [
+        {
+          id: 'rintaro',
+          name: 'Rintaro',
+          confidence: 99,
+          evidenceCategories: ['visible_text', 'web_source_match'],
+          externalEvidence: ['A source page says Rintaro serves udon.'],
+          reasons: ['No readable venue text was visible in the uploaded photo.'],
+          sourceUrls: ['https://example.com/rintaro'],
+        },
+        {
+          id: '',
+          name: 'Burger Lead',
+          confidence: 88,
+          evidenceCategories: ['dish_match'],
+          photoEvidence: ['The uploaded photo shows a burger.'],
+          reasons: ['The photo shows a similar burger.'],
+        },
+      ],
+    }
+
+    const normalResult = normalizeAnalysis(payload, {
+      seedVenueIds: ['rintaro'],
+      searchPlan: { visibleText: ['RT Bistro'] },
+    })
+    expect(normalResult).not.toHaveProperty('rankingDebug')
+
+    const debugResult = normalizeAnalysis(payload, {
+      seedVenueIds: ['rintaro'],
+      searchPlan: { visibleText: ['RT Bistro'] },
+      debugRanking: true,
+    })
+    expect(debugResult.rankingDebug.find((candidate) => candidate.name === 'Rintaro')).toMatchObject({
+      status: 'kept',
+      reasons: expect.arrayContaining([
+        'visible text removed because exact candidate name was not readable',
+        'seed source text only',
+        'source-only cap',
+        'no identity clue',
+        'OCR contradicted candidate',
+      ]),
+    })
+    expect(debugResult.rankingDebug.find((candidate) => candidate.name === 'Burger Lead')).toMatchObject({
+      reasons: expect.arrayContaining(['dish-only cap']),
+    })
+  })
+
+  it('builds Cloudflare query lanes and merges duplicate candidates before ranking', () => {
+    const lanes = buildCloudflareQueryLanes({
+      summary: 'Souvla tray with blue-rim plates.',
+      imageEvidence: ['readable Souvla text', 'blue-rim plates'],
+      visibleText: ['Souvla'],
+      searchQueries: ['blue rim plates Greek food San Francisco photos'],
+    })
+    const result = normalizeAnalysis({
+      summary: 'Souvla tray with blue-rim plates.',
+      imageEvidence: ['readable Souvla text', 'blue-rim plates'],
+      candidates: [
+        {
+          id: 'souvla',
+          name: 'Souvla',
+          confidence: 60,
+          evidenceCategories: ['dish_match'],
+          photoEvidence: ['The uploaded photo shows Greek food.'],
+          sourceUrls: ['https://example.com/menu'],
+        },
+        {
+          id: '',
+          name: 'Souvla',
+          confidence: 88,
+          evidenceCategories: ['visible_text', 'packaging_logo'],
+          photoEvidence: ['The uploaded photo contains readable text that says Souvla.'],
+          sourceUrls: ['https://example.com/photos'],
+        },
+      ],
+    })
+
+    expect(lanes.map((lane) => lane.lane)).toEqual(
+      expect.arrayContaining(['exact_ocr_text', 'dish_menu', 'recent_openings']),
+    )
+    expect(result.candidates).toHaveLength(1)
+    expect(result.candidates[0].evidenceCategories).toEqual(
+      expect.arrayContaining(['dish_match', 'visible_text', 'packaging_logo']),
+    )
+    expect(result.candidates[0].sourceUrls).toEqual(
+      expect.arrayContaining(['https://example.com/menu', 'https://example.com/photos']),
+    )
+  })
+
   it('rejects unsupported Cloudflare photo uploads before provider calls', async () => {
     const fetchMock = vi.spyOn(globalThis, 'fetch')
     const formData = new FormData()
@@ -1042,5 +1135,68 @@ describe('Cloudflare Pages Functions API', () => {
     expect(body.error).toMatch(/already submitted/)
     expect(get).toHaveBeenCalledWith('feedback-suggestion:run-suggestion:anonymous-session')
     expect(put).not.toHaveBeenCalled()
+  })
+
+  it('rate limits Cloudflare photo analysis when a rate-limit KV binding is configured', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch')
+    const get = vi.fn(async () =>
+      JSON.stringify({ count: 10, resetAt: Date.now() + 60_000 }),
+    )
+    const put = vi.fn(async () => undefined)
+
+    const response = await analyzePhotoPost({
+      request: {
+        formData: async () => {
+          throw new Error('Should not parse uploads when rate limited.')
+        },
+        headers: cloudflareHeaders(),
+      },
+      env: usageEnv({
+        SF_FOOD_RATE_LIMIT_KV: { get, put },
+        SF_FOOD_ANALYZE_RATE_LIMIT: '10',
+      }),
+    })
+    const body = await json(response)
+
+    expect(response.status).toBe(429)
+    expect(body.error).toMatch(/Rate limit reached/)
+    expect(response.headers.get('Retry-After')).toBeTruthy()
+    expect(fetchMock).not.toHaveBeenCalled()
+
+    fetchMock.mockRestore()
+  })
+
+  it('downweights repeated suggested corrections from the same anonymous session', async () => {
+    const get = vi.fn(async (key) =>
+      String(key).startsWith('feedback-suggestion:') ? null : '3',
+    )
+    const put = vi.fn(async () => undefined)
+    const response = await feedbackPost({
+      request: new Request('https://sf-food-guesser.pages.dev/api/feedback', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          runId: 'run-weight',
+          sessionId: 'anonymous-session',
+          vote: 'suggested_answer',
+          suggestedVenue: {
+            name: 'Dubious Cafe',
+          },
+        }),
+      }),
+      env: {
+        SF_FOOD_FEEDBACK_KV: { get, put },
+      },
+    })
+    const feedbackPut = put.mock.calls.find(([key]) => String(key).startsWith('feedback:'))
+    const storedRecord = JSON.parse(feedbackPut[1])
+
+    expect(response.status).toBe(201)
+    expect(storedRecord.feedbackWeight).toBe(0.25)
+    expect(put).toHaveBeenCalledWith(
+      'feedback-weight:anonymous-session:suggested_answer',
+      '4',
+      { expirationTtl: 30 * 24 * 60 * 60 },
+    )
   })
 })

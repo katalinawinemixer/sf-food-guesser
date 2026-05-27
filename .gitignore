@@ -11,6 +11,7 @@ node_modules
 dist
 dist-ssr
 data/
+benchmarks/images/
 .wrangler/
 *.local
 .env

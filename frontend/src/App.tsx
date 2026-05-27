@@ -168,21 +168,23 @@ async function createOcrContactSheet(file: File) {
   const sourceHeight = drawable.height
   if (!sourceWidth || !sourceHeight) return null
 
-  const panelWidth = 420
-  const panelHeight = 280
+  const panelWidth = 380
+  const panelHeight = 260
   const canvas = document.createElement('canvas')
   canvas.width = panelWidth * 3
-  canvas.height = panelHeight * 2
+  canvas.height = panelHeight * 3
   const context = canvas.getContext('2d')
   if (!context) return null
 
   context.fillStyle = '#ffffff'
   context.fillRect(0, 0, canvas.width, canvas.height)
 
-  const drawContain = (dx: number, dy: number) => {
+  const drawContain = (dx: number, dy: number, filter = 'none') => {
     const scale = Math.min(panelWidth / sourceWidth, panelHeight / sourceHeight)
     const width = sourceWidth * scale
     const height = sourceHeight * scale
+    context.save()
+    context.filter = filter
     context.drawImage(
       drawable,
       0,
@@ -194,6 +196,7 @@ async function createOcrContactSheet(file: File) {
       width,
       height,
     )
+    context.restore()
   }
 
   const drawCrop = (
@@ -203,7 +206,10 @@ async function createOcrContactSheet(file: File) {
     sourceHeightRatio: number,
     dx: number,
     dy: number,
+    filter = 'none',
   ) => {
+    context.save()
+    context.filter = filter
     context.drawImage(
       drawable,
       sourceWidth * sourceXRatio,
@@ -215,14 +221,18 @@ async function createOcrContactSheet(file: File) {
       panelWidth,
       panelHeight,
     )
+    context.restore()
   }
 
   drawContain(0, 0)
-  drawCrop(0, 0, 0.5, 0.5, panelWidth, 0)
-  drawCrop(0.5, 0, 0.5, 0.5, panelWidth * 2, 0)
-  drawCrop(0, 0.5, 0.5, 0.5, 0, panelHeight)
-  drawCrop(0.5, 0.5, 0.5, 0.5, panelWidth, panelHeight)
-  drawCrop(0.2, 0.2, 0.6, 0.6, panelWidth * 2, panelHeight)
+  drawCrop(0, 0, 1, 0.55, panelWidth, 0)
+  drawCrop(0, 0.45, 1, 0.55, panelWidth * 2, 0)
+  drawCrop(0, 0, 0.55, 1, 0, panelHeight)
+  drawCrop(0.45, 0, 0.55, 1, panelWidth, panelHeight)
+  drawCrop(0.18, 0.18, 0.64, 0.64, panelWidth * 2, panelHeight)
+  drawContain(0, panelHeight * 2, 'grayscale(1) contrast(2.1) brightness(1.08)')
+  drawCrop(0, 0.45, 1, 0.55, panelWidth, panelHeight * 2, 'grayscale(1) contrast(2.3) brightness(1.14)')
+  drawCrop(0.15, 0.15, 0.7, 0.7, panelWidth * 2, panelHeight * 2, 'grayscale(1) contrast(2.2) brightness(1.1)')
 
   if ('close' in drawable && typeof drawable.close === 'function') drawable.close()
 
@@ -245,6 +255,19 @@ function normalizeStringList(value: unknown, maxItems = 4) {
 
 function reasonLooksExternal(reason: string) {
   return /\b(web|source|article|review|public photo|google maps|maps|yelp|eater|infatuation|sf standard|sfgate|url|site|external)\b/i.test(reason)
+}
+
+function normalizedEvidenceCategories(candidate: Partial<VisionCandidate>) {
+  const categories = Array.isArray(candidate.evidenceCategories)
+    ? candidate.evidenceCategories.map(String).slice(0, 7)
+    : []
+  if (!categories.length && candidate.evidenceType) {
+    categories.push(`${String(candidate.evidenceType).toLowerCase()}_match`)
+  }
+  if (Array.isArray(candidate.sourceUrls) && candidate.sourceUrls.length) {
+    categories.push('web_source_match')
+  }
+  return [...new Set(categories)]
 }
 
 function candidateExplanationBuckets(candidate: Partial<VisionCandidate>) {
@@ -602,11 +625,35 @@ function hasIdentityEvidence(evidenceCategories: string[] = []) {
 }
 
 function confidenceLabel(confidence: number, evidenceCategories: string[] = []) {
-  if (confidence >= 75 && hasIdentityEvidence(evidenceCategories)) return 'Strong'
-  if (confidence >= 60) return 'Likely'
-  if (confidence >= 30) return 'Possible'
+  if (confidence >= 75 && hasIdentityEvidence(evidenceCategories)) return 'Identity clue'
+  if (confidence >= 60) return 'Needs confirmation'
+  if (confidence >= 30) return 'Possible lead'
   if (confidence > 0) return 'Weak lead'
   return 'Ready'
+}
+
+function evidenceBadges(match: MatchResult, analysis?: VisionAnalysis) {
+  const categories = new Set(match.evidenceCategories ?? [])
+  const badges = []
+  if (categories.has('visible_text')) badges.push('OCR')
+  if (categories.has('gps_match')) badges.push('GPS')
+  if (
+    categories.has('web_source_match') &&
+    analysis?.photoEvidence?.some((photo) => /google maps|maps|photo|review/i.test(`${photo.source} ${photo.title}`))
+  ) {
+    badges.push('Maps photos')
+  }
+  if (categories.has('web_source_match')) badges.push('Article')
+  if (categories.has('dish_match')) badges.push('Dish')
+  if (categories.has('interior_match') || categories.has('storefront_match')) badges.push('Interior')
+  return [...new Set(badges)].slice(0, 6)
+}
+
+function resultStateLabel(analysis: VisionAnalysis | undefined, matches: MatchResult[], topMatch: MatchResult | null) {
+  if (!analysis) return 'GPS-ranked'
+  if (!matches.length || analysis.needsMoreEvidence) return 'Needs confirmation'
+  if (!topMatch) return 'Close guesses'
+  return 'Best supported match'
 }
 
 function feedbackLabel(feedback: FeedbackState) {
@@ -639,6 +686,11 @@ async function analyzePhotoWithVision(file: File): Promise<VisionAnalysis> {
         address: venue.address,
         signature: venue.signature,
         imageEvidenceHints: venue.imageEvidenceHints,
+        visualClues: venue.visualClues,
+        menuClues: venue.menuClues,
+        doNotInferFrom: venue.doNotInferFrom,
+        multiLocation: venue.multiLocation,
+        sourceConfidence: venue.sourceConfidence,
         note: venue.note,
       })),
     ),
@@ -677,9 +729,7 @@ async function analyzePhotoWithVision(file: File): Promise<VisionAnalysis> {
               ? normalizeConfidence(candidate.originalConfidence)
               : undefined,
             evidenceType: candidate.evidenceType ? String(candidate.evidenceType) : undefined,
-            evidenceCategories: Array.isArray(candidate.evidenceCategories)
-              ? candidate.evidenceCategories.map(String).slice(0, 7)
-              : [],
+            evidenceCategories: normalizedEvidenceCategories(candidate),
             ...candidateExplanationBuckets(candidate),
             rankingNotes: Array.isArray(candidate.rankingNotes)
               ? candidate.rankingNotes.map(String).slice(0, 4)
@@ -1383,7 +1433,7 @@ function App() {
           <section className="close-match-notice" aria-live="polite">
             <Search size={15} />
             <span>
-              These guesses are too close to call, so there is no top match yet. Use the hearts to teach this run which one was right.
+              Close guesses: these results are too close to call, so there is no top match yet. Use the hearts to teach this run which one was right.
             </span>
           </section>
         ) : null}
@@ -1409,7 +1459,7 @@ function App() {
                 ))}
               </div>
               <span className="freshness">
-                {photo.analysis ? 'Confirm before trusting' : photo.coords ? 'GPS-ranked' : ''}
+                {resultStateLabel(photo.analysis, matches, topMatch)}
               </span>
             </div>
 
@@ -1432,6 +1482,7 @@ function App() {
                     : match.reasons
                 const externalEvidence = match.externalEvidence ?? []
                 const rankingRules = match.rankingRules?.length ? match.rankingRules : match.rankingNotes
+                const badges = evidenceBadges(match, photo.analysis)
 
                 return (
                   <article
@@ -1464,6 +1515,14 @@ function App() {
                         <span key={item}>{item}</span>
                       ))}
                     </div>
+
+                    {badges.length ? (
+                      <div className="evidence-badges" aria-label={`Evidence types for ${match.venue.name}`}>
+                        {badges.map((badge) => (
+                          <span key={badge}>{badge}</span>
+                        ))}
+                      </div>
+                    ) : null}
 
                     <div className="feedback-panel" aria-label={`Feedback for ${match.venue.name}`}>
                       <span>{feedback ? feedbackLabel(feedback) : 'Was this it?'}</span>

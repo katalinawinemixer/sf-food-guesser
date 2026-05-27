@@ -16,6 +16,11 @@ export type Venue = {
   lng: number
   signature: string[]
   imageEvidenceHints: string[]
+  visualClues?: string[]
+  menuClues?: string[]
+  doNotInferFrom?: string[]
+  multiLocation?: boolean
+  sourceConfidence?: 'source-backed' | 'needs-review'
   sourceUrl: string
   mapsUrl: string
   note: string
@@ -186,6 +191,11 @@ export const venues: Venue[] = [
       'mango lassi matcha',
       'sightglass',
     ],
+    visualClues: ['brown coffee bags on shelves', 'tan aprons', 'vinyl/listening-cafe cues', 'compact prep area'],
+    menuClues: ['iced matcha', 'cream-top drinks', 'mango lassi matcha', 'coffee'],
+    doNotInferFrom: ['generic matcha alone', 'brown bags alone', 'small animal/wall mark alone'],
+    multiLocation: false,
+    sourceConfidence: 'source-backed',
     sourceUrl: 'https://www.theinfatuation.com/san-francisco/reviews/kissaten-hifi',
     mapsUrl: 'https://www.google.com/maps/search/?api=1&query=Kissaten+HiFi+189+6th+Ave+San+Francisco',
     note: 'Recently opened Richmond coffee and matcha cafe with vinyl-listening cues and layered matcha drinks.',
@@ -492,6 +502,11 @@ export const venues: Venue[] = [
       'duck a l orange',
       'bistro',
     ],
+    visualClues: ['bistro burger plating', 'caviar service when paired with RT Bistro context', 'Hayes Valley bistro setting'],
+    menuClues: ['bistro burger', 'porcini doughnuts', 'caviar', 'single-layer lasagna'],
+    doNotInferFrom: ['caviar word alone', 'generic burger alone', 'Rich Table mention without uploaded-photo support'],
+    multiLocation: false,
+    sourceConfidence: 'source-backed',
     sourceUrl: 'https://www.rt-bistro.com/menus/',
     mapsUrl: 'https://www.google.com/maps/search/?api=1&query=RT+Bistro+205+Oak+St+San+Francisco',
     note: 'New Hayes Valley bistro from the Rich Table team; caviar or burger clues should not be mistaken for unrelated caviar cafes.',
@@ -578,6 +593,11 @@ export const venues: Venue[] = [
       'chestnut',
       'dogpatch',
     ],
+    visualClues: ['readable Souvla text', 'Greek key tray liner', 'blue-rim enamel-style plates', 'rotisserie counter context'],
+    menuClues: ['souvlaki', 'Greek salads', 'fries', 'frozen Greek yogurt'],
+    doNotInferFrom: ['generic Greek food alone', 'blue-rim plates without visible Souvla text', 'one SF branch without GPS or neighborhood clues'],
+    multiLocation: true,
+    sourceConfidence: 'source-backed',
     sourceUrl: 'https://www.souvla.com/locations/',
     mapsUrl: 'https://www.google.com/maps/search/?api=1&query=Souvla+San+Francisco',
     note: 'San Francisco-born Greek restaurant group; exact branch should be confirmed from GPS, storefront, or neighborhood clues.',
@@ -592,6 +612,11 @@ export const venues: Venue[] = [
     lng: -122.40959,
     signature: ['Modern Vietnamese', 'garlic noodles', 'shaking beef'],
     imageEvidenceHints: ['vietnamese', 'bodega', 'tenderloin', 'mason', 'garlic noodles', 'shaking beef', 'pho'],
+    visualClues: ['readable Bodega SF venue text', 'Tenderloin/Mason Street context'],
+    menuClues: ['garlic noodles', 'shaking beef', 'pho'],
+    doNotInferFrom: ['partial BODEGA text on third-party packaging', 'generic Vietnamese dishes without venue text'],
+    multiLocation: false,
+    sourceConfidence: 'source-backed',
     sourceUrl: 'https://www.bodegasf.com/',
     mapsUrl: 'https://www.google.com/maps/search/?api=1&query=Bodega+SF+138+Mason+St+San+Francisco',
     note: 'Tenderloin Vietnamese restaurant with modern dining-room cues.',

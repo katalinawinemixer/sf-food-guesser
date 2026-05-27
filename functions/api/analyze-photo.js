@@ -4,6 +4,7 @@ import {
   buildOcrPrompt,
   buildSearchPlanPrompt,
   disallowedOriginResponse,
+  enforceCloudflareRateLimit,
   fileToDataUrl,
   jsonResponse,
   mergeOcrIntoSearchPlan,
@@ -39,7 +40,11 @@ function seedPhotoSearchQueries(venues = [], searchPlan = null) {
 
   return venues
     .map((venue, originalIndex) => {
-      const hints = Array.isArray(venue.imageEvidenceHints) ? venue.imageEvidenceHints : []
+      const hints = [
+        ...(Array.isArray(venue.imageEvidenceHints) ? venue.imageEvidenceHints : []),
+        ...(Array.isArray(venue.visualClues) ? venue.visualClues : []),
+        ...(Array.isArray(venue.menuClues) ? venue.menuClues : []),
+      ]
       const matchedHintCount = hints.filter((hint) => {
         const normalizedHint = String(hint).toLowerCase().trim()
         return normalizedHint.length >= 4 && haystack.includes(normalizedHint)
@@ -101,6 +106,15 @@ export async function onRequestPost({ request, env }) {
   const originResponse = disallowedOriginResponse(request, env)
   if (originResponse) return originResponse
 
+  const rateLimitResponse = await enforceCloudflareRateLimit({
+    request,
+    env,
+    scope: 'analyze-photo',
+    limit: Number(env.SF_FOOD_ANALYZE_RATE_LIMIT || 10),
+    windowSeconds: Number(env.SF_FOOD_ANALYZE_RATE_WINDOW_SECONDS || 3600),
+  })
+  if (rateLimitResponse) return rateLimitResponse
+
   if (!provider) {
     return jsonResponse(
       {
@@ -160,6 +174,7 @@ export async function onRequestPost({ request, env }) {
   let webEvidence = []
   let photoEvidence = []
   const shouldDebugPhotoEvidence = env.DEBUG_PHOTO_EVIDENCE === 'true'
+  const shouldDebugRanking = env.DEBUG_RANKING === 'true'
   let photoEvidenceDebug = null
   let lastError = null
 
@@ -411,6 +426,7 @@ export async function onRequestPost({ request, env }) {
           searchPlan,
           ocr: ocrResult,
           webEvidence,
+          debugRanking: shouldDebugRanking,
         })
         return jsonResponse({
           runId,

@@ -760,6 +760,26 @@
   border: 1px solid #f0d7a5;
 }
 
+.evidence-badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 10px;
+}
+
+.evidence-badges span {
+  display: inline-flex;
+  align-items: center;
+  border-radius: 999px;
+  border: 1px solid #d8e5ee;
+  background: #f5fbff;
+  color: #31546a;
+  font-size: 11.5px;
+  font-weight: 850;
+  line-height: 1;
+  padding: 5px 8px;
+}
+
 .feedback-panel {
   display: flex;
   align-items: center;

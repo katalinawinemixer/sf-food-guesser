@@ -86,6 +86,10 @@ repo. The Pages Function uses OpenRouter for vision, Exa for parallel
 photo-derived evidence searches when `EXA_API_KEY` is configured, and HasData
 for Google Maps/customer photo evidence when `HASDATA_API_KEY` is configured.
 Production feedback records use the `SF_FOOD_FEEDBACK_KV` binding.
+Optional abuse protection uses a separate `SF_FOOD_RATE_LIMIT_KV` binding for
+IP/session rate limits; if `TURNSTILE_SECRET_KEY` is present, rate-limit
+responses also tell the frontend that Turnstile can be required for suspicious
+traffic.
 
 Target production domains are `https://spotted-in-sf.com` and
 `https://www.spotted-in-sf.com`; both should serve the same Cloudflare Pages
@@ -102,3 +106,16 @@ accuracy, security, and deployment checklist.
 
 The product promise and accuracy rules are in
 [docs/PRODUCT_SPEC.md](./docs/PRODUCT_SPEC.md).
+
+## Accuracy Benchmarks
+
+Known-case benchmark metadata lives in `benchmarks/manifest.json`. Put local
+test photos in `benchmarks/images/` when you want to run it; that directory is
+git-ignored so benchmark runs do not store uploaded images in the repo.
+
+```bash
+npm run benchmark
+```
+
+The runner writes JSON reports to `data/benchmark-runs/` with whether the
+expected venue was rank 1, present lower-ranked, missing, skipped, or uncertain.

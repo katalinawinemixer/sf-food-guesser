@@ -1,4 +1,9 @@
-import { jsonResponse, methodNotAllowed, optionsResponse } from './_shared.js'
+import {
+  enforceCloudflareRateLimit,
+  jsonResponse,
+  methodNotAllowed,
+  optionsResponse,
+} from './_shared.js'
 
 function cleanText(value, maxLength = 500) {
   return typeof value === 'string' ? value.slice(0, maxLength) : ''
@@ -64,6 +69,20 @@ function normalizeFeedback(body) {
   }
 }
 
+async function feedbackWeight(env, feedback) {
+  const store = env.SF_FOOD_FEEDBACK_KV
+  if (!store?.get || !store?.put || !feedback.sessionId) return 1
+
+  const key = `feedback-weight:${feedback.sessionId}:${feedback.vote}`
+  const existing = await store.get(key).catch(() => null)
+  const count = Number(existing || 0) + 1
+  await store.put(key, String(count), { expirationTtl: 30 * 24 * 60 * 60 }).catch(() => undefined)
+
+  if (feedback.vote === 'suggested_answer' && count > 3) return 0.25
+  if (feedback.vote === 'incorrect' && count > 30) return 0.5
+  return 1
+}
+
 export function onRequestOptions() {
   return optionsResponse()
 }
@@ -86,6 +105,22 @@ export async function onRequestPost({ request, env }) {
       ? `feedback-suggestion:${feedback.runId}:${feedback.sessionId || 'anonymous'}`
       : null
 
+  const rateLimitResponse = await enforceCloudflareRateLimit({
+    request,
+    env,
+    scope: feedback.vote === 'suggested_answer' ? 'feedback-suggestion' : 'feedback',
+    sessionId: feedback.sessionId,
+    limit:
+      feedback.vote === 'suggested_answer'
+        ? Number(env.SF_FOOD_SUGGESTION_RATE_LIMIT || 3)
+        : Number(env.SF_FOOD_FEEDBACK_RATE_LIMIT || 60),
+    windowSeconds:
+      feedback.vote === 'suggested_answer'
+        ? Number(env.SF_FOOD_SUGGESTION_RATE_WINDOW_SECONDS || 86400)
+        : Number(env.SF_FOOD_FEEDBACK_RATE_WINDOW_SECONDS || 3600),
+  })
+  if (rateLimitResponse) return rateLimitResponse
+
   if (suggestionKey && env.SF_FOOD_FEEDBACK_KV?.get) {
     const existingSuggestion = await env.SF_FOOD_FEEDBACK_KV.get(suggestionKey)
     if (existingSuggestion) {
@@ -97,6 +132,7 @@ export async function onRequestPost({ request, env }) {
     id: crypto.randomUUID(),
     createdAt: new Date().toISOString(),
     app: 'sf-food-guesser',
+    feedbackWeight: await feedbackWeight(env, feedback),
     ...feedback,
   }
 

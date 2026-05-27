@@ -2,9 +2,13 @@ import request from 'supertest'
 import { mkdtemp, readFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import sharp from 'sharp'
 import { describe, expect, it, vi } from 'vitest'
 import {
+  buildEvidenceQueryLanes,
+  buildUploadedImageViews,
   createApp as createServerApp,
+  dedupeCandidatesBeforeRanking,
   discoverArticleCandidates,
   rerankCandidates,
   searchCeramicWeb,
@@ -489,6 +493,11 @@ describe('SF Food Guesser API', () => {
             address: '542 Green St',
             signature: ['Focaccia pizza'],
             imageEvidenceHints: ['square slice'],
+            visualClues: ['green neon sign'],
+            menuClues: ['focaccia slice'],
+            doNotInferFrom: ['square slice alone'],
+            multiLocation: false,
+            sourceConfidence: 'source-backed',
             note: 'North Beach slice counter.',
           },
         ]),
@@ -515,6 +524,7 @@ describe('SF Food Guesser API', () => {
       ]),
     )
     expect(userContent[0].text).toContain('imageEvidenceHints')
+    expect(userContent[0].text).toContain('doNotInferFrom')
     expect(userContent[0].text).not.toContain('"clue"')
     expect(userContent[0].text).not.toContain('"manual"')
   })
@@ -1045,9 +1055,9 @@ describe('SF Food Guesser API', () => {
       .field('venues', '[]')
       .expect(200)
 
-    expect(photoSearch.search).toHaveBeenCalledWith([
-      'San Francisco cafe green tile wall pastry case interior photos',
-    ])
+    expect(photoSearch.search).toHaveBeenCalledWith(
+      expect.arrayContaining(['San Francisco cafe green tile wall pastry case interior photos']),
+    )
     expect(response.body.searchProvider).toBe('mock-photo-search')
     expect(response.body.photoEvidence[0]).toMatchObject({
       title: 'Green Tile Cafe interior',
@@ -1147,11 +1157,13 @@ describe('SF Food Guesser API', () => {
       .field('venues', '[]')
       .expect(200)
 
-    expect(photoSearch.search).toHaveBeenCalledWith([
-      '"Souvla" San Francisco restaurant cafe',
-      '"Souvla" San Francisco menu photos reviews',
-      'San Francisco Greek counter blue rim plates photos',
-    ])
+    expect(photoSearch.search).toHaveBeenCalledWith(
+      expect.arrayContaining([
+        '"Souvla" San Francisco restaurant cafe',
+        '"Souvla" San Francisco menu photos reviews',
+        'San Francisco Greek counter blue rim plates photos',
+      ]),
+    )
   })
 
   it('retries comparison without external image URLs when the image-heavy request fails', async () => {
@@ -1534,9 +1546,9 @@ describe('SF Food Guesser API', () => {
       .field('venues', '[]')
       .expect(200)
 
-    expect(webSearch.search).toHaveBeenCalledWith([
-      'San Francisco cafe black counter pastry case interior',
-    ])
+    expect(webSearch.search).toHaveBeenCalledWith(
+      expect.arrayContaining(['San Francisco cafe black counter pastry case interior']),
+    )
     expect(response.body.webSearchProvider).toBe('exa')
     expect(response.body.webEvidence[0]).toMatchObject({
       title: 'Black Counter Cafe review',
@@ -2324,6 +2336,126 @@ describe('SF Food Guesser API', () => {
     expect(candidates.find((candidate) => candidate.name === 'Rintaro')?.confidence).toBeLessThanOrEqual(40)
     expect(candidates.find((candidate) => candidate.name === 'Article Only Cafe')?.confidence).toBeLessThanOrEqual(38)
     expect(candidates.find((candidate) => candidate.name === 'Burger Photo Lead')?.confidence).toBeLessThanOrEqual(42)
+  })
+
+  it('records local ranking debug only when a debug report is requested', () => {
+    const rankingDebug = []
+    const candidates = rerankCandidates(
+      [
+        {
+          id: 'rintaro',
+          name: 'Rintaro',
+          confidence: 99,
+          evidenceCategories: ['visible_text', 'web_source_match'],
+          externalEvidence: ['A source page says Rintaro serves udon.'],
+          reasons: ['No readable venue text was visible in the uploaded photo.'],
+          sourceUrls: ['https://example.com/rintaro'],
+        },
+        {
+          id: '',
+          name: 'Burger Lead',
+          confidence: 88,
+          evidenceCategories: ['dish_match'],
+          photoEvidence: ['The uploaded photo shows a burger.'],
+          reasons: ['The photo shows a similar burger.'],
+        },
+      ],
+      {
+        seedVenueIds: ['rintaro'],
+        ocrVisibleText: ['RT Bistro'],
+        debugReport: rankingDebug,
+      },
+    )
+
+    expect(candidates[0]).not.toHaveProperty('rankingDebugReasons')
+    expect(rankingDebug.find((candidate) => candidate.name === 'Rintaro')).toMatchObject({
+      status: 'kept',
+      reasons: expect.arrayContaining([
+        'visible text removed because exact candidate name was not readable',
+        'seed source text only',
+        'source-only cap',
+        'no identity clue',
+        'OCR contradicted candidate',
+      ]),
+    })
+    expect(rankingDebug.find((candidate) => candidate.name === 'Burger Lead')).toMatchObject({
+      reasons: expect.arrayContaining(['dish-only cap']),
+    })
+
+    const normalCandidates = rerankCandidates([
+      {
+        id: '',
+        name: 'Burger Lead',
+        confidence: 88,
+        evidenceCategories: ['dish_match'],
+        reasons: ['The photo shows a similar burger.'],
+      },
+    ])
+    expect(normalCandidates[0]).not.toHaveProperty('rankingDebugReasons')
+  })
+
+  it('builds a multi-crop contact sheet for local vision analysis', async () => {
+    const svg = Buffer.from(
+      '<svg xmlns="http://www.w3.org/2000/svg" width="900" height="700"><rect width="900" height="700" fill="white"/><text x="40" y="120" font-size="64">SOUVLA</text><rect x="220" y="300" width="420" height="220" fill="#b7d7a8"/></svg>',
+    )
+    const views = await buildUploadedImageViews({
+      buffer: svg,
+      mimetype: 'image/svg+xml',
+    })
+    const data = Buffer.from(views[0].dataUrl.split(',')[1], 'base64')
+    const metadata = await sharp(data).metadata()
+
+    expect(views[0].label).toContain('background/interior crop')
+    expect(views[0].label).toContain('high-contrast')
+    expect(metadata.width).toBe(1260)
+    expect(metadata.height).toBe(840)
+  })
+
+  it('builds separate query lanes for OCR text, interiors, dish clues, and recent openings', () => {
+    const lanes = buildEvidenceQueryLanes(
+      {
+        summary: 'Burger on a wooden table inside a new bistro.',
+        imageEvidence: ['readable text RT Bistro', 'wood table', 'burger'],
+        visibleText: ['RT Bistro'],
+        searchQueries: ['wood table burger San Francisco restaurant photos'],
+      },
+      [{ name: 'RT Bistro', neighborhood: 'Hayes Valley' }],
+    )
+
+    expect(lanes.map((lane) => lane.lane)).toEqual(
+      expect.arrayContaining(['exact_ocr_text', 'interior', 'dish_menu', 'recent_openings']),
+    )
+    expect(lanes.find((lane) => lane.lane === 'exact_ocr_text')?.queries[0]).toContain('"RT Bistro"')
+    expect(lanes.find((lane) => lane.lane === 'recent_openings')?.queries.join(' ')).toContain('RT Bistro')
+  })
+
+  it('merges duplicate candidates before ranking instead of dropping useful evidence', () => {
+    const candidates = dedupeCandidatesBeforeRanking([
+      {
+        id: 'souvla',
+        name: 'Souvla',
+        confidence: 60,
+        evidenceCategories: ['dish_match'],
+        photoEvidence: ['The uploaded photo shows fries.'],
+        sourceUrls: ['https://example.com/menu'],
+      },
+      {
+        id: '',
+        name: 'Souvla',
+        confidence: 88,
+        evidenceCategories: ['visible_text', 'packaging_logo'],
+        photoEvidence: ['The uploaded photo contains readable text that says Souvla.'],
+        sourceUrls: ['https://example.com/photos'],
+      },
+    ])
+
+    expect(candidates).toHaveLength(1)
+    expect(candidates[0]).toMatchObject({
+      id: 'souvla',
+      confidence: 88,
+      evidenceCategories: expect.arrayContaining(['dish_match', 'visible_text', 'packaging_logo']),
+      sourceUrls: expect.arrayContaining(['https://example.com/menu', 'https://example.com/photos']),
+    })
   })
 
   it('continues analysis when a web evidence provider fails', async () => {

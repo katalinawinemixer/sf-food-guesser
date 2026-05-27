@@ -109,6 +109,9 @@ describe('SF Food Guesser photo flow', () => {
       drawImage,
       fillRect: vi.fn(),
       fillStyle: '#ffffff',
+      filter: 'none',
+      restore: vi.fn(),
+      save: vi.fn(),
     } as unknown as CanvasRenderingContext2D)
     vi.spyOn(HTMLCanvasElement.prototype, 'toBlob').mockImplementation(
       (callback: BlobCallback) => {
@@ -234,9 +237,17 @@ describe('SF Food Guesser photo flow', () => {
     expect(photoForm.has('clue')).toBe(false)
     expect(photoForm.has('text')).toBe(false)
     expect(photoForm.has('description')).toBe(false)
+    const sentVenues = JSON.parse(String(photoForm.get('venues')))
+    expect(sentVenues.find((venue: { id: string }) => venue.id === 'souvla')).toMatchObject({
+      visualClues: expect.arrayContaining(['readable Souvla text']),
+      menuClues: expect.arrayContaining(['souvlaki']),
+      doNotInferFrom: expect.arrayContaining(['generic Greek food alone']),
+      multiLocation: true,
+      sourceConfidence: 'source-backed',
+    })
 
     expect(screen.getByText(/Analyzed photo: A square slice/i)).toBeVisible()
-    expect(screen.getByText('Confirm before trusting')).toBeVisible()
+    expect(screen.getAllByText('Best supported match')[0]).toBeVisible()
     expect(screen.getByText('square pizza')).toBeVisible()
     expect(screen.getAllByText('91%')[0]).toBeVisible()
     expect(screen.getByText(/The image shows a square focaccia-style pizza slice/i)).toBeVisible()
@@ -552,8 +563,8 @@ describe('SF Food Guesser photo flow', () => {
 
     expect(await screen.findByText(/too close to call/i)).toBeVisible()
     expect(screen.queryByText('Top match')).not.toBeInTheDocument()
-    expect(screen.getAllByText('Likely')).toHaveLength(3)
-    expect(screen.queryByText('Strong')).not.toBeInTheDocument()
+    expect(screen.getAllByText('Needs confirmation')).toHaveLength(4)
+    expect(screen.queryByText('Identity clue')).not.toBeInTheDocument()
 
     fireEvent.click(screen.getByLabelText('Mark Wrong Cafe One incorrect'))
     fireEvent.click(screen.getByLabelText('Mark Wrong Cafe Two incorrect'))
@@ -707,9 +718,11 @@ describe('SF Food Guesser photo flow', () => {
     expect(screen.queryByTestId('circle-marker')).not.toBeInTheDocument()
     expect(screen.getAllByRole('link', { name: /Search Maps/i })[0]).toBeVisible()
     expect(screen.getByText('interior evidence')).toBeVisible()
+    expect(screen.getByText('Interior')).toBeVisible()
+    expect(screen.getByText('Article')).toBeVisible()
     expect(screen.getByText('Web-discovered match')).toBeVisible()
-    expect(screen.getAllByText('Likely')[0]).toBeVisible()
-    expect(screen.queryByText('Strong')).not.toBeInTheDocument()
+    expect(screen.getAllByText('Needs confirmation')[0]).toBeVisible()
+    expect(screen.queryByText('Identity clue')).not.toBeInTheDocument()
     expect(screen.getByText('From the uploaded photo')).toBeVisible()
     expect(screen.getByText('The uploaded photo shows a blue cup beside a pastry case.')).toBeVisible()
     expect(screen.getByText('External support')).toBeVisible()
