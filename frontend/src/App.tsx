@@ -57,7 +57,10 @@ function validatePhotoFile(file: File) {
 async function readApiError(response: Response) {
   try {
     const result = await response.json()
-    if (typeof result.error === 'string' && result.error) return result.error
+    if (typeof result.error === 'string' && result.error) {
+      const runId = typeof result.runId === 'string' && result.runId ? ` Run ID: ${result.runId}` : ''
+      return `${result.error}${runId}`
+    }
   } catch {
     // Fall through to status-specific messages below.
   }
@@ -69,7 +72,10 @@ async function readApiError(response: Response) {
   if (response.status === 429) {
     return 'The AI provider is rate limiting photo analysis. Wait a bit, then try the upload again.'
   }
-  return 'Photo analysis failed.'
+  if ([500, 502, 503, 504, 520, 522, 524].includes(response.status)) {
+    return 'Photo analysis temporarily failed because one of the AI/search providers timed out or returned an error. Try again in a moment.'
+  }
+  return `Photo analysis failed with status ${response.status}.`
 }
 
 function shouldTranscodeForVision(file: File) {

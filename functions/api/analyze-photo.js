@@ -25,6 +25,7 @@ import {
 
 const providerFetchTimeoutMs = 18_000
 const requestDeadlineMs = 82_000
+const providerNativeImageTypes = new Set(['image/jpeg', 'image/jpg', 'image/png', 'image/webp'])
 
 export function onRequestOptions() {
   return optionsResponse()
@@ -75,6 +76,36 @@ function shouldTryNextProviderAttempt(error) {
 
 function remainingProviderTimeout(deadline) {
   return Math.max(1, Math.min(providerFetchTimeoutMs, deadline - Date.now()))
+}
+
+function createTimeoutFetch(fetchImpl, timeoutMs, label) {
+  return async (url, init = {}) => {
+    const controller = new AbortController()
+    const timer = setTimeout(() => controller.abort(), timeoutMs)
+    try {
+      return await fetchImpl(url, {
+        ...init,
+        signal: init.signal ?? controller.signal,
+      })
+    } catch (error) {
+      if (controller.signal.aborted) {
+        const timeoutError = new Error(`${label} timed out.`)
+        timeoutError.status = 504
+        throw timeoutError
+      }
+      throw error
+    } finally {
+      clearTimeout(timer)
+    }
+  }
+}
+
+function searchPlanHasImageContent(searchPlan) {
+  const summary = String(searchPlan?.summary ?? '')
+  const evidenceCount =
+    (Array.isArray(searchPlan?.imageEvidence) ? searchPlan.imageEvidence.length : 0) +
+    (Array.isArray(searchPlan?.visibleText) ? searchPlan.visibleText.length : 0)
+  return evidenceCount > 0 || !/no image content|image content is unavailable|unable to inspect/i.test(summary)
 }
 
 async function fetchJsonWithTimeout(url, init, timeoutMs, label) {
@@ -150,6 +181,18 @@ export async function onRequestPost({ request, env }) {
     return jsonResponse({ runId, error: imageBytesError }, 415)
   }
 
+  const fileType = String(file.type || '').toLowerCase()
+  if (!providerNativeImageTypes.has(fileType)) {
+    return jsonResponse(
+      {
+        runId,
+        error:
+          'This image type could not be converted for AI vision. Export it as JPG, PNG, or WebP and upload it again.',
+      },
+      415,
+    )
+  }
+
   const ocrFile = formData.get('ocrPhoto')
   let ocrDataUrl = null
   if (ocrFile && typeof ocrFile === 'object' && typeof ocrFile.arrayBuffer === 'function' && typeof ocrFile.slice === 'function') {
@@ -174,6 +217,11 @@ export async function onRequestPost({ request, env }) {
   let ocrResult = null
   let webEvidence = []
   let photoEvidence = []
+  const evidenceFetch = createTimeoutFetch(
+    fetch,
+    Number(env.SF_FOOD_EVIDENCE_FETCH_TIMEOUT_MS || 10_000),
+    'External evidence search',
+  )
   const shouldDebugPhotoEvidence = env.DEBUG_PHOTO_EVIDENCE === 'true'
   const shouldDebugRanking = env.DEBUG_RANKING === 'true'
   let photoEvidenceDebug = null
@@ -289,7 +337,7 @@ export async function onRequestPost({ request, env }) {
     if (Date.now() >= deadline) break
   }
 
-  if (searchPlan) {
+  if (searchPlan && searchPlanHasImageContent(searchPlan)) {
     const seededPhotoQueries = seedPhotoSearchQueries(venues, searchPlan)
     const photoSearchPlan = {
       ...searchPlan,
@@ -308,13 +356,13 @@ export async function onRequestPost({ request, env }) {
         }
       : null
     const photoEvidenceSearch = env.GOOGLE_PLACES_API_KEY
-      ? searchGooglePlacesPhotoEvidence(photoSearchPlan, env, fetch)
-      : searchHasDataPhotoEvidence(photoSearchPlan, env, fetch, hasDataDebug)
+      ? searchGooglePlacesPhotoEvidence(photoSearchPlan, env, evidenceFetch)
+      : searchHasDataPhotoEvidence(photoSearchPlan, env, evidenceFetch, hasDataDebug)
     const photoProviderName = env.GOOGLE_PLACES_API_KEY
       ? 'google-places-new-photos'
       : 'hasdata-google-maps-photos'
     const [exaResult, photoResult] = await Promise.allSettled([
-      searchExaEvidence(searchPlan, env),
+      searchExaEvidence(searchPlan, env, evidenceFetch),
       photoEvidenceSearch,
     ])
     if (exaResult.status === 'fulfilled') {
@@ -342,6 +390,11 @@ export async function onRequestPost({ request, env }) {
         hasData: hasDataDebug,
       }
     }
+  } else if (searchPlan) {
+    providerWarnings.push({
+      provider: 'search-plan',
+      message: 'The vision model did not return usable image details, so external venue search was skipped.',
+    })
   }
 
   const analysisAttempts = [

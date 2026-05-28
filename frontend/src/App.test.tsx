@@ -99,6 +99,29 @@ describe('SF Food Guesser photo flow', () => {
     expect(await screen.findByText(/rate limiting photo analysis/i)).toBeVisible()
   })
 
+  it('shows a useful temporary-failure message for non-JSON provider errors', async () => {
+    vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ ok: true, visionEnabled: true, model: 'test-model' }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        }),
+      )
+      .mockResolvedValueOnce(new Response('worker timeout', { status: 504 }))
+
+    render(<App />)
+
+    const file = new File(['fake image bytes'], 'latte.png', { type: 'image/png' })
+    fireEvent.change(document.querySelector('input[type="file"]') as HTMLInputElement, {
+      target: { files: [file] },
+    })
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Identify restaurant' }))
+
+    expect(await screen.findByText(/temporarily failed/i)).toBeVisible()
+    expect(screen.getByText(/AI\/search providers timed out/i)).toBeVisible()
+  })
+
   it('transcodes AVIF uploads to JPEG before sending them to analysis', async () => {
     const closeBitmap = vi.fn()
     vi.stubGlobal(

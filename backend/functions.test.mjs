@@ -1071,6 +1071,32 @@ describe('Cloudflare Pages Functions API', () => {
     fetchMock.mockRestore()
   })
 
+  it('rejects provider-unsupported image containers when browser conversion did not happen', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch')
+    const formData = new FormData()
+    const heicHeader = new Uint8Array([
+      0x00, 0x00, 0x00, 0x18, 0x66, 0x74, 0x79, 0x70, 0x68, 0x65, 0x69, 0x63,
+      0x00, 0x00, 0x00, 0x00,
+    ])
+    formData.set('photo', new File([heicHeader], 'photo.heic', { type: 'image/heic' }))
+    formData.set('venues', '[]')
+
+    const response = await analyzePhotoPost({
+      request: {
+        formData: async () => formData,
+        headers: cloudflareHeaders(),
+      },
+      env: usageEnv(),
+    })
+    const body = await json(response)
+
+    expect(response.status).toBe(415)
+    expect(body.error).toMatch(/Export it as JPG, PNG, or WebP/i)
+    expect(fetchMock).not.toHaveBeenCalled()
+
+    fetchMock.mockRestore()
+  })
+
   it('persists feedback to KV when the binding is configured', async () => {
     const put = vi.fn(async () => undefined)
     const response = await feedbackPost({
