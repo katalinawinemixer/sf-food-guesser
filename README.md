@@ -1,11 +1,17 @@
 # SF Food Guesser
 
-A local React app for identifying likely SF restaurants, cafes, bakeries, and
-late-night counters from uploaded food photos.
+An AI-assisted learning prototype for identifying likely San Francisco
+restaurants, cafes, bakeries, and late-night counters from uploaded food photos.
+
+This repository is a portfolio/showcase project, not a commercial product or a
+publicly supported service. I built it to practice shipping a real full-stack
+app with AI assistance: React/Vite UI work, local and serverless APIs, provider
+integration, privacy-aware upload handling, tests, deployment checks, and
+adversarial review.
 
 The app uses uploaded image analysis, optional local GPS EXIF extraction, a
-source-backed seed venue dataset in `shared/venues.js`, and OpenRouter web search
-to find likely venues beyond the local seed list. It intentionally avoids
+source-backed seed venue dataset in `shared/venues.js`, and provider-backed web
+search to find likely venues beyond the local seed list. It intentionally avoids
 live-hours and reservation claims because those change frequently.
 
 Submitting a photo strips embedded image metadata before sending it to the API,
@@ -17,10 +23,31 @@ coordinates as an extra ranking signal.
 The repository only includes placeholder environment variables. Real keys stay
 in your local `.env`, which is ignored by git.
 
+No license is currently included, so the code is visible for review and learning
+but is not granted for reuse unless a license is added later.
+
+## What This Demonstrates
+
+- Building a working AI-assisted web app from idea to deployed prototype.
+- Separating frontend display logic from server-owned ranking and seed data.
+- Handling uploaded images with metadata stripping before provider analysis.
+- Adding rate limiting, admin-token protection, CORS rules, and secret scanning.
+- Writing focused tests around API behavior, upload handling, and UI ranking.
+- Keeping changing or unrelated experiments out of the repo scope.
+
+## Current Limits
+
+- Accuracy is exploratory and depends on provider responses, public source
+  coverage, and the quality of the uploaded photo.
+- Benchmark photos are intentionally git-ignored; local benchmark runs require
+  adding your own images under `benchmarks/images/`.
+- Feedback records in local development are file-backed and ignored by git.
+- This is not advertised as a hosted product for general public use.
+
 ## Repository Layout
 
 ```text
-frontend/          React/Vite app, venue seed data, browser tests
+frontend/          React/Vite app, browser tests
 backend/           Local Express API, provider wiring, API tests
 functions/api/     Cloudflare Pages Functions for the production same-origin API
 docs/              Product and deployment notes
@@ -96,8 +123,8 @@ traffic.
 Target production domains are `https://spotted-in-sf.com` and
 `https://www.spotted-in-sf.com`; both should serve the same Cloudflare Pages
 project after DNS validation completes. The active Pages project is
-`spotted-in-sf`, connected to the private GitHub repo
-`katalinawinemixer/sf-food-guesser` on the `main` branch.
+`spotted-in-sf`, connected to the GitHub repo `katalinawinemixer/sf-food-guesser`
+on the `main` branch.
 
 See [docs/DEPLOYMENT.md](./docs/DEPLOYMENT.md).
 

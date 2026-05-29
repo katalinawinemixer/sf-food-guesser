@@ -48,8 +48,8 @@ Security headers are defined in `frontend/public/_headers` for static assets
 and in `functions/api/_shared.js` for API responses.
 
 The active Cloudflare Pages project is `spotted-in-sf`. It is connected to the
-private GitHub repository `katalinawinemixer/sf-food-guesser` and builds from
-the `main` branch with:
+GitHub repository `katalinawinemixer/sf-food-guesser` and builds from the
+`main` branch with:
 
 ```text
 npm run build
