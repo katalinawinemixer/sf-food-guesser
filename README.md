@@ -52,7 +52,6 @@ backend/           Local Express API, provider wiring, API tests
 functions/api/     Cloudflare Pages Functions for the production same-origin API
 docs/              Product and deployment notes
 scripts/           Secret scan and production health checks
-evaluation/        Evaluation photos and accuracy results
 data/              Ignored local run logs and feedback records
 ```
 
@@ -60,15 +59,15 @@ data/              Ignored local run logs and feedback records
 convention for Pages Functions.
 
 For stronger interior/storefront matching, add optional provider keys locally.
-`HASDATA_API_KEY` is the cost-optimized Google Maps/photo provider: the backend
-uses it to search Google Maps places and fetch customer/review photos before
-asking the vision model to compare those images against the upload.
-`CERAMIC_API_KEY` is the low-cost broad web-search provider for review pages,
-social/photo pages, and local food coverage. `EXA_API_KEY` can still add
-structured article discovery for sources such as Infatuation, Eater, SF
-Standard, SFGATE, Chronicle, and other local food coverage. `SERPAPI_API_KEY`
-is still supported as a legacy Google Maps/photo fallback when HasData is not
-configured.
+`GOOGLE_PLACES_API_KEY` enables the official Google Places photo provider and
+takes priority when configured. `HASDATA_API_KEY` is the cost-optimized Google
+Maps/customer-photo provider used when Google Places is not configured.
+`SERPAPI_API_KEY` is still supported as a legacy Google Maps/photo fallback when
+neither Google Places nor HasData is configured. `CERAMIC_API_KEY` is the
+low-cost broad web-search provider for review pages, social/photo pages, and
+local food coverage. `EXA_API_KEY` can still add structured article discovery
+for sources such as Infatuation, Eater, SF Standard, SFGATE, Chronicle, and
+other local food coverage.
 
 ## Run
 
@@ -111,14 +110,20 @@ The deployed API lives under `/api` through `functions/api/`, so
 `VITE_API_BASE_URL` should stay blank for the normal Cloudflare deployment.
 Cloudflare runtime secrets are set on the Pages project, not committed to the
 repo. The Pages Function uses OpenRouter for vision, Exa for parallel
-photo-derived evidence searches when `EXA_API_KEY` is configured, and HasData
-for Google Maps/customer photo evidence when `HASDATA_API_KEY` is configured.
+photo-derived evidence searches when `EXA_API_KEY` is configured, Google Places
+photos when `GOOGLE_PLACES_API_KEY` is configured, and HasData for Google
+Maps/customer photo evidence when `HASDATA_API_KEY` is configured and Google
+Places is not configured.
 Production feedback records use the `SF_FOOD_FEEDBACK_KV` binding.
 Optional abuse protection uses the `SF_FOOD_RATE_LIMIT_KV` binding name for
 IP/session rate limits; this config currently points it at the same KV namespace
 as feedback with separate key prefixes. If `TURNSTILE_SECRET_KEY` is present, rate-limit
 responses also tell the frontend that Turnstile can be required for suspicious
 traffic.
+Optional provider search caching uses the `SF_FOOD_SEARCH_CACHE_KV` binding with
+separate cache key prefixes. The checked-in `wrangler.toml` contains my current
+Cloudflare project name and KV namespace IDs; forked deployments should replace
+those with their own project and binding IDs.
 
 Target production domains are `https://spotted-in-sf.com` and
 `https://www.spotted-in-sf.com`; both should serve the same Cloudflare Pages

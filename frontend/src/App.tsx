@@ -30,6 +30,14 @@ const allowedImageMimeTypes = new Set([
   'image/heif',
 ])
 const allowedImageExtensions = /\.(avif|gif|heic|heif|jpe?g|png|webp)$/i
+const maxVisionImageLongEdge = 2000
+
+type DecodedImage = CanvasImageSource & {
+  width: number
+  height: number
+  close?: () => void
+}
+
 function apiUrl(path: string) {
   return `${apiBaseUrl}${path}`
 }
@@ -101,10 +109,20 @@ async function htmlImageFromFile(file: File) {
   }
 }
 
-async function prepareImageForVision(file: File) {
-  const drawable = (await imageBitmapFromFile(file)) ?? (await htmlImageFromFile(file))
-  const width = drawable.width
-  const height = drawable.height
+async function decodedImageFromFile(file: File): Promise<DecodedImage> {
+  return ((await imageBitmapFromFile(file)) ?? (await htmlImageFromFile(file))) as DecodedImage
+}
+
+function closeDecodedImage(drawable: DecodedImage) {
+  if (typeof drawable.close === 'function') drawable.close()
+}
+
+async function prepareImageForVision(file: File, drawable: DecodedImage) {
+  const sourceWidth = drawable.width
+  const sourceHeight = drawable.height
+  const scale = Math.min(1, maxVisionImageLongEdge / Math.max(sourceWidth, sourceHeight))
+  const width = Math.max(1, Math.round(sourceWidth * scale))
+  const height = Math.max(1, Math.round(sourceHeight * scale))
   const canvas = document.createElement('canvas')
   canvas.width = width
   canvas.height = height
@@ -114,7 +132,6 @@ async function prepareImageForVision(file: File) {
   context.fillStyle = '#ffffff'
   context.fillRect(0, 0, width, height)
   context.drawImage(drawable, 0, 0, width, height)
-  if ('close' in drawable && typeof drawable.close === 'function') drawable.close()
 
   const jpegBlob = await new Promise<Blob>((resolve, reject) => {
     canvas.toBlob(
@@ -158,11 +175,7 @@ async function canvasToJpegFile(canvas: HTMLCanvasElement, name: string, lastMod
   })
 }
 
-async function createOcrContactSheet(file: File) {
-  if (typeof createImageBitmap !== 'function') return null
-
-  const drawable = await imageBitmapFromFile(file)
-  if (!drawable) return null
+async function createOcrContactSheet(file: File, drawable: DecodedImage) {
   const sourceWidth = drawable.width
   const sourceHeight = drawable.height
   if (!sourceWidth || !sourceHeight) return null
@@ -233,10 +246,19 @@ async function createOcrContactSheet(file: File) {
   drawCrop(0, 0.45, 1, 0.55, panelWidth, panelHeight * 2, 'grayscale(1) contrast(2.3) brightness(1.14)')
   drawCrop(0.15, 0.15, 0.7, 0.7, panelWidth * 2, panelHeight * 2, 'grayscale(1) contrast(2.2) brightness(1.1)')
 
-  if ('close' in drawable && typeof drawable.close === 'function') drawable.close()
-
   const normalizedName = file.name.replace(/(\.jpe?g)?\.(avif|gif|heic|heif|jpe?g|png|webp)$/i, '') || 'photo'
   return canvasToJpegFile(canvas, `${normalizedName}-ocr-contact-sheet.jpg`, file.lastModified)
+}
+
+async function prepareUploadImages(file: File) {
+  const drawable = await decodedImageFromFile(file)
+  try {
+    const photo = await prepareImageForVision(file, drawable)
+    const ocrPhoto = await createOcrContactSheet(file, drawable).catch(() => null)
+    return { photo, ocrPhoto }
+  } finally {
+    closeDecodedImage(drawable)
+  }
 }
 
 function normalizeConfidence(value: unknown) {
@@ -757,8 +779,8 @@ const analysisSteps = [
 
 async function analyzePhotoWithVision(file: File): Promise<VisionAnalysis> {
   const payload = new FormData()
-  payload.append('photo', await prepareImageForVision(file))
-  const ocrPhoto = await createOcrContactSheet(file).catch(() => null)
+  const { photo, ocrPhoto } = await prepareUploadImages(file)
+  payload.append('photo', photo)
   if (ocrPhoto) payload.append('ocrPhoto', ocrPhoto)
 
   const response = await fetch(apiUrl('/api/analyze-photo'), {

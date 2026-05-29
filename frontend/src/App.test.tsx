@@ -122,11 +122,12 @@ describe('SF Food Guesser photo flow', () => {
     expect(screen.getByText(/AI\/search providers timed out/i)).toBeVisible()
   })
 
-  it('transcodes AVIF uploads to JPEG before sending them to analysis', async () => {
+  it('downscales and transcodes AVIF uploads to JPEG before sending them to analysis', async () => {
     const closeBitmap = vi.fn()
+    const createImageBitmapMock = vi.fn(async () => ({ width: 4000, height: 3000, close: closeBitmap }))
     vi.stubGlobal(
       'createImageBitmap',
-      vi.fn(async () => ({ width: 12, height: 8, close: closeBitmap })),
+      createImageBitmapMock,
     )
     const drawImage = vi.fn()
     vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue({
@@ -191,7 +192,14 @@ describe('SF Food Guesser photo flow', () => {
     expect(uploadedPhoto.type).toBe('image/jpeg')
     expect(ocrPhoto.name).toBe('souvla-ocr-contact-sheet.jpg')
     expect(ocrPhoto.type).toBe('image/jpeg')
-    expect(drawImage).toHaveBeenCalled()
+    expect(drawImage.mock.calls[0]).toEqual([
+      expect.objectContaining({ width: 4000, height: 3000 }),
+      0,
+      0,
+      2000,
+      1500,
+    ])
+    expect(createImageBitmapMock).toHaveBeenCalledTimes(1)
     expect(closeBitmap).toHaveBeenCalled()
   })
 

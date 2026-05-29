@@ -33,6 +33,10 @@ npm run deploy:cloudflare
 
 The project includes `wrangler.toml` with
 `pages_build_output_dir = "frontend/dist"`.
+The checked-in `wrangler.toml` is the maintainer deployment config for the
+`spotted-in-sf` Pages project. Forks should copy the shape of the file but
+replace the project name and KV namespace IDs with their own Cloudflare
+resources.
 
 Production domains:
 
@@ -101,6 +105,8 @@ never in the frontend code or `.env.example`:
 
 - `OPENROUTER_API_KEY`
 - `OPENAI_API_KEY` if using direct OpenAI instead of OpenRouter
+- `GOOGLE_PLACES_API_KEY` for the official Google Places photo provider when
+  enabled
 - `HASDATA_API_KEY` for Google Maps/customer photo evidence in local Node and
   Cloudflare Pages
 - `CERAMIC_API_KEY` for the local Node API broad web provider
@@ -108,16 +114,18 @@ never in the frontend code or `.env.example`:
   evidence search
 - `SERPAPI_API_KEY` if using the legacy local Node API Google Maps fallback
 
-The Cloudflare Pages project needs `OPENROUTER_API_KEY`, `EXA_API_KEY`, and
-`HASDATA_API_KEY` uploaded as Pages secrets. `OPENROUTER_VISION_MODEL`,
+The maintainer Cloudflare Pages project needs `OPENROUTER_API_KEY`,
+`EXA_API_KEY`, and either `GOOGLE_PLACES_API_KEY` or `HASDATA_API_KEY` uploaded
+as Pages secrets for the full production flow. `GOOGLE_PLACES_API_KEY` takes
+priority over HasData when both are present. `OPENROUTER_VISION_MODEL`,
 `OPENROUTER_FALLBACK_MODELS`, and optional Exa tuning vars are non-secret model
 or search settings in `wrangler.toml`.
 
 On Cloudflare Pages, the analysis flow is:
 
 1. Ask the vision model to create a photo-derived search plan.
-2. Run generated Exa searches and optional HasData Google Maps/photo searches in
-   parallel.
+2. Run generated Exa searches and optional Google Places or HasData
+   Google Maps/photo searches in parallel.
 3. Send the metadata-stripped uploaded photo, server-owned seed venues, search
    plan, Exa evidence, and public venue photos to the final vision call for
    ranking.
@@ -129,6 +137,10 @@ Production feedback uses the `SF_FOOD_FEEDBACK_KV` KV binding configured in
 uploaded image data. If the KV binding is missing, feedback is accepted but only
 logged to Cloudflare logs with `persisted: false`. Analysis, feedback, and admin
 review rate limits use the `SF_FOOD_RATE_LIMIT_KV` binding.
+Provider search caching is optional and uses `SF_FOOD_SEARCH_CACHE_KV` with
+`search-cache:*` key prefixes. The current maintainer deployment points this at
+the same KV namespace as the feedback and rate-limit bindings, but a production
+operator can split it into a separate namespace.
 
 Cloudflare Pages Functions reject browser requests with unknown `Origin` values.
 Add any new production frontend origins to `SF_FOOD_GUESSER_ALLOWED_ORIGINS`.
