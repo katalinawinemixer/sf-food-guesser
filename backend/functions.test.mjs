@@ -5,6 +5,7 @@ import { onRequestPost as feedbackPost } from '../functions/api/feedback.js'
 import { onRequestGet as adminFeedbackReviewGet } from '../functions/api/admin/feedback-review.js'
 import {
   buildCloudflareQueryLanes,
+  fileToDataUrl,
   normalizeAnalysis,
   searchGooglePlacesPhotoEvidence,
 } from '../functions/api/_shared.js'
@@ -13,6 +14,13 @@ const pngPixel = Buffer.from(
   'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=',
   'base64',
 )
+const jpegWithExif = new Uint8Array([
+  0xff, 0xd8,
+  0xff, 0xe1, 0x00, 0x10,
+  0x45, 0x78, 0x69, 0x66, 0x00, 0x00, 0x47, 0x50, 0x53, 0x44, 0x41, 0x54, 0x41, 0x21,
+  0xff, 0xda, 0x00, 0x08, 0x01, 0x01, 0x00, 0x00, 0x3f, 0x00,
+  0x11, 0x22, 0xff, 0xd9,
+])
 
 async function json(response) {
   return response.json()
@@ -42,6 +50,15 @@ afterEach(() => {
 })
 
 describe('Cloudflare Pages Functions API', () => {
+  it('strips JPEG metadata before building provider data URLs', async () => {
+    const dataUrl = await fileToDataUrl(new File([jpegWithExif], 'gps.jpg', { type: 'image/jpeg' }))
+    const decoded = Buffer.from(dataUrl.split(',')[1], 'base64').toString('latin1')
+
+    expect(dataUrl).toMatch(/^data:image\/jpeg;base64,/)
+    expect(decoded).not.toContain('Exif')
+    expect(decoded).not.toContain('GPSDATA')
+  })
+
   it('reports Cloudflare runtime health from environment variables', async () => {
     const response = healthGet({
       env: {
@@ -142,12 +159,13 @@ describe('Cloudflare Pages Functions API', () => {
     expect(fetchMock).toHaveBeenCalledTimes(2)
     expect(requestInit.signal).toBeInstanceOf(AbortSignal)
     expect(payload.tools[0].type).toBe('openrouter:web_search')
+    expect(payload.messages[1].content[0].text).not.toContain('Seed Cafe')
     expect(body).toMatchObject({
       summary: 'Iced matcha in a small cafe prep area.',
       candidates: [
         {
-          name: 'Kissaten Hifi',
-          confidence: 50,
+          name: 'Kissaten HiFi',
+          confidence: 78,
         },
       ],
       webSearchProvider: 'openrouter-web-search',
@@ -408,6 +426,76 @@ describe('Cloudflare Pages Functions API', () => {
       id: 'souvla',
       name: 'Souvla',
     })
+
+    fetchMock.mockRestore()
+  })
+
+  it('ignores non-native OCR sidecar uploads before provider calls', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            choices: [
+              {
+                message: {
+                  content: JSON.stringify({
+                    summary: 'Blue-rim plates.',
+                    imageEvidence: ['blue-rim plates'],
+                    visibleText: [],
+                    searchQueries: ['San Francisco blue-rim plates Greek restaurant'],
+                    likelyVenueTypes: ['restaurant'],
+                  }),
+                },
+              },
+            ],
+          }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } },
+        ),
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            choices: [
+              {
+                message: {
+                  content: JSON.stringify({
+                    summary: 'Blue-rim plates with Greek food.',
+                    imageEvidence: ['blue-rim plates'],
+                    candidates: [
+                      {
+                        id: 'souvla',
+                        name: 'Souvla',
+                        confidence: 72,
+                        evidenceCategories: ['dish_match'],
+                        reasons: ['The dishes and plates are plausible but not identity-level.'],
+                      },
+                    ],
+                    needsMoreEvidence: true,
+                  }),
+                },
+              },
+            ],
+          }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } },
+        ),
+      )
+    const formData = new FormData()
+    formData.set('photo', new File([pngPixel], 'souvla.png', { type: 'image/png' }))
+    formData.set('ocrPhoto', new File([pngPixel], 'souvla-ocr.heic', { type: 'image/heic' }))
+
+    const response = await analyzePhotoPost({
+      request: {
+        formData: async () => formData,
+        headers: cloudflareHeaders(),
+      },
+      env: usageEnv({
+        OPENROUTER_VISION_MODEL: 'qwen/qwen3-vl-32b-instruct',
+      }),
+    })
+
+    expect(response.status).toBe(200)
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+    expect(JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body)).messages[1].content[0].text).not.toContain('Read exact visible text')
 
     fetchMock.mockRestore()
   })
@@ -1249,6 +1337,56 @@ describe('Cloudflare Pages Functions API', () => {
     fetchMock.mockRestore()
   })
 
+  it('fails closed when Cloudflare rate limiting is required but not bound', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch')
+    const response = await analyzePhotoPost({
+      request: {
+        formData: async () => {
+          throw new Error('Should not parse uploads without required rate limiting.')
+        },
+        headers: cloudflareHeaders(),
+      },
+      env: usageEnv({
+        SF_FOOD_RATE_LIMIT_REQUIRED: 'true',
+      }),
+    })
+    const body = await json(response)
+
+    expect(response.status).toBe(503)
+    expect(body.error).toMatch(/Rate limiting is not configured/)
+    expect(fetchMock).not.toHaveBeenCalled()
+
+    fetchMock.mockRestore()
+  })
+
+  it('fails closed when required Cloudflare rate-limit KV operations fail', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch')
+    const response = await analyzePhotoPost({
+      request: {
+        formData: async () => {
+          throw new Error('Should not parse uploads when required rate limiting is unavailable.')
+        },
+        headers: cloudflareHeaders(),
+      },
+      env: usageEnv({
+        SF_FOOD_RATE_LIMIT_REQUIRED: 'true',
+        SF_FOOD_RATE_LIMIT_KV: {
+          get: vi.fn(async () => {
+            throw new Error('KV unavailable')
+          }),
+          put: vi.fn(async () => undefined),
+        },
+      }),
+    })
+    const body = await json(response)
+
+    expect(response.status).toBe(503)
+    expect(body.error).toMatch(/Rate limiting is temporarily unavailable/)
+    expect(fetchMock).not.toHaveBeenCalled()
+
+    fetchMock.mockRestore()
+  })
+
   it('downweights repeated suggested corrections from the same anonymous session', async () => {
     const get = vi.fn(async (key) =>
       String(key).startsWith('feedback-suggestion:') ? null : '3',
@@ -1338,5 +1476,31 @@ describe('Cloudflare Pages Functions API', () => {
     })
     expect(list).toHaveBeenCalledWith({ prefix: 'feedback:', cursor: undefined, limit: 100 })
     expect(get).toHaveBeenCalledWith('feedback:run-admin:1')
+  })
+
+  it('rate limits Cloudflare admin feedback review before checking tokens', async () => {
+    const list = vi.fn()
+    const get = vi.fn(async () =>
+      JSON.stringify({ count: 20, resetAt: Date.now() + 60_000 }),
+    )
+    const put = vi.fn(async () => undefined)
+
+    const response = await adminFeedbackReviewGet({
+      request: new Request('https://sf-food-guesser.pages.dev/api/admin/feedback-review', {
+        headers: { 'x-admin-token': 'admin-token' },
+      }),
+      env: {
+        SF_FOOD_ADMIN_TOKEN: 'admin-token',
+        SF_FOOD_FEEDBACK_KV: { list, get: vi.fn() },
+        SF_FOOD_RATE_LIMIT_KV: { get, put },
+        SF_FOOD_ADMIN_REVIEW_RATE_LIMIT: '20',
+      },
+    })
+    const body = await json(response)
+
+    expect(response.status).toBe(429)
+    expect(body.error).toMatch(/Rate limit reached/)
+    expect(list).not.toHaveBeenCalled()
+    expect(put).toHaveBeenCalled()
   })
 })

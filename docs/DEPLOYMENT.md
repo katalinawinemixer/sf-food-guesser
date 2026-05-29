@@ -118,15 +118,17 @@ On Cloudflare Pages, the analysis flow is:
 1. Ask the vision model to create a photo-derived search plan.
 2. Run generated Exa searches and optional HasData Google Maps/photo searches in
    parallel.
-3. Send the uploaded photo, seed venues, search plan, Exa evidence, and public
-   venue photos to the final vision call for ranking.
+3. Send the metadata-stripped uploaded photo, server-owned seed venues, search
+   plan, Exa evidence, and public venue photos to the final vision call for
+   ranking.
 
 ## Feedback Storage
 
 Production feedback uses the `SF_FOOD_FEEDBACK_KV` KV binding configured in
 `wrangler.toml`. The Pages Function stores normalized feedback records without
 uploaded image data. If the KV binding is missing, feedback is accepted but only
-logged to Cloudflare logs with `persisted: false`.
+logged to Cloudflare logs with `persisted: false`. Analysis, feedback, and admin
+review rate limits use the `SF_FOOD_RATE_LIMIT_KV` binding.
 
 Cloudflare Pages Functions reject browser requests with unknown `Origin` values.
 Add any new production frontend origins to `SF_FOOD_GUESSER_ALLOWED_ORIGINS`.

@@ -1,26 +1,9 @@
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { mkdirSync, writeFileSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
+import { venues } from '../shared/venues.js'
 
 const root = process.cwd()
 const outputPath = resolve(root, process.argv[2] || 'data/venue-database-report.json')
-
-function extractVenues() {
-  const source = readFileSync(resolve(root, 'frontend/src/venues.ts'), 'utf8')
-  const start = source.indexOf('export const venues')
-  const equals = source.indexOf('=', start)
-  const arrayStart = source.indexOf('[', equals)
-  let depth = 0
-  for (let index = arrayStart; index < source.length; index += 1) {
-    const char = source[index]
-    if (char === '[') depth += 1
-    if (char === ']') depth -= 1
-    if (depth === 0) {
-      const literal = source.slice(arrayStart, index + 1)
-      return Function(`"use strict"; return (${literal});`)()
-    }
-  }
-  throw new Error('Could not extract venues from frontend/src/venues.ts')
-}
 
 function sourceDomain(url) {
   try {
@@ -45,7 +28,6 @@ function venueHealth(venue) {
   return issues
 }
 
-const venues = extractVenues()
 const records = venues.map((venue) => ({
   id: venue.id,
   name: venue.name,

@@ -3,15 +3,16 @@
 A local React app for identifying likely SF restaurants, cafes, bakeries, and
 late-night counters from uploaded food photos.
 
-The app uses uploaded image analysis, optional GPS EXIF metadata, a
-source-backed seed venue dataset in `frontend/src/venues.ts`, and OpenRouter web
-search to find likely venues beyond the local seed list. It intentionally avoids
+The app uses uploaded image analysis, optional local GPS EXIF extraction, a
+source-backed seed venue dataset in `shared/venues.js`, and OpenRouter web search
+to find likely venues beyond the local seed list. It intentionally avoids
 live-hours and reservation claims because those change frequently.
 
-Submitting a photo sends it to the local API, which uses a vision model to
-extract image evidence, search broadly for San Francisco-specific matches, and
-rank likely venues. If the image still has GPS EXIF metadata, that is used as an
-extra ranking signal.
+Submitting a photo strips embedded image metadata before sending it to the API,
+which uses a vision model to extract image evidence, search broadly for San
+Francisco-specific matches, and rank likely venues. If the original image has
+GPS EXIF metadata, the browser extracts coordinates locally and sends only the
+coordinates as an extra ranking signal.
 
 The repository only includes placeholder environment variables. Real keys stay
 in your local `.env`, which is ignored by git.
@@ -86,8 +87,9 @@ repo. The Pages Function uses OpenRouter for vision, Exa for parallel
 photo-derived evidence searches when `EXA_API_KEY` is configured, and HasData
 for Google Maps/customer photo evidence when `HASDATA_API_KEY` is configured.
 Production feedback records use the `SF_FOOD_FEEDBACK_KV` binding.
-Optional abuse protection uses a separate `SF_FOOD_RATE_LIMIT_KV` binding for
-IP/session rate limits; if `TURNSTILE_SECRET_KEY` is present, rate-limit
+Optional abuse protection uses the `SF_FOOD_RATE_LIMIT_KV` binding name for
+IP/session rate limits; this config currently points it at the same KV namespace
+as feedback with separate key prefixes. If `TURNSTILE_SECRET_KEY` is present, rate-limit
 responses also tell the frontend that Turnstile can be required for suspicious
 traffic.
 

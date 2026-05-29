@@ -257,18 +257,14 @@ describe('SF Food Guesser photo flow', () => {
     expect(photoRequest?.credentials).toBe('include')
     const photoForm = photoRequest?.body as FormData
     expect(photoForm.has('photo')).toBe(true)
-    expect(photoForm.has('venues')).toBe(true)
+    expect(photoForm.has('venues')).toBe(false)
     expect(photoForm.has('clue')).toBe(false)
     expect(photoForm.has('text')).toBe(false)
     expect(photoForm.has('description')).toBe(false)
-    const sentVenues = JSON.parse(String(photoForm.get('venues')))
-    expect(sentVenues.find((venue: { id: string }) => venue.id === 'souvla')).toMatchObject({
-      visualClues: expect.arrayContaining(['readable Souvla text']),
-      menuClues: expect.arrayContaining(['souvlaki']),
-      doNotInferFrom: expect.arrayContaining(['generic Greek food alone']),
-      multiLocation: true,
-      sourceConfidence: 'source-backed',
-    })
+    expect(photoForm.get('photo')).toEqual(expect.objectContaining({
+      name: 'pizza.jpg',
+      type: 'image/jpeg',
+    }))
 
     expect(screen.getByText(/Analyzed photo: A square slice/i)).toBeVisible()
     expect(screen.getAllByText('Best supported match')[0]).toBeVisible()
@@ -313,6 +309,53 @@ describe('SF Food Guesser photo flow', () => {
         name: 'Golden Boy Pizza',
       },
     })
+  })
+
+  it('preserves server candidate order instead of re-ranking in the browser', async () => {
+    vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ ok: true, visionEnabled: true, model: 'test-model' }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        }),
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            runId: 'run-order',
+            summary: 'Server ranked these candidates with external evidence.',
+            imageEvidence: ['counter tray'],
+            candidates: [
+              {
+                id: 'golden-boy',
+                confidence: 64,
+                reasons: ['Server ranked this first after evidence checks.'],
+              },
+              {
+                id: 'souvla',
+                confidence: 96,
+                reasons: ['Higher raw confidence but server ranked it second.'],
+              },
+            ],
+            needsMoreEvidence: false,
+          }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } },
+        ),
+      )
+
+    render(<App />)
+
+    const file = new File(['fake image bytes'], 'order.png', { type: 'image/png' })
+    fireEvent.change(screen.getByLabelText(/Drop a food photo here/i), {
+      target: { files: [file] },
+    })
+    fireEvent.click(await screen.findByRole('button', { name: 'Identify restaurant' }))
+
+    await waitFor(() => {
+      expect(screen.getByRole('heading', { name: 'Golden Boy Pizza', level: 3 })).toBeVisible()
+    })
+    const headings = screen.getAllByRole('heading', { level: 3 }).map((heading) => heading.textContent)
+    expect(headings.slice(0, 2)).toEqual(['Golden Boy Pizza', 'Souvla'])
   })
 
   it('allows another photo analysis after a completed run', async () => {
@@ -765,7 +808,7 @@ describe('SF Food Guesser photo flow', () => {
 
     render(<App />)
 
-    expect(await screen.findByText(/needs OPENROUTER_API_KEY or OPENAI_API_KEY/i)).toBeVisible()
+    expect(await screen.findByText(/Photo identification is not configured yet/i)).toBeVisible()
 
     const file = new File(['fake image bytes'], 'latte.png', { type: 'image/png' })
     fireEvent.change(screen.getByLabelText(/Drop a food photo here/i), {

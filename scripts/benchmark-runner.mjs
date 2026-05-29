@@ -12,24 +12,6 @@ function readJson(path) {
   return JSON.parse(readFileSync(path, 'utf8'))
 }
 
-function extractVenues() {
-  const source = readFileSync(resolve(root, 'frontend/src/venues.ts'), 'utf8')
-  const start = source.indexOf('export const venues')
-  const equals = source.indexOf('=', start)
-  const arrayStart = source.indexOf('[', equals)
-  let depth = 0
-  for (let index = arrayStart; index < source.length; index += 1) {
-    const char = source[index]
-    if (char === '[') depth += 1
-    if (char === ']') depth -= 1
-    if (depth === 0) {
-      const literal = source.slice(arrayStart, index + 1)
-      return Function(`"use strict"; return (${literal});`)()
-    }
-  }
-  throw new Error('Could not extract venues from frontend/src/venues.ts')
-}
-
 function normalizeName(value) {
   return String(value || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim()
 }
@@ -39,7 +21,7 @@ async function fileFromPath(path) {
   return new File([bytes], basename(path), { type: 'image/jpeg' })
 }
 
-async function runCase(testCase, venues) {
+async function runCase(testCase) {
   const imagePath = resolve(root, testCase.imagePath)
   if (!existsSync(imagePath)) {
     return {
@@ -52,7 +34,6 @@ async function runCase(testCase, venues) {
 
   const payload = new FormData()
   payload.append('photo', await fileFromPath(imagePath))
-  payload.append('venues', JSON.stringify(venues))
 
   const response = await fetch(`${apiBaseUrl}/api/analyze-photo`, {
     method: 'POST',
@@ -101,12 +82,11 @@ async function runCase(testCase, venues) {
 }
 
 const manifest = readJson(manifestPath)
-const venues = extractVenues()
 const startedAt = new Date().toISOString()
 const results = []
 
 for (const testCase of manifest.cases ?? []) {
-  results.push(await runCase(testCase, venues))
+  results.push(await runCase(testCase))
 }
 
 const summary = results.reduce((state, result) => {
@@ -127,7 +107,9 @@ writeFileSync(outputPath, `${JSON.stringify(report, null, 2)}\n`)
 console.log(`Benchmark report written to ${outputPath}`)
 console.log(JSON.stringify(summary, null, 2))
 
-const failures = results.filter((result) => ['missing', 'failed_request'].includes(result.status))
+const failures = results.filter((result) =>
+  ['missing', 'failed_request', 'skipped_missing_image'].includes(result.status),
+)
 if (strict && failures.length) {
   process.exitCode = 1
 }

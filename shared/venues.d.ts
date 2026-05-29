@@ -1,6 +1,4 @@
-import { venues as seedVenues } from '../../shared/venues.js'
-
-export type VenueCategory =
+export type SharedVenueCategory =
   | 'Bakery'
   | 'Cafe'
   | 'Restaurant'
@@ -8,10 +6,10 @@ export type VenueCategory =
   | 'Late night'
   | 'Counter'
 
-export type Venue = {
+export type SharedVenue = {
   id: string
   name: string
-  category: VenueCategory
+  category: SharedVenueCategory
   neighborhood: string
   address: string
   lat: number
@@ -28,14 +26,4 @@ export type Venue = {
   note: string
 }
 
-export const venues = seedVenues as Venue[]
-
-export const categoryOptions = [
-  'All',
-  'Bakery',
-  'Cafe',
-  'Restaurant',
-  'Dessert',
-  'Late night',
-  'Counter',
-] as const
+export const venues: SharedVenue[]
