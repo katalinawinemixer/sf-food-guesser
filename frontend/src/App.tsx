@@ -15,6 +15,7 @@ import {
   X,
 } from 'lucide-react'
 import './App.css'
+import { candidatePassesQualityGate } from '../../shared/candidate-quality.js'
 import { categoryOptions, venues, type Venue, type VenueCategory } from './venues'
 
 const apiBaseUrl = import.meta.env.VITE_API_BASE_URL?.replace(/\/$/, '') ?? ''
@@ -58,15 +59,6 @@ function validatePhotoFile(file: File) {
   }
 
   return null
-}
-
-function isPlaceholderCandidateName(name?: string) {
-  const cleanedName = String(name ?? '').trim().replace(/\s+/g, ' ')
-  if (!cleanedName) return false
-  return (
-    /^(other|another|unknown|unidentified|unnamed)\b/i.test(cleanedName) &&
-    /\b(cafe|coffee|restaurant|bakery|bar|counter|spot|venue|place|shop|eatery|bistro)\b/i.test(cleanedName)
-  )
 }
 
 async function readApiError(response: Response) {
@@ -557,7 +549,12 @@ function getVisionMatches(
   return analysis.candidates
     .map((candidate, index) => {
       const seedVenue = candidate.id ? seedById.get(candidate.id) : undefined
-      if (!seedVenue && isPlaceholderCandidateName(candidate.name)) return null
+      if (
+        !candidatePassesQualityGate(candidate, {
+          seedMatched: Boolean(seedVenue),
+          seedVenueIds: venues.map((venue) => venue.id),
+        })
+      ) return null
       const displayCategory = (seedVenue?.category || candidate.category || 'Restaurant') as VenueCategory
       if (category !== 'All' && displayCategory !== category) return null
       const distance = coords
@@ -841,8 +838,9 @@ async function analyzePhotoWithVision(file: File): Promise<VisionAnalysis> {
           }))
           .filter(
             (candidate: VisionCandidate) =>
-              venues.some((venue) => venue.id === candidate.id) ||
-              (Boolean(candidate.name) && !isPlaceholderCandidateName(candidate.name)),
+              candidatePassesQualityGate(candidate, {
+                seedVenueIds: venues.map((venue) => venue.id),
+              }),
           )
       : [],
     needsMoreEvidence: Boolean(result.needsMoreEvidence),

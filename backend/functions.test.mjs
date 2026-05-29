@@ -1,4 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { readFileSync } from 'node:fs'
+import { resolve } from 'node:path'
 import { onRequestGet as healthGet } from '../functions/api/health.js'
 import { onRequestPost as analyzePhotoPost } from '../functions/api/analyze-photo.js'
 import { onRequestPost as feedbackPost } from '../functions/api/feedback.js'
@@ -21,6 +23,17 @@ const jpegWithExif = new Uint8Array([
   0xff, 0xda, 0x00, 0x08, 0x01, 0x01, 0x00, 0x00, 0x3f, 0x00,
   0x11, 0x22, 0xff, 0xd9,
 ])
+const placeholderModelOutput = JSON.parse(
+  readFileSync(
+    resolve(
+      process.cwd(),
+      process.cwd().endsWith('/frontend') ? '..' : '.',
+      'test-fixtures',
+      'placeholder-model-output.json',
+    ),
+    'utf8',
+  ),
+)
 
 async function json(response) {
   return response.json()
@@ -1043,29 +1056,8 @@ describe('Cloudflare Pages Functions API', () => {
     expect(result.candidates.find((candidate) => candidate.name === 'Article Only Cafe')?.confidence).toBeLessThanOrEqual(38)
   })
 
-  it('drops placeholder neighborhood/category candidates in Cloudflare results', () => {
-    const result = normalizeAnalysis({
-      summary: 'Matcha drink inside a cafe in the Richmond.',
-      imageEvidence: ['green matcha drink', 'brown bags on shelves'],
-      candidates: [
-        {
-          id: '',
-          name: 'Other Inner Richmond Cafe',
-          confidence: 55,
-          evidenceCategories: ['dish_match', 'interior_match'],
-          photoEvidence: ['The photo appears to show an Inner Richmond cafe.'],
-        },
-        {
-          id: '',
-          name: 'Kissaten HiFi',
-          confidence: 72,
-          evidenceCategories: ['interior_match', 'web_source_match', 'dish_match'],
-          photoEvidence: ['The uploaded photo shows brown bags and a matcha drink.'],
-          externalEvidence: ['Public sources describe Kissaten HiFi as an Inner Richmond matcha cafe.'],
-          sourceUrls: ['https://www.theinfatuation.com/san-francisco/reviews/kissaten-hifi'],
-        },
-      ],
-    })
+  it('replays a local fixture to drop placeholder and no-source candidates in Cloudflare results', () => {
+    const result = normalizeAnalysis(placeholderModelOutput)
 
     expect(result.candidates.map((candidate) => candidate.name)).toEqual(['Kissaten HiFi'])
   })

@@ -1,3 +1,5 @@
+import { candidatePassesQualityGate, isPlaceholderCandidateName } from '../../shared/candidate-quality.js'
+
 const maxUploadBytes = 12 * 1024 * 1024
 const defaultCloudflareOrigins = [
   'https://spotted-in-sf.pages.dev',
@@ -1120,15 +1122,6 @@ function explanationBuckets(candidate) {
   }
 }
 
-function isPlaceholderCandidateName(name) {
-  const cleanedName = String(name ?? '').trim().replace(/\s+/g, ' ')
-  if (!cleanedName) return false
-  return (
-    /^(other|another|unknown|unidentified|unnamed)\b/i.test(cleanedName) &&
-    /\b(cafe|coffee|restaurant|bakery|bar|counter|spot|venue|place|shop|eatery|bistro)\b/i.test(cleanedName)
-  )
-}
-
 export function normalizeCandidate(candidate) {
   const rawName = candidate?.name ? String(candidate.name).trim() : ''
   const name = isPlaceholderCandidateName(rawName) ? '' : rawName
@@ -1472,7 +1465,13 @@ export function normalizeAnalysis(result, options = {}) {
       ...(Array.isArray(options.ocr?.visibleText) ? options.ocr.visibleText : []),
     ],
     debugReport: rankingDebug,
-  }).slice(0, 3)
+  })
+    .filter((candidate) =>
+      candidatePassesQualityGate(candidate, {
+        seedVenueIds: options.seedVenueIds,
+      }),
+    )
+    .slice(0, 3)
 
   return {
     summary: String(result?.summary ?? 'No visual summary returned.'),

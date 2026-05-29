@@ -7,6 +7,7 @@ import express from 'express'
 import multer from 'multer'
 import sharp from 'sharp'
 import { createProviderConfig } from './providers.mjs'
+import { candidatePassesQualityGate, isPlaceholderCandidateName } from '../shared/candidate-quality.js'
 import { venues as seedVenues } from '../shared/venues.js'
 
 const maxUploadBytes = 12 * 1024 * 1024
@@ -780,15 +781,6 @@ function normalizeStringList(value, maxItems = 4) {
     : []
 }
 
-function isPlaceholderCandidateName(name) {
-  const cleanedName = String(name ?? '').trim().replace(/\s+/g, ' ')
-  if (!cleanedName) return false
-  return (
-    /^(other|another|unknown|unidentified|unnamed)\b/i.test(cleanedName) &&
-    /\b(cafe|coffee|restaurant|bakery|bar|counter|spot|venue|place|shop|eatery|bistro)\b/i.test(cleanedName)
-  )
-}
-
 function reasonLooksExternal(reason) {
   return /\b(web|source|article|review|public photo|google maps|maps|yelp|eater|infatuation|sf standard|sfgate|url|site|external)\b/i.test(
     reason,
@@ -1542,7 +1534,12 @@ export function rerankCandidates(rawCandidates = [], options = {}) {
     .map((text) => normalizeNameText(text))
     .filter((text) => text.length >= 4)
   const rankedCandidates = dedupeCandidatesBeforeRanking(rawCandidates)
-    .filter((candidate) => !isPlaceholderCandidateName(candidate.name))
+    .filter((candidate) =>
+      candidatePassesQualityGate(candidate, {
+        seedVenueIds: [...seedVenueIds],
+        trustedPhotoUrls: [...trustedPhotoUrls],
+      }),
+    )
     .map((candidate, originalIndex) => {
       const evidenceCategoriesForCandidate = normalizeEvidenceCategories(candidate)
       const rawEvidenceCategories = Array.isArray(candidate.evidenceCategories)

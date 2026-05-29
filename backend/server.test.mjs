@@ -1,7 +1,8 @@
 import request from 'supertest'
+import { readFileSync } from 'node:fs'
 import { mkdtemp, readFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { join, resolve } from 'node:path'
 import sharp from 'sharp'
 import { describe, expect, it, vi } from 'vitest'
 import {
@@ -24,6 +25,17 @@ import { createProviderConfig, parseFallbackModels } from './providers.mjs'
 const pngPixel = Buffer.from(
   'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=',
   'base64',
+)
+const placeholderModelOutput = JSON.parse(
+  readFileSync(
+    resolve(
+      process.cwd(),
+      process.cwd().endsWith('/frontend') ? '..' : '.',
+      'test-fixtures',
+      'placeholder-model-output.json',
+    ),
+    'utf8',
+  ),
 )
 
 function createApp(options = {}) {
@@ -878,7 +890,7 @@ describe('SF Food Guesser API', () => {
                           confidence: 45,
                           evidenceCategories: ['dish_match'],
                           reasons: ['Only the drink is clearly visible.'],
-                          sourceUrls: [],
+                          sourceUrls: ['https://example.com/unconfirmed-matcha-cafe'],
                         },
                       ],
                       needsMoreEvidence: true,
@@ -1011,7 +1023,7 @@ describe('SF Food Guesser API', () => {
                           confidence: 50,
                           evidenceCategories: ['dish_match'],
                           reasons: ['Fallback model could inspect the image.'],
-                          sourceUrls: [],
+                          sourceUrls: ['https://example.com/fallback-vision-cafe'],
                         },
                       ],
                       needsMoreEvidence: true,
@@ -1078,7 +1090,7 @@ describe('SF Food Guesser API', () => {
                           confidence: 48,
                           evidenceCategories: ['dish_match'],
                           reasons: ['The JSON repair call returned parseable JSON.'],
-                          sourceUrls: [],
+                          sourceUrls: ['https://example.com/json-repair-cafe'],
                         },
                       ],
                       needsMoreEvidence: true,
@@ -2272,7 +2284,7 @@ describe('SF Food Guesser API', () => {
     })
   })
 
-  it('reranks strong venue evidence above dish-only guesses', () => {
+  it('drops unsupported dish-only guesses when stronger venue evidence exists', () => {
     const candidates = rerankCandidates(
       [
         {
@@ -2299,9 +2311,7 @@ describe('SF Food Guesser API', () => {
       id: 'interior',
       evidenceCategories: ['interior_match', 'web_source_match'],
     })
-    expect(candidates[1].rankingNotes).toContain(
-      'Food/drink similarity alone is weak evidence, so this was ranked lower.',
-    )
+    expect(candidates.map((candidate) => candidate.name)).not.toContain('Dish Only Cafe')
   })
 
   it('caps unverified web-discovered interior claims', () => {
@@ -2438,24 +2448,8 @@ describe('SF Food Guesser API', () => {
     expect(candidates[0].name).toBe('Souvla')
   })
 
-  it('does not keep placeholder neighborhood/category candidates after reranking', () => {
-    const candidates = rerankCandidates([
-      {
-        id: '',
-        name: 'Other Inner Richmond Cafe',
-        confidence: 70,
-        evidenceCategories: ['dish_match', 'interior_match'],
-        reasons: ['The photo might show another cafe in the Inner Richmond.'],
-      },
-      {
-        id: '',
-        name: 'Kissaten HiFi',
-        confidence: 72,
-        evidenceCategories: ['interior_match', 'web_source_match', 'dish_match'],
-        reasons: ['External photos show a similar counter and matcha drink.'],
-        sourceUrls: ['https://www.theinfatuation.com/san-francisco/reviews/kissaten-hifi'],
-      },
-    ])
+  it('replays a local fixture to drop placeholder and no-source candidates after reranking', () => {
+    const candidates = rerankCandidates(placeholderModelOutput.candidates)
 
     expect(candidates.map((candidate) => candidate.name)).toEqual(['Kissaten HiFi'])
   })
@@ -2605,9 +2599,7 @@ describe('SF Food Guesser API', () => {
         'OCR contradicted candidate',
       ]),
     })
-    expect(rankingDebug.find((candidate) => candidate.name === 'Burger Lead')).toMatchObject({
-      reasons: expect.arrayContaining(['dish-only cap']),
-    })
+    expect(rankingDebug.find((candidate) => candidate.name === 'Burger Lead')).toBeUndefined()
 
     const normalCandidates = rerankCandidates([
       {
@@ -2618,7 +2610,7 @@ describe('SF Food Guesser API', () => {
         reasons: ['The photo shows a similar burger.'],
       },
     ])
-    expect(normalCandidates[0]).not.toHaveProperty('rankingDebugReasons')
+    expect(normalCandidates).toEqual([])
   })
 
   it('builds a multi-crop contact sheet for local vision analysis', async () => {
@@ -2789,10 +2781,7 @@ describe('SF Food Guesser API', () => {
       .field('venues', '[]')
       .expect(200)
 
-    expect(response.body.candidates[0]).toMatchObject({
-      name: 'Fallback Cafe',
-      evidenceCategories: ['dish_match'],
-    })
+    expect(response.body.candidates).toEqual([])
     expect(response.body.providerWarnings[0]).toMatchObject({
       provider: 'failing-exa',
       message: 'Exa unavailable',
