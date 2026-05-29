@@ -7,7 +7,9 @@ import express from 'express'
 import multer from 'multer'
 import sharp from 'sharp'
 import { createProviderConfig } from './providers.mjs'
-import { candidatePassesQualityGate, isPlaceholderCandidateName } from '../shared/candidate-quality.js'
+import { buildCacheStatus, buildProviderStatus } from '../shared/analysis-diagnostics.js'
+import { buildResultQuality, candidatePassesQualityGate, isPlaceholderCandidateName } from '../shared/candidate-quality.js'
+import { goldenAnalysisFixtures } from '../shared/golden-fixtures.js'
 import { venues as seedVenues } from '../shared/venues.js'
 
 const maxUploadBytes = 12 * 1024 * 1024
@@ -1098,6 +1100,46 @@ function cleanCandidateForLog(candidate = {}) {
     sourceUrls: cleanTextArray(candidate.sourceUrls, 6, 500),
     mapsQuery: cleanText(candidate.mapsQuery, 240),
     searchQueries: cleanTextArray(candidate.searchQueries, 6, 300),
+  }
+}
+
+function cleanResultQualityForLog(resultQuality = {}) {
+  return {
+    state: cleanText(resultQuality.state, 80),
+    shownCandidates: Number(resultQuality.shownCandidates ?? 0),
+    filteredCandidates: Number(resultQuality.filteredCandidates ?? 0),
+    hiddenCandidates: Number(resultQuality.hiddenCandidates ?? 0),
+    topConfidence: normalizeConfidence(resultQuality.topConfidence),
+    closeCandidateCount: Number(resultQuality.closeCandidateCount ?? 0),
+    notEnoughEvidence: Boolean(resultQuality.notEnoughEvidence),
+    summary: cleanText(resultQuality.summary, 500),
+    filteredCandidateDetails: Array.isArray(resultQuality.filteredCandidateDetails)
+      ? resultQuality.filteredCandidateDetails.map((candidate) => ({
+          name: cleanText(candidate.name, 160),
+          reasons: cleanTextArray(candidate.reasons, 6, 80),
+        })).slice(0, 8)
+      : [],
+    hiddenCandidateDetails: Array.isArray(resultQuality.hiddenCandidateDetails)
+      ? resultQuality.hiddenCandidateDetails.map((candidate) => ({
+          name: cleanText(candidate.name, 160),
+          reasons: cleanTextArray(candidate.reasons, 6, 80),
+        })).slice(0, 8)
+      : [],
+  }
+}
+
+function cleanProviderStatusForLog(providerStatus = {}) {
+  return {
+    ok: Boolean(providerStatus.ok),
+    warningCount: Number(providerStatus.warningCount ?? 0),
+    failureAreas: cleanTextArray(providerStatus.failureAreas, 8, 80),
+    warnings: Array.isArray(providerStatus.warnings)
+      ? providerStatus.warnings.map((warning) => ({
+          provider: cleanText(warning.provider, 160),
+          area: cleanText(warning.area, 80),
+          message: cleanText(warning.message, 800),
+        })).slice(0, 8)
+      : [],
   }
 }
 
@@ -2537,6 +2579,7 @@ export function createApp(options = {}) {
     hasArticleSearch || hasPhotoSearch || hasWebSearch
       ? options.articleSearch ?? null
       : defaultProviders.articleSearch
+  const searchCache = options.searchCache ?? defaultProviders.searchCache ?? null
   const debugRanking =
     options.debugRanking === true ||
     String((options.env ?? process.env).DEBUG_RANKING ?? '').toLowerCase() === 'true'
@@ -2635,6 +2678,39 @@ export function createApp(options = {}) {
     } catch {
       response.status(500).json({ error: 'Could not read feedback review data.' })
     }
+  })
+
+  app.get('/api/admin/replay-fixture', (request, response) => {
+    const fixtureId = String(request.query.fixtureId ?? goldenAnalysisFixtures[0]?.id ?? '')
+    const fixture = goldenAnalysisFixtures.find((item) => item.id === fixtureId) ?? goldenAnalysisFixtures[0]
+    if (!fixture) {
+      response.status(404).json({ error: 'No replay fixtures are available.' })
+      return
+    }
+    const candidates = rerankCandidates(fixture.analysis.candidates, {
+      seedVenueIds: fixture.options?.seedVenueIds,
+      ocrVisibleText: fixture.options?.ocrVisibleText,
+    })
+    const resultQuality = buildResultQuality(fixture.analysis.candidates, candidates, {
+      seedVenueIds: fixture.options?.seedVenueIds,
+      modelNeedsMoreEvidence: Boolean(fixture.analysis.needsMoreEvidence),
+    })
+    response.json({
+      ok: true,
+      fixtureId: fixture.id,
+      label: fixture.label,
+      ...fixture.analysis,
+      candidates,
+      needsMoreEvidence: resultQuality.notEnoughEvidence,
+      resultQuality,
+      providerStatus: buildProviderStatus([]),
+      cacheStatus: buildCacheStatus({
+        localSearchCache: {
+          enabled: false,
+          provider: 'fixture-replay',
+        },
+      }),
+    })
   })
 
   app.post('/api/analyze-photo', upload.fields([
@@ -2934,7 +3010,7 @@ export function createApp(options = {}) {
       photoEvidence = embeddingComparison.photos
       const photoEvidenceUrls = [
         ...photoEvidence.flatMap((photo) =>
-        [photo.pageUrl, photo.imageUrl, photo.thumbnailUrl].filter(Boolean),
+          [photo.pageUrl, photo.imageUrl, photo.thumbnailUrl].filter(Boolean),
         ),
         ...embeddingComparison.trustedUrls,
       ]
@@ -2948,6 +3024,21 @@ export function createApp(options = {}) {
         photoEvidenceUrls,
         ocrVisibleText: searchPlan?.visibleText ?? [],
         debugReport: rankingDebug,
+      })
+      const resultQuality = buildResultQuality(rawCandidates, candidates, {
+        seedVenueIds: compactVenues.map((venue) => venue.id),
+        photoEvidenceUrls,
+        modelNeedsMoreEvidence: Boolean(result.needsMoreEvidence),
+      })
+      const providerStatus = buildProviderStatus(providerWarnings)
+      const cacheStatus = buildCacheStatus({
+        localSearchCache: searchCache
+          ? {
+              enabled: searchCache.enabled,
+              provider: searchCache.provider,
+              ...(typeof searchCache.stats === 'function' ? searchCache.stats() : {}),
+            }
+          : null,
       })
       const topConfidence = candidates[0]?.confidence ?? 0
       const closeCandidateCount = candidates.filter(
@@ -2996,6 +3087,9 @@ export function createApp(options = {}) {
         articleSearchProvider: articleSearch?.provider ?? null,
         visionModel: visionModelUsed,
         providerWarnings,
+        providerStatus,
+        cacheStatus,
+        resultQuality,
         ...(rankingDebug ? { rankingDebug } : {}),
       }
       await appendRunLog(runLogPath, {
@@ -3019,6 +3113,9 @@ export function createApp(options = {}) {
         needsMoreEvidence,
         topConfidence,
         closeCandidateCount,
+        resultQuality: cleanResultQualityForLog(resultQuality),
+        providerStatus: cleanProviderStatusForLog(providerStatus),
+        cacheStatus,
         candidates: candidates.map(cleanCandidateForLog),
         searchPlan: searchPlan
           ? {

@@ -16,6 +16,7 @@ import {
 } from 'lucide-react'
 import './App.css'
 import { candidatePassesQualityGate } from '../../shared/candidate-quality.js'
+import { goldenAnalysisFixtures } from '../../shared/golden-fixtures.js'
 import { categoryOptions, venues, type Venue, type VenueCategory } from './venues'
 
 const apiBaseUrl = import.meta.env.VITE_API_BASE_URL?.replace(/\/$/, '') ?? ''
@@ -372,6 +373,42 @@ type VisionAnalysis = {
     provider: string
     message: string
   }>
+  providerStatus?: {
+    ok: boolean
+    warningCount: number
+    failureAreas: string[]
+    warnings: Array<{
+      provider: string
+      message: string
+      area?: string
+    }>
+  }
+  cacheStatus?: {
+    enabled: boolean
+    provider: string
+    hits: number
+    misses: number
+    writes?: number
+    entries: number
+  }
+  resultQuality?: {
+    state: string
+    shownCandidates: number
+    filteredCandidates: number
+    filteredCandidateDetails: Array<{
+      name: string
+      reasons: string[]
+    }>
+    hiddenCandidates: number
+    hiddenCandidateDetails: Array<{
+      name: string
+      reasons: string[]
+    }>
+    topConfidence: number
+    closeCandidateCount: number
+    notEnoughEvidence: boolean
+    summary: string
+  }
 }
 
 type PhotoState = {
@@ -433,6 +470,12 @@ type AdminReview = {
     lastVote?: string | null
     lastCandidate?: string | null
   }>
+}
+
+type ReplayState = {
+  fixtureId: string
+  label?: string
+  analysis: VisionAnalysis
 }
 
 const feedbackSessionStorageKey = 'sf-food-guesser-feedback-session'
@@ -681,9 +724,210 @@ function resultStateLabel(analysis: VisionAnalysis | undefined, matches: MatchRe
   return 'Best supported match'
 }
 
+function normalizeResultQuality(value: unknown): VisionAnalysis['resultQuality'] {
+  if (!value || typeof value !== 'object') return undefined
+  const resultQuality = value as Record<string, unknown>
+  const filteredCandidateDetails = Array.isArray(resultQuality.filteredCandidateDetails)
+    ? resultQuality.filteredCandidateDetails.map((candidate) => {
+        const detail = candidate && typeof candidate === 'object' ? candidate as Record<string, unknown> : {}
+        return {
+          name: String(detail.name ?? 'Unnamed candidate'),
+          reasons: Array.isArray(detail.reasons) ? detail.reasons.map(String).slice(0, 6) : [],
+        }
+      }).slice(0, 8)
+    : []
+  const hiddenCandidateDetails = Array.isArray(resultQuality.hiddenCandidateDetails)
+    ? resultQuality.hiddenCandidateDetails.map((candidate) => {
+        const detail = candidate && typeof candidate === 'object' ? candidate as Record<string, unknown> : {}
+        return {
+          name: String(detail.name ?? 'Unnamed candidate'),
+          reasons: Array.isArray(detail.reasons) ? detail.reasons.map(String).slice(0, 6) : [],
+        }
+      }).slice(0, 8)
+    : []
+
+  return {
+    state: String(resultQuality.state ?? ''),
+    shownCandidates: Number(resultQuality.shownCandidates ?? 0),
+    filteredCandidates: Number(resultQuality.filteredCandidates ?? filteredCandidateDetails.length),
+    filteredCandidateDetails,
+    hiddenCandidates: Number(resultQuality.hiddenCandidates ?? hiddenCandidateDetails.length),
+    hiddenCandidateDetails,
+    topConfidence: normalizeConfidence(resultQuality.topConfidence),
+    closeCandidateCount: Number(resultQuality.closeCandidateCount ?? 0),
+    notEnoughEvidence: Boolean(resultQuality.notEnoughEvidence),
+    summary: String(resultQuality.summary ?? ''),
+  }
+}
+
+function normalizeProviderStatus(value: unknown, providerWarnings: VisionAnalysis['providerWarnings']) {
+  if (!value || typeof value !== 'object') {
+    return {
+      ok: !providerWarnings?.length,
+      warningCount: providerWarnings?.length ?? 0,
+      failureAreas: [],
+      warnings: providerWarnings?.map((warning) => ({ ...warning })) ?? [],
+    }
+  }
+  const status = value as Record<string, unknown>
+  return {
+    ok: Boolean(status.ok),
+    warningCount: Number(status.warningCount ?? 0),
+    failureAreas: Array.isArray(status.failureAreas) ? status.failureAreas.map(String).slice(0, 6) : [],
+    warnings: Array.isArray(status.warnings)
+      ? status.warnings
+          .map((warning) => {
+            const item = warning && typeof warning === 'object' ? warning as Record<string, unknown> : {}
+            return {
+              provider: String(item.provider ?? 'provider'),
+              message: String(item.message ?? 'Provider unavailable'),
+              area: item.area ? String(item.area) : undefined,
+            }
+          })
+          .slice(0, 8)
+      : providerWarnings ?? [],
+  }
+}
+
+function normalizeCacheStatus(value: unknown): VisionAnalysis['cacheStatus'] {
+  if (!value || typeof value !== 'object') return undefined
+  const status = value as Record<string, unknown>
+  return {
+    enabled: Boolean(status.enabled),
+    provider: String(status.provider ?? 'local-memory'),
+    hits: Number(status.hits ?? 0),
+    misses: Number(status.misses ?? 0),
+    writes: Number.isFinite(Number(status.writes)) ? Number(status.writes) : undefined,
+    entries: Number(status.entries ?? 0),
+  }
+}
+
+function normalizeVisionAnalysisResult(result: Record<string, unknown>): VisionAnalysis {
+  const providerWarnings = Array.isArray(result.providerWarnings)
+    ? result.providerWarnings
+        .map((warning: Record<string, unknown>) => ({
+          provider: String(warning.provider ?? 'provider'),
+          message: String(warning.message ?? 'Provider unavailable'),
+        }))
+        .slice(0, 4)
+    : []
+
+  return {
+    runId: result.runId ? String(result.runId) : undefined,
+    summary: String(result.summary ?? 'No visual summary returned.'),
+    imageEvidence: Array.isArray(result.imageEvidence)
+      ? result.imageEvidence.map(String).slice(0, 8)
+      : Array.isArray(result.imageEvidenceHints)
+        ? result.imageEvidenceHints.map(String).slice(0, 8)
+        : [],
+    candidates: Array.isArray(result.candidates)
+      ? result.candidates
+          .map((candidate: Partial<VisionCandidate>) => ({
+            id: String(candidate.id ?? ''),
+            name: candidate.name ? String(candidate.name) : undefined,
+            category: candidate.category ? String(candidate.category) : undefined,
+            neighborhood: candidate.neighborhood ? String(candidate.neighborhood) : undefined,
+            address: candidate.address ? String(candidate.address) : undefined,
+            confidence: normalizeConfidence(candidate.confidence),
+            originalConfidence: candidate.originalConfidence
+              ? normalizeConfidence(candidate.originalConfidence)
+              : undefined,
+            evidenceType: candidate.evidenceType ? String(candidate.evidenceType) : undefined,
+            evidenceCategories: normalizedEvidenceCategories(candidate),
+            ...candidateExplanationBuckets(candidate),
+            rankingNotes: Array.isArray(candidate.rankingNotes)
+              ? candidate.rankingNotes.map(String).slice(0, 4)
+              : [],
+            sourceUrls: Array.isArray(candidate.sourceUrls)
+              ? candidate.sourceUrls.map(String).slice(0, 4)
+              : [],
+            mapsQuery: candidate.mapsQuery ? String(candidate.mapsQuery) : undefined,
+            searchQueries: Array.isArray(candidate.searchQueries)
+              ? candidate.searchQueries.map(String).slice(0, 4)
+              : [],
+          }))
+          .filter(
+            (candidate: VisionCandidate) =>
+              candidatePassesQualityGate(candidate, {
+                seedVenueIds: venues.map((venue) => venue.id),
+              }),
+          )
+      : [],
+    needsMoreEvidence: Boolean(result.needsMoreEvidence),
+    searchProvider: result.searchProvider ? String(result.searchProvider) : null,
+    webSearchProvider: result.webSearchProvider ? String(result.webSearchProvider) : null,
+    articleSearchProvider: result.articleSearchProvider ? String(result.articleSearchProvider) : null,
+    articleCandidates: Array.isArray(result.articleCandidates)
+      ? result.articleCandidates
+          .map((candidate: Record<string, unknown>) => ({
+            name: String(candidate.name ?? ''),
+            category: candidate.category ? String(candidate.category) : undefined,
+            neighborhood: candidate.neighborhood ? String(candidate.neighborhood) : undefined,
+            address: candidate.address ? String(candidate.address) : undefined,
+            whyRelevant: candidate.whyRelevant ? String(candidate.whyRelevant) : undefined,
+            openingContext: candidate.openingContext
+              ? String(candidate.openingContext)
+              : undefined,
+            sourceUrls: Array.isArray(candidate.sourceUrls)
+              ? candidate.sourceUrls.map(String).slice(0, 4)
+              : [],
+          }))
+          .filter((candidate: { name: string }) => candidate.name)
+          .slice(0, 8)
+      : [],
+    photoEvidence: Array.isArray(result.photoEvidence)
+      ? result.photoEvidence
+          .map((photo: Record<string, unknown>) => ({
+            title: String(photo.title ?? 'Candidate photo'),
+            source: String(photo.source ?? 'Photo search'),
+            pageUrl: photo.pageUrl ? String(photo.pageUrl) : undefined,
+            thumbnailUrl: photo.thumbnailUrl ? String(photo.thumbnailUrl) : undefined,
+            query: photo.query ? String(photo.query) : undefined,
+            placeTitle: photo.placeTitle ? String(photo.placeTitle) : undefined,
+            placeAddress: photo.placeAddress ? String(photo.placeAddress) : undefined,
+          }))
+          .slice(0, 6)
+      : [],
+    webEvidence: Array.isArray(result.webEvidence)
+      ? result.webEvidence
+          .map((page: Record<string, unknown>) => ({
+            title: String(page.title ?? 'Candidate page'),
+            source: String(page.source ?? 'Web search'),
+            url: String(page.url ?? ''),
+            snippet: page.snippet ? String(page.snippet) : undefined,
+            query: page.query ? String(page.query) : undefined,
+            searchLabel: page.searchLabel ? String(page.searchLabel) : undefined,
+          }))
+          .filter((page: { url: string }) => page.url)
+          .slice(0, 6)
+      : [],
+    providerWarnings,
+    providerStatus: normalizeProviderStatus(result.providerStatus, providerWarnings),
+    cacheStatus: normalizeCacheStatus(result.cacheStatus),
+    resultQuality: normalizeResultQuality(result.resultQuality),
+  }
+}
+
+async function fetchReplayAnalysis(fixtureId: string): Promise<ReplayState> {
+  const response = await fetch(apiUrl(`/api/admin/replay-fixture?fixtureId=${encodeURIComponent(fixtureId)}`), {
+    credentials: 'include',
+  })
+  if (!response.ok) throw new Error(await readApiError(response))
+  const result = await response.json()
+  return {
+    fixtureId: String(result.fixtureId ?? fixtureId),
+    label: result.label ? String(result.label) : undefined,
+    analysis: normalizeVisionAnalysisResult(result),
+  }
+}
+
 function AdminReviewPage() {
   const [token, setToken] = useState('')
   const [review, setReview] = useState<AdminReview | null>(null)
+  const [selectedFixtureId, setSelectedFixtureId] = useState(goldenAnalysisFixtures[0]?.id ?? '')
+  const [replay, setReplay] = useState<ReplayState | null>(null)
+  const [replayStatus, setReplayStatus] = useState<'idle' | 'loading' | 'error'>('idle')
+  const [replayMessage, setReplayMessage] = useState('')
   const [status, setStatus] = useState<'idle' | 'loading' | 'error'>('idle')
   const [message, setMessage] = useState('')
 
@@ -713,6 +957,18 @@ function AdminReviewPage() {
     }
   }
 
+  async function loadReplayFixture() {
+    setReplayStatus('loading')
+    setReplayMessage('')
+    try {
+      setReplay(await fetchReplayAnalysis(selectedFixtureId))
+      setReplayStatus('idle')
+    } catch (error) {
+      setReplayStatus('error')
+      setReplayMessage(error instanceof Error ? error.message : 'Could not replay this fixture.')
+    }
+  }
+
   return (
     <main className="app-shell admin-shell">
       <header className="topbar">
@@ -726,6 +982,73 @@ function AdminReviewPage() {
           </div>
         </div>
       </header>
+      <section className="admin-panel">
+        <div className="admin-replay-header">
+          <div>
+            <h2>Dry-run replay</h2>
+            <p>Replay local golden fixtures without calling vision, search, or storing an uploaded image.</p>
+          </div>
+          <div className="admin-replay-controls">
+            <label>
+              Fixture
+              <select
+                value={selectedFixtureId}
+                onChange={(event) => setSelectedFixtureId(event.target.value)}
+              >
+                {goldenAnalysisFixtures.map((fixture) => (
+                  <option key={fixture.id} value={fixture.id}>{fixture.label}</option>
+                ))}
+              </select>
+            </label>
+            <button
+              type="button"
+              disabled={replayStatus === 'loading'}
+              onClick={loadReplayFixture}
+            >
+              {replayStatus === 'loading' ? 'Replaying...' : 'Replay fixture'}
+            </button>
+          </div>
+        </div>
+        {replayStatus === 'error' ? <p className="admin-error">{replayMessage}</p> : null}
+        {replay ? (
+          <div className="admin-replay-card">
+            <div className="admin-summary">
+              <span>{replay.analysis.resultQuality?.shownCandidates ?? 0} shown</span>
+              <span>{replay.analysis.resultQuality?.filteredCandidates ?? 0} filtered</span>
+              <span>{replay.analysis.resultQuality?.hiddenCandidates ?? 0} hidden</span>
+              <span>{replay.analysis.cacheStatus?.provider ?? 'no-cache'} cache</span>
+            </div>
+            <p>{replay.analysis.resultQuality?.summary}</p>
+            {replay.analysis.candidates.length ? (
+              <div className="admin-runs">
+                {replay.analysis.candidates.map((candidate) => (
+                  <article key={candidate.name} className="admin-run-card">
+                    <div>
+                      <span className="category">shown</span>
+                      <h3>{candidate.name}</h3>
+                    </div>
+                    <p>{candidate.reasons.join(' ') || 'Passed the evidence contract.'}</p>
+                    <small>{candidate.confidence}% · {(candidate.evidenceCategories ?? []).join(', ')}</small>
+                  </article>
+                ))}
+              </div>
+            ) : null}
+            {replay.analysis.resultQuality?.hiddenCandidateDetails.length ? (
+              <div className="admin-runs">
+                {replay.analysis.resultQuality.hiddenCandidateDetails.map((candidate) => (
+                  <article key={`${replay.fixtureId}-${candidate.name}`} className="admin-run-card muted">
+                    <div>
+                      <span className="category">filtered</span>
+                      <h3>{candidate.name}</h3>
+                    </div>
+                    <p>Why not shown: {candidate.reasons.join(', ')}</p>
+                  </article>
+                ))}
+              </div>
+            ) : null}
+          </div>
+        ) : null}
+      </section>
       <section className="admin-panel">
         <form className="admin-token-form" onSubmit={loadReview}>
           <label>
@@ -801,107 +1124,7 @@ async function analyzePhotoWithVision(file: File): Promise<VisionAnalysis> {
   }
 
   const result = await response.json()
-
-  return {
-    runId: result.runId ? String(result.runId) : undefined,
-    summary: String(result.summary ?? 'No visual summary returned.'),
-    imageEvidence: Array.isArray(result.imageEvidence)
-      ? result.imageEvidence.map(String).slice(0, 8)
-      : Array.isArray(result.imageEvidenceHints)
-        ? result.imageEvidenceHints.map(String).slice(0, 8)
-        : [],
-    candidates: Array.isArray(result.candidates)
-      ? result.candidates
-          .map((candidate: Partial<VisionCandidate>) => ({
-            id: String(candidate.id ?? ''),
-            name: candidate.name ? String(candidate.name) : undefined,
-            category: candidate.category ? String(candidate.category) : undefined,
-            neighborhood: candidate.neighborhood ? String(candidate.neighborhood) : undefined,
-            address: candidate.address ? String(candidate.address) : undefined,
-            confidence: normalizeConfidence(candidate.confidence),
-            originalConfidence: candidate.originalConfidence
-              ? normalizeConfidence(candidate.originalConfidence)
-              : undefined,
-            evidenceType: candidate.evidenceType ? String(candidate.evidenceType) : undefined,
-            evidenceCategories: normalizedEvidenceCategories(candidate),
-            ...candidateExplanationBuckets(candidate),
-            rankingNotes: Array.isArray(candidate.rankingNotes)
-              ? candidate.rankingNotes.map(String).slice(0, 4)
-              : [],
-            sourceUrls: Array.isArray(candidate.sourceUrls)
-              ? candidate.sourceUrls.map(String).slice(0, 4)
-              : [],
-            mapsQuery: candidate.mapsQuery ? String(candidate.mapsQuery) : undefined,
-            searchQueries: Array.isArray(candidate.searchQueries)
-              ? candidate.searchQueries.map(String).slice(0, 4)
-              : [],
-          }))
-          .filter(
-            (candidate: VisionCandidate) =>
-              candidatePassesQualityGate(candidate, {
-                seedVenueIds: venues.map((venue) => venue.id),
-              }),
-          )
-      : [],
-    needsMoreEvidence: Boolean(result.needsMoreEvidence),
-    searchProvider: result.searchProvider ? String(result.searchProvider) : null,
-    webSearchProvider: result.webSearchProvider ? String(result.webSearchProvider) : null,
-    articleSearchProvider: result.articleSearchProvider
-      ? String(result.articleSearchProvider)
-      : null,
-    articleCandidates: Array.isArray(result.articleCandidates)
-      ? result.articleCandidates
-          .map((candidate: Record<string, unknown>) => ({
-            name: String(candidate.name ?? ''),
-            category: candidate.category ? String(candidate.category) : undefined,
-            neighborhood: candidate.neighborhood ? String(candidate.neighborhood) : undefined,
-            address: candidate.address ? String(candidate.address) : undefined,
-            whyRelevant: candidate.whyRelevant ? String(candidate.whyRelevant) : undefined,
-            openingContext: candidate.openingContext
-              ? String(candidate.openingContext)
-              : undefined,
-            sourceUrls: Array.isArray(candidate.sourceUrls)
-              ? candidate.sourceUrls.map(String).slice(0, 4)
-              : [],
-          }))
-          .filter((candidate: { name: string }) => candidate.name)
-          .slice(0, 8)
-      : [],
-    photoEvidence: Array.isArray(result.photoEvidence)
-      ? result.photoEvidence
-          .map((photo: Record<string, unknown>) => ({
-            title: String(photo.title ?? 'Candidate photo'),
-            source: String(photo.source ?? 'Photo search'),
-            pageUrl: photo.pageUrl ? String(photo.pageUrl) : undefined,
-            thumbnailUrl: photo.thumbnailUrl ? String(photo.thumbnailUrl) : undefined,
-            query: photo.query ? String(photo.query) : undefined,
-            placeTitle: photo.placeTitle ? String(photo.placeTitle) : undefined,
-            placeAddress: photo.placeAddress ? String(photo.placeAddress) : undefined,
-          }))
-          .slice(0, 6)
-      : [],
-    webEvidence: Array.isArray(result.webEvidence)
-      ? result.webEvidence
-          .map((page: Record<string, unknown>) => ({
-            title: String(page.title ?? 'Candidate page'),
-            source: String(page.source ?? 'Web search'),
-            url: String(page.url ?? ''),
-            snippet: page.snippet ? String(page.snippet) : undefined,
-            query: page.query ? String(page.query) : undefined,
-            searchLabel: page.searchLabel ? String(page.searchLabel) : undefined,
-          }))
-          .filter((page: { url: string }) => page.url)
-          .slice(0, 6)
-      : [],
-    providerWarnings: Array.isArray(result.providerWarnings)
-      ? result.providerWarnings
-          .map((warning: Record<string, unknown>) => ({
-            provider: String(warning.provider ?? 'provider'),
-            message: String(warning.message ?? 'Provider unavailable'),
-          }))
-          .slice(0, 4)
-      : [],
-  }
+  return normalizeVisionAnalysisResult(result)
 }
 
 function MainApp() {
@@ -931,6 +1154,12 @@ function MainApp() {
   )
   const activeMatch = matches.find((match) => match.venue.id === activeVenueId) ?? matches[0]
   const topMatch = hasDistinctTopMatch(matches) ? matches[0] : null
+  const providerFailureAreas = photo.analysis?.providerStatus?.failureAreas ?? []
+  const providerFailureLabel = providerFailureAreas.length
+    ? providerFailureAreas.map((area) => area.replace(/_/g, ' ')).join(', ')
+    : 'some sources'
+  const noMatchSummary = photo.analysis?.resultQuality?.summary
+    || 'The image was too ambiguous to rank a venue.'
   const allVisibleGuessesMarkedIncorrect =
     matches.length > 0 &&
     matches.every((match) => {
@@ -1484,11 +1713,12 @@ function MainApp() {
         ) : null}
 
         {/* ── Provider warning ────────────────────────── */}
-        {photo.analysis?.providerWarnings?.length ? (
+        {photo.analysis?.providerStatus && !photo.analysis.providerStatus.ok ? (
           <div className="provider-warning" role="status">
             <Search size={15} />
             <span>
-              Some web evidence was unavailable, so the app ranked using the image and remaining sources.
+              Some evidence lanes were unavailable ({providerFailureLabel}), so the app ranked using
+              the image and remaining sources.
             </span>
           </div>
         ) : null}
@@ -1785,11 +2015,8 @@ function MainApp() {
         ) : (photo.status === 'gps' || photo.status === 'nogps') ? (
           <section className="waiting-results">
             <Camera size={26} />
-            <h3>No venue matches found</h3>
-            <p>
-              The image was too ambiguous to rank a venue. Try a photo with visible signage,
-              menus, cups, or distinctive decor.
-            </p>
+            <h3>Not enough evidence</h3>
+            <p>{noMatchSummary}</p>
           </section>
         ) : null}
 

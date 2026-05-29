@@ -21,6 +21,8 @@ import {
   searchSerpApiPhotos,
 } from './server.mjs'
 import { createProviderConfig, parseFallbackModels } from './providers.mjs'
+import { buildResultQuality } from '../shared/candidate-quality.js'
+import { goldenAnalysisFixtures } from '../shared/golden-fixtures.js'
 
 const pngPixel = Buffer.from(
   'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=',
@@ -144,6 +146,36 @@ describe('SF Food Guesser API', () => {
     await providers.webSearch.search(['green tile cafe'])
 
     expect(searchFns.searchExaWeb).toHaveBeenCalledTimes(1)
+    expect(providers.searchCache.stats()).toMatchObject({
+      hits: 1,
+      misses: 1,
+      entries: 1,
+    })
+  })
+
+  it('caches Google Places photo searches when that provider is active', async () => {
+    const searchFns = {
+      searchGooglePlacesPhotos: vi.fn(async () => [{ title: 'photo' }]),
+    }
+    const providers = createProviderConfig({
+      env: {
+        OPENAI_API_KEY: 'openai-key',
+        GOOGLE_PLACES_API_KEY: 'google-places-key',
+        SF_FOOD_SEARCH_CACHE_TTL_MS: '60000',
+      },
+      searchFns,
+      createVisionClient: false,
+    })
+
+    await providers.photoSearch.search(['souvla sign'])
+    await providers.photoSearch.search(['souvla sign'])
+
+    expect(searchFns.searchGooglePlacesPhotos).toHaveBeenCalledTimes(1)
+    expect(providers.searchCache.stats()).toMatchObject({
+      hits: 1,
+      misses: 1,
+      entries: 1,
+    })
   })
 
   it('parses fallback model ids without keeping blank entries', () => {
@@ -2454,6 +2486,23 @@ describe('SF Food Guesser API', () => {
     expect(candidates.map((candidate) => candidate.name)).toEqual(['Kissaten HiFi'])
   })
 
+  it.each(goldenAnalysisFixtures)('keeps golden fixture contract: $label', (fixture) => {
+    const candidates = rerankCandidates(fixture.analysis.candidates, {
+      seedVenueIds: fixture.options?.seedVenueIds,
+      ocrVisibleText: fixture.options?.ocrVisibleText,
+    })
+    const resultQuality = buildResultQuality(fixture.analysis.candidates, candidates, {
+      seedVenueIds: fixture.options?.seedVenueIds,
+    })
+
+    expect(candidates.map((candidate) => candidate.name)).toEqual(fixture.expectedShown)
+    expect(resultQuality.filteredCandidates).toBe(fixture.expectedFiltered)
+    if (fixture.expectedShown.length === 0) {
+      expect(resultQuality.notEnoughEvidence).toBe(true)
+      expect(resultQuality.summary).toMatch(/No candidate had enough/)
+    }
+  })
+
   it('does not trust invented non-seed ids as verified venues', () => {
     const candidates = rerankCandidates(
       [
@@ -2785,6 +2834,18 @@ describe('SF Food Guesser API', () => {
     expect(response.body.providerWarnings[0]).toMatchObject({
       provider: 'failing-exa',
       message: 'Exa unavailable',
+    })
+    expect(response.body.providerStatus).toMatchObject({
+      ok: false,
+      failureAreas: ['web_search'],
+    })
+    expect(response.body.cacheStatus).toMatchObject({
+      enabled: true,
+      provider: 'local-memory',
+    })
+    expect(response.body.resultQuality).toMatchObject({
+      shownCandidates: 0,
+      notEnoughEvidence: true,
     })
   })
 })

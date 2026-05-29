@@ -22,6 +22,7 @@ import {
   validateImageBytes,
   validateImageFile,
 } from './_shared.js'
+import { buildCacheStatus, buildProviderStatus } from '../../shared/analysis-diagnostics.js'
 import { venues as seedVenues } from '../../shared/venues.js'
 
 const providerFetchTimeoutMs = 18_000
@@ -225,6 +226,7 @@ export async function onRequestPost({ request, env }) {
   const dataUrl = await fileToDataUrl(file)
   const models = [provider.model, ...provider.fallbackModels].filter(Boolean)
   const providerWarnings = []
+  const searchCacheStats = { hits: 0, misses: 0, writes: 0 }
   let searchPlan = null
   let ocrResult = null
   let webEvidence = []
@@ -368,13 +370,13 @@ export async function onRequestPost({ request, env }) {
         }
       : null
     const photoEvidenceSearch = env.GOOGLE_PLACES_API_KEY
-      ? searchGooglePlacesPhotoEvidence(photoSearchPlan, env, evidenceFetch)
-      : searchHasDataPhotoEvidence(photoSearchPlan, env, evidenceFetch, hasDataDebug)
+      ? searchGooglePlacesPhotoEvidence(photoSearchPlan, env, evidenceFetch, searchCacheStats)
+      : searchHasDataPhotoEvidence(photoSearchPlan, env, evidenceFetch, hasDataDebug, searchCacheStats)
     const photoProviderName = env.GOOGLE_PLACES_API_KEY
       ? 'google-places-new-photos'
       : 'hasdata-google-maps-photos'
     const [exaResult, photoResult] = await Promise.allSettled([
-      searchExaEvidence(searchPlan, env, evidenceFetch),
+      searchExaEvidence(searchPlan, env, evidenceFetch, searchCacheStats),
       photoEvidenceSearch,
     ])
     if (exaResult.status === 'fulfilled') {
@@ -520,6 +522,14 @@ export async function onRequestPost({ request, env }) {
           searchPlan,
           ocr: ocrResult,
           providerWarnings,
+          providerStatus: buildProviderStatus(providerWarnings),
+          cacheStatus: buildCacheStatus({
+            cloudflareSearchCache: {
+              enabled: Boolean(env.SF_FOOD_SEARCH_CACHE_KV),
+              provider: 'cloudflare-kv',
+              ...searchCacheStats,
+            },
+          }),
         })
       } catch (error) {
         providerWarnings.push({
@@ -540,6 +550,14 @@ export async function onRequestPost({ request, env }) {
       runId,
       error: providerErrorMessage(lastError, provider.provider),
       providerWarnings,
+      providerStatus: buildProviderStatus(providerWarnings),
+      cacheStatus: buildCacheStatus({
+        cloudflareSearchCache: {
+          enabled: Boolean(env.SF_FOOD_SEARCH_CACHE_KV),
+          provider: 'cloudflare-kv',
+          ...searchCacheStats,
+        },
+      }),
     },
     Number(lastError?.status) || 500,
   )

@@ -48,6 +48,8 @@ export function createProviderConfig({
     : null
   const exaClient = env.EXA_API_KEY ? new Exa(env.EXA_API_KEY) : null
   const cacheStore = new Map()
+  const cacheStats = { hits: 0, misses: 0 }
+  const cacheTtlMs = Number(env.SF_FOOD_SEARCH_CACHE_TTL_MS || 1000 * 60 * 30)
 
   const photoSearch = createPhotoSearchProvider({
     googlePlacesApiKey: env.GOOGLE_PLACES_API_KEY,
@@ -55,20 +57,23 @@ export function createProviderConfig({
     serpApiKey: env.SERPAPI_API_KEY,
     searchFns,
     cacheStore,
-    cacheTtlMs: Number(env.SF_FOOD_SEARCH_CACHE_TTL_MS || 1000 * 60 * 30),
+    cacheStats,
+    cacheTtlMs,
   })
   const webSearch = createWebSearchProvider({
     ceramicApiKey: env.CERAMIC_API_KEY,
     exaClient,
     searchFns,
     cacheStore,
-    cacheTtlMs: Number(env.SF_FOOD_SEARCH_CACHE_TTL_MS || 1000 * 60 * 30),
+    cacheStats,
+    cacheTtlMs,
   })
   const articleSearch = createArticleSearchProvider({
     exaClient,
     searchFns,
     cacheStore,
-    cacheTtlMs: Number(env.SF_FOOD_SEARCH_CACHE_TTL_MS || 1000 * 60 * 30),
+    cacheStats,
+    cacheTtlMs,
   })
 
   return {
@@ -80,14 +85,27 @@ export function createProviderConfig({
     photoSearch,
     webSearch,
     articleSearch,
+    searchCache: {
+      enabled: cacheTtlMs > 0,
+      provider: 'local-memory',
+      stats: () => ({
+        hits: cacheStats.hits,
+        misses: cacheStats.misses,
+        entries: cacheStore.size,
+      }),
+    },
   }
 }
 
-function cachedSearch(cacheStore, provider, cacheTtlMs, search) {
+function cachedSearch(cacheStore, provider, cacheTtlMs, cacheStats, search) {
   return async (input) => {
     const cacheKey = `${provider}:${JSON.stringify(input)}`
     const cached = cacheStore.get(cacheKey)
-    if (cached && cached.expiresAt > Date.now()) return cached.value
+    if (cached && cached.expiresAt > Date.now()) {
+      cacheStats.hits += 1
+      return cached.value
+    }
+    cacheStats.misses += 1
     const value = await search(input)
     if (cacheTtlMs > 0) {
       cacheStore.set(cacheKey, { value, expiresAt: Date.now() + cacheTtlMs })
@@ -103,12 +121,15 @@ function createPhotoSearchProvider({
   searchFns,
   cacheStore,
   cacheTtlMs,
+  cacheStats,
 }) {
   if (googlePlacesApiKey && searchFns.searchGooglePlacesPhotos) {
     const provider = 'google-places-new-photos'
     return {
       provider,
-      search: (queries) => searchFns.searchGooglePlacesPhotos(queries, googlePlacesApiKey),
+      search: cachedSearch(cacheStore, provider, cacheTtlMs, cacheStats, (queries) =>
+        searchFns.searchGooglePlacesPhotos(queries, googlePlacesApiKey),
+      ),
     }
   }
 
@@ -116,7 +137,7 @@ function createPhotoSearchProvider({
     const provider = 'hasdata-google-maps-photos'
     return {
       provider,
-      search: cachedSearch(cacheStore, provider, cacheTtlMs, (queries) =>
+      search: cachedSearch(cacheStore, provider, cacheTtlMs, cacheStats, (queries) =>
         searchFns.searchHasDataPhotos(queries, hasDataApiKey),
       ),
     }
@@ -126,7 +147,7 @@ function createPhotoSearchProvider({
     const provider = 'serpapi-google-maps-photos'
     return {
       provider,
-      search: cachedSearch(cacheStore, provider, cacheTtlMs, (queries) =>
+      search: cachedSearch(cacheStore, provider, cacheTtlMs, cacheStats, (queries) =>
         searchFns.searchSerpApiPhotos(queries, serpApiKey),
       ),
     }
@@ -135,12 +156,12 @@ function createPhotoSearchProvider({
   return null
 }
 
-function createWebSearchProvider({ ceramicApiKey, exaClient, searchFns, cacheStore, cacheTtlMs }) {
+function createWebSearchProvider({ ceramicApiKey, exaClient, searchFns, cacheStore, cacheTtlMs, cacheStats }) {
   if (ceramicApiKey && searchFns.searchCeramicWeb) {
     const provider = 'ceramic-web-search'
     return {
       provider,
-      search: cachedSearch(cacheStore, provider, cacheTtlMs, (queries) =>
+      search: cachedSearch(cacheStore, provider, cacheTtlMs, cacheStats, (queries) =>
         searchFns.searchCeramicWeb(queries, ceramicApiKey),
       ),
     }
@@ -150,7 +171,7 @@ function createWebSearchProvider({ ceramicApiKey, exaClient, searchFns, cacheSto
     const provider = 'exa-deep-highlights'
     return {
       provider,
-      search: cachedSearch(cacheStore, provider, cacheTtlMs, (queries) =>
+      search: cachedSearch(cacheStore, provider, cacheTtlMs, cacheStats, (queries) =>
         searchFns.searchExaWeb(queries, exaClient),
       ),
     }
@@ -159,13 +180,13 @@ function createWebSearchProvider({ ceramicApiKey, exaClient, searchFns, cacheSto
   return null
 }
 
-function createArticleSearchProvider({ exaClient, searchFns, cacheStore, cacheTtlMs }) {
+function createArticleSearchProvider({ exaClient, searchFns, cacheStore, cacheTtlMs, cacheStats }) {
   if (!exaClient || !searchFns.discoverArticleCandidates) return null
 
   const provider = 'exa-article-discovery'
   return {
     provider,
-    search: cachedSearch(cacheStore, provider, cacheTtlMs, (searchPlan) =>
+    search: cachedSearch(cacheStore, provider, cacheTtlMs, cacheStats, (searchPlan) =>
       searchFns.discoverArticleCandidates(searchPlan, exaClient),
     ),
   }

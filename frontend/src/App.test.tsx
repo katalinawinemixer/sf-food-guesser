@@ -844,9 +844,51 @@ describe('SF Food Guesser photo flow', () => {
 
   it('shows the admin feedback review behind a token without rendering upload UI', async () => {
     window.history.pushState({}, '', '/?admin=1')
-    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
-      new Response(
-        JSON.stringify({
+    const fetchMock = vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            ok: true,
+            fixtureId: 'placeholder-and-no-source',
+            label: 'Placeholder and no-source candidates',
+            summary: 'Matcha latte fixture.',
+            imageEvidence: ['matcha latte'],
+            candidates: [
+              {
+                name: 'Kissaten HiFi',
+                confidence: 86,
+                evidenceCategories: ['web_source_match', 'interior_match'],
+                reasons: ['A source-backed cafe candidate.'],
+                sourceUrls: ['https://example.com/kissaten'],
+              },
+            ],
+            needsMoreEvidence: false,
+            resultQuality: {
+              state: 'enough_evidence',
+              shownCandidates: 1,
+              filteredCandidates: 2,
+              hiddenCandidates: 2,
+              filteredCandidateDetails: [
+                { name: 'Other Inner Richmond Cafe', reasons: ['placeholder_name'] },
+              ],
+              hiddenCandidateDetails: [
+                { name: 'Other Inner Richmond Cafe', reasons: ['placeholder_name'] },
+                { name: 'Invented Matcha Bar', reasons: ['no_source_or_identity_evidence'] },
+              ],
+              topConfidence: 86,
+              closeCandidateCount: 1,
+              notEnoughEvidence: false,
+              summary: '1 candidate passed the evidence gate.',
+            },
+            providerStatus: { ok: true, warningCount: 0, failureAreas: [], warnings: [] },
+            cacheStatus: { enabled: false, provider: 'fixture-replay', hits: 0, misses: 0, entries: 0 },
+          }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } },
+        ),
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
           ok: true,
           recordCount: 2,
           runCount: 1,
@@ -865,15 +907,22 @@ describe('SF Food Guesser photo flow', () => {
               },
             },
           ],
-        }),
-        { status: 200, headers: { 'Content-Type': 'application/json' } },
-      ),
-    )
+          }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } },
+        ),
+      )
 
     render(<App />)
 
     expect(screen.getByRole('heading', { name: 'Feedback Review' })).toBeVisible()
+    expect(screen.getByRole('heading', { name: 'Dry-run replay' })).toBeVisible()
     expect(screen.queryByText('Drop a food photo here')).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Replay fixture' }))
+    expect(await screen.findByText('1 shown')).toBeVisible()
+    expect(screen.getByText('2 filtered')).toBeVisible()
+    expect(screen.getByText('2 hidden')).toBeVisible()
+    expect(screen.getByRole('heading', { name: 'Kissaten HiFi', level: 3 })).toBeVisible()
+    expect(screen.getByText(/Why not shown: placeholder_name/)).toBeVisible()
 
     fireEvent.change(screen.getByLabelText('Admin token'), {
       target: { value: 'admin-token' },

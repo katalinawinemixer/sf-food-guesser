@@ -5,12 +5,14 @@ import { onRequestGet as healthGet } from '../functions/api/health.js'
 import { onRequestPost as analyzePhotoPost } from '../functions/api/analyze-photo.js'
 import { onRequestPost as feedbackPost } from '../functions/api/feedback.js'
 import { onRequestGet as adminFeedbackReviewGet } from '../functions/api/admin/feedback-review.js'
+import { onRequestGet as adminReplayFixtureGet } from '../functions/api/admin/replay-fixture.js'
 import {
   buildCloudflareQueryLanes,
   fileToDataUrl,
   normalizeAnalysis,
   searchGooglePlacesPhotoEvidence,
 } from '../functions/api/_shared.js'
+import { goldenAnalysisFixtures } from '../shared/golden-fixtures.js'
 
 const pngPixel = Buffer.from(
   'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=',
@@ -283,6 +285,13 @@ describe('Cloudflare Pages Functions API', () => {
           message: 'Provider tool call failed',
         },
       ],
+      providerStatus: {
+        ok: false,
+        failureAreas: ['vision'],
+      },
+      cacheStatus: {
+        enabled: false,
+      },
     })
 
     fetchMock.mockRestore()
@@ -693,7 +702,7 @@ describe('Cloudflare Pages Functions API', () => {
     fetchMock.mockRestore()
   })
 
-  it('uses official Google Places photos without persisting Maps data in the search cache', async () => {
+  it('uses official Google Places photos and records search cache activity', async () => {
     const get = vi.fn(async () => null)
     const put = vi.fn(async () => undefined)
     const fetchMock = vi
@@ -739,8 +748,10 @@ describe('Cloudflare Pages Functions API', () => {
       source: 'Google Places photos',
       imageUrl: 'https://lh3.googleusercontent.com/places-photo=w900',
     })
-    expect(get).not.toHaveBeenCalled()
-    expect(put).not.toHaveBeenCalled()
+    expect(get).toHaveBeenCalledTimes(2)
+    expect(put).toHaveBeenCalledTimes(2)
+    expect(put.mock.calls[0][0]).toContain('search-cache:google-places-text-search')
+    expect(put.mock.calls[1][0]).toContain('search-cache:google-places-photo-media')
 
     fetchMock.mockRestore()
   })
@@ -1060,6 +1071,46 @@ describe('Cloudflare Pages Functions API', () => {
     const result = normalizeAnalysis(placeholderModelOutput)
 
     expect(result.candidates.map((candidate) => candidate.name)).toEqual(['Kissaten HiFi'])
+    expect(result.resultQuality).toMatchObject({
+      shownCandidates: 1,
+      filteredCandidates: 2,
+    })
+  })
+
+  it('serves admin fixture replay through the Cloudflare ranking path without provider calls', async () => {
+    const response = await adminReplayFixtureGet({
+      request: new Request('https://spotted-in-sf.pages.dev/api/admin/replay-fixture?fixtureId=placeholder-and-no-source'),
+    })
+    const body = await json(response)
+
+    expect(response.status).toBe(200)
+    expect(body.fixtureId).toBe('placeholder-and-no-source')
+    expect(body.candidates.map((candidate) => candidate.name)).toEqual(['Kissaten HiFi'])
+    expect(body.resultQuality).toMatchObject({
+      shownCandidates: 1,
+      filteredCandidates: 2,
+      hiddenCandidates: 2,
+    })
+    expect(body.providerStatus).toMatchObject({ ok: true })
+    expect(body.cacheStatus).toMatchObject({
+      enabled: false,
+      provider: 'fixture-replay',
+    })
+  })
+
+  it.each(goldenAnalysisFixtures)('keeps Cloudflare golden fixture contract: $label', (fixture) => {
+    const result = normalizeAnalysis(fixture.analysis, {
+      seedVenueIds: fixture.options?.seedVenueIds,
+      searchPlan: {
+        visibleText: fixture.options?.ocrVisibleText ?? [],
+      },
+    })
+
+    expect(result.candidates.map((candidate) => candidate.name)).toEqual(fixture.expectedShown)
+    expect(result.resultQuality.filteredCandidates).toBe(fixture.expectedFiltered)
+    if (fixture.expectedShown.length === 0) {
+      expect(result.resultQuality.notEnoughEvidence).toBe(true)
+    }
   })
 
   it('keeps Cloudflare ranking debug behind an explicit flag', () => {

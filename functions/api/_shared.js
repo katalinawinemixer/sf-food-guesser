@@ -1,4 +1,8 @@
-import { candidatePassesQualityGate, isPlaceholderCandidateName } from '../../shared/candidate-quality.js'
+import {
+  buildResultQuality,
+  candidatePassesQualityGate,
+  isPlaceholderCandidateName,
+} from '../../shared/candidate-quality.js'
 
 const maxUploadBytes = 12 * 1024 * 1024
 const defaultCloudflareOrigins = [
@@ -76,21 +80,25 @@ function searchCacheKey(scope, value) {
   return `search-cache:${scope}:${encodeURIComponent(JSON.stringify(value)).slice(0, 900)}`
 }
 
-async function cachedSearchJson(env, key, compute, ttlSeconds = 1800) {
+async function cachedSearchJson(env, key, compute, ttlSeconds = 1800, cacheStats = null) {
   const store = env.SF_FOOD_SEARCH_CACHE_KV
   if (!store?.get || !store?.put) return compute()
 
   const cached = await store.get(key).catch(() => null)
   if (cached) {
     try {
+      if (cacheStats) cacheStats.hits = Number(cacheStats.hits ?? 0) + 1
       return JSON.parse(cached)
     } catch {
       // Refresh corrupt rows below.
     }
   }
 
+  if (cacheStats) cacheStats.misses = Number(cacheStats.misses ?? 0) + 1
   const value = await compute()
-  await store.put(key, JSON.stringify(value), { expirationTtl: ttlSeconds }).catch(() => undefined)
+  await store.put(key, JSON.stringify(value), { expirationTtl: ttlSeconds }).then(() => {
+    if (cacheStats) cacheStats.writes = Number(cacheStats.writes ?? 0) + 1
+  }).catch(() => undefined)
   return value
 }
 
@@ -691,7 +699,7 @@ export function buildCloudflarePhotoEvidenceParts(photoEvidence = []) {
   })
 }
 
-export async function searchExaEvidence(searchPlan, env, fetchImpl = fetch) {
+export async function searchExaEvidence(searchPlan, env, fetchImpl = fetch, cacheStats = null) {
   if (!env.EXA_API_KEY) return []
   const queries = (searchPlan?.searchQueries ?? [])
     .filter(Boolean)
@@ -728,6 +736,7 @@ export async function searchExaEvidence(searchPlan, env, fetchImpl = fetch) {
       return { query, results: Array.isArray(body.results) ? body.results : [] }
       },
       Number(env.SF_FOOD_SEARCH_CACHE_TTL_SECONDS || 1800),
+      cacheStats,
     )),
   )
 
@@ -832,7 +841,7 @@ function mapGooglePlacesPhoto({ photoUri, place, query, queryIndex, placeIndex, 
   }
 }
 
-export async function searchGooglePlacesPhotoEvidence(searchPlan, env, fetchImpl = fetch) {
+export async function searchGooglePlacesPhotoEvidence(searchPlan, env, fetchImpl = fetch, cacheStats = null) {
   if (!env.GOOGLE_PLACES_API_KEY) return []
   const queries = (searchPlan?.searchQueries ?? [])
     .filter(Boolean)
@@ -841,29 +850,38 @@ export async function searchGooglePlacesPhotoEvidence(searchPlan, env, fetchImpl
 
   const placeSearches = queries.map(async (rawQuery, queryIndex) => {
     const query = `${rawQuery} San Francisco cafe restaurant`
-    const response = await fetchImpl('https://places.googleapis.com/v1/places:searchText', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'X-Goog-Api-Key': String(env.GOOGLE_PLACES_API_KEY),
-        'X-Goog-FieldMask':
-          'places.id,places.displayName,places.formattedAddress,places.location,places.photos',
-      },
-      body: JSON.stringify({
-        textQuery: query,
-        includedType: 'restaurant',
-        locationBias: {
-          circle: {
-            center: { latitude: 37.7749, longitude: -122.4194 },
-            radius: 16000,
+    const result = await cachedSearchJson(
+      env,
+      searchCacheKey('google-places-text-search', query),
+      async () => {
+        const response = await fetchImpl('https://places.googleapis.com/v1/places:searchText', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'X-Goog-Api-Key': String(env.GOOGLE_PLACES_API_KEY),
+            'X-Goog-FieldMask':
+              'places.id,places.displayName,places.formattedAddress,places.location,places.photos',
           },
-        },
-        pageSize: 5,
-      }),
-    })
-    if (!response.ok) return []
-    const result = await response.json().catch(() => ({}))
-    return (Array.isArray(result.places) ? result.places : [])
+          body: JSON.stringify({
+            textQuery: query,
+            includedType: 'restaurant',
+            locationBias: {
+              circle: {
+                center: { latitude: 37.7749, longitude: -122.4194 },
+                radius: 16000,
+              },
+            },
+            pageSize: 5,
+          }),
+        })
+        if (!response.ok) return { places: [] }
+        const body = await response.json().catch(() => ({}))
+        return { places: Array.isArray(body.places) ? body.places : [] }
+      },
+      Number(env.SF_FOOD_SEARCH_CACHE_TTL_SECONDS || 1800),
+      cacheStats,
+    )
+    return result.places
       .slice(0, 3)
       .map((place, placeIndex) => ({ place, query, queryIndex, placeIndex }))
   })
@@ -889,9 +907,17 @@ export async function searchGooglePlacesPhotoEvidence(searchPlan, env, fetchImpl
       photoUrl.searchParams.set('maxWidthPx', '900')
       photoUrl.searchParams.set('skipHttpRedirect', 'true')
       photoUrl.searchParams.set('key', String(env.GOOGLE_PLACES_API_KEY))
-      const response = await fetchImpl(photoUrl)
-      if (!response.ok) return null
-      const result = await response.json().catch(() => ({}))
+      const result = await cachedSearchJson(
+        env,
+        searchCacheKey('google-places-photo-media', photo.name),
+        async () => {
+          const response = await fetchImpl(photoUrl)
+          if (!response.ok) return {}
+          return response.json().catch(() => ({}))
+        },
+        Number(env.SF_FOOD_SEARCH_CACHE_TTL_SECONDS || 1800),
+        cacheStats,
+      )
       return mapGooglePlacesPhoto({
         photoUri: result.photoUri,
         place,
@@ -926,7 +952,7 @@ export async function searchGooglePlacesPhotoEvidence(searchPlan, env, fetchImpl
   return photos.slice(0, 18)
 }
 
-export async function searchHasDataPhotoEvidence(searchPlan, env, fetchImpl = fetch, debug = null) {
+export async function searchHasDataPhotoEvidence(searchPlan, env, fetchImpl = fetch, debug = null, cacheStats = null) {
   if (!env.HASDATA_API_KEY) return []
   const queries = (searchPlan?.searchQueries ?? [])
     .filter(Boolean)
@@ -963,6 +989,7 @@ export async function searchHasDataPhotoEvidence(searchPlan, env, fetchImpl = fe
           }
         },
         Number(env.SF_FOOD_SEARCH_CACHE_TTL_SECONDS || 1800),
+        cacheStats,
       )
       debug?.searches?.push?.({
         status: cachedSearch.status,
@@ -1044,6 +1071,7 @@ export async function searchHasDataPhotoEvidence(searchPlan, env, fetchImpl = fe
         return { status: response.status, photos: normalizeHasDataPhotos(result) }
       },
       Number(env.SF_FOOD_SEARCH_CACHE_TTL_SECONDS || 1800),
+      cacheStats,
     )
     const photos = cachedPhotos.photos
     if (debug) {
@@ -1443,6 +1471,7 @@ function rankCandidates(candidates, optionsOrSeedVenueIds = []) {
 }
 
 export function normalizeAnalysis(result, options = {}) {
+  const rawModelCandidates = Array.isArray(result?.candidates) ? result.candidates : []
   const modelCandidates = Array.isArray(result?.candidates)
     ? result.candidates.map(normalizeCandidate).filter((candidate) => candidate.name)
     : []
@@ -1472,12 +1501,17 @@ export function normalizeAnalysis(result, options = {}) {
       }),
     )
     .slice(0, 3)
+  const resultQuality = buildResultQuality(rawModelCandidates.length ? rawModelCandidates : candidates, rankedCandidates, {
+    seedVenueIds: options.seedVenueIds,
+    modelNeedsMoreEvidence: Boolean(result?.needsMoreEvidence),
+  })
 
   return {
     summary: String(result?.summary ?? 'No visual summary returned.'),
     imageEvidence,
     candidates: rankedCandidates,
-    needsMoreEvidence: Boolean(result?.needsMoreEvidence),
+    needsMoreEvidence: Boolean(result?.needsMoreEvidence) || resultQuality.notEnoughEvidence,
+    resultQuality,
     ...(rankingDebug ? { rankingDebug } : {}),
   }
 }

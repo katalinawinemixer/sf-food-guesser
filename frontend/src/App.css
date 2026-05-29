@@ -422,7 +422,8 @@
   flex-wrap: wrap;
 }
 
-.admin-token-form label {
+.admin-token-form label,
+.admin-replay-controls label {
   display: grid;
   gap: 6px;
   color: #405048;
@@ -430,15 +431,18 @@
   font-weight: 850;
 }
 
-.admin-token-form input {
+.admin-token-form input,
+.admin-replay-controls select {
   min-width: 260px;
   border: 1px solid #cddbd2;
   border-radius: 8px;
   padding: 10px 12px;
   font: inherit;
+  background: #ffffff;
 }
 
-.admin-token-form button {
+.admin-token-form button,
+.admin-replay-controls button {
   min-height: 41px;
   border: 0;
   border-radius: 8px;
@@ -454,6 +458,48 @@
 .admin-token-form button:disabled {
   cursor: wait;
   opacity: 0.65;
+}
+
+.admin-replay-header {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
+.admin-replay-header h2 {
+  margin: 0;
+  color: #17211d;
+  font-size: 20px;
+  line-height: 1.2;
+}
+
+.admin-replay-header p,
+.admin-replay-card > p {
+  margin: 6px 0 0;
+  color: #506057;
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.admin-replay-controls {
+  display: flex;
+  gap: 10px;
+  align-items: end;
+  flex-wrap: wrap;
+}
+
+.admin-replay-controls button {
+  cursor: pointer;
+}
+
+.admin-replay-card {
+  margin-top: 16px;
+  border: 1px solid #dce8df;
+  border-radius: 8px;
+  background: #fbfdfb;
+  padding: 14px;
 }
 
 .admin-error {
@@ -490,6 +536,11 @@
   border: 1px solid #e0e8e2;
   border-radius: 8px;
   padding: 13px;
+}
+
+.admin-run-card.muted {
+  background: #f8faf8;
+  border-style: dashed;
 }
 
 .admin-run-card h3 {
