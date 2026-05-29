@@ -626,6 +626,7 @@ Use the seed venue list only as hints. You may return San Francisco venues outsi
 Use external evidence as leads, not truth: compare it against the uploaded image before ranking a venue.
 Do not cite seed venue signature items as if they were visible in the uploaded photo. A seed's menu items, cuisine, neighborhood, or source page can support a guess only after the uploaded photo itself has matching visual, text, GPS, storefront, or interior evidence.
 Treat visible text carefully. Exact storefront/menu/receipt/venue-name text is strong evidence. Generic words, partial brand marks, sauce bottles, packaged goods, delivery bags, cups, or third-party branding are not enough for very high confidence unless the exact venue name is readable or web/photo evidence confirms that branding belongs to the venue shown.
+Return only real named venues. Never invent placeholder candidates such as "Other Inner Richmond Cafe", "Unknown Mission Restaurant", or "Generic Matcha Cafe"; if the venue is uncertain, lower confidence and set needsMoreEvidence instead.
 Seed fields named doNotInferFrom are negative constraints: do not use those clues as identity evidence unless stronger uploaded-photo or public-photo evidence confirms the venue.
 
 Return strict JSON only:
@@ -658,6 +659,7 @@ Ranking rules:
 - Put uploaded-photo observations only in photoEvidence. Put articles, review pages, Maps/Yelp/public photos, or seed/source support only in externalEvidence. Put confidence caps and uncertainty in rankingRules.
 - Do not give a very high confidence score to a venue based only on packaging, cups, bottles, bags, or a partial logo. Keep those guesses moderate unless the exact venue name is visible.
 - Penalize guesses based only on generic coffee/matcha/pastry/cuisine.
+- Omit any candidate whose "name" is only a descriptive fallback or neighborhood/category phrase, not a real venue name.
 - Return up to three candidates. Use low confidence when evidence is weak.
 
 Photo-derived search plan:
@@ -1118,8 +1120,18 @@ function explanationBuckets(candidate) {
   }
 }
 
+function isPlaceholderCandidateName(name) {
+  const cleanedName = String(name ?? '').trim().replace(/\s+/g, ' ')
+  if (!cleanedName) return false
+  return (
+    /^(other|another|unknown|unidentified|unnamed)\b/i.test(cleanedName) &&
+    /\b(cafe|coffee|restaurant|bakery|bar|counter|spot|venue|place|shop|eatery|bistro)\b/i.test(cleanedName)
+  )
+}
+
 export function normalizeCandidate(candidate) {
-  const name = candidate?.name ? String(candidate.name) : ''
+  const rawName = candidate?.name ? String(candidate.name).trim() : ''
+  const name = isPlaceholderCandidateName(rawName) ? '' : rawName
   const rawConfidence = Number(candidate?.confidence ?? 0)
   const confidence = rawConfidence > 0 && rawConfidence <= 1 ? rawConfidence * 100 : rawConfidence
   const explanations = explanationBuckets(candidate)

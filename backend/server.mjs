@@ -475,6 +475,7 @@ Treat visible text and branding carefully. Exact storefront/menu/receipt/venue-n
 You may receive a contact sheet built from the same uploaded image. Inspect every panel: full image, background/interior crop, foreground/food crop, left/right/center crops, and high-contrast text crops. Small logo, tray, cup, bag, label, receipt, menu, or storefront text may only be readable in a crop or high-contrast panel.
 
 The JSON venue list below is only a seed dataset. It is not the full search space. If web evidence points to a better San Francisco venue that is not in the seed list, return it as a web-discovered candidate with no seed id.
+Return only real named venues. Never invent placeholder candidates such as "Other Inner Richmond Cafe", "Unknown Mission Restaurant", or "Generic Matcha Cafe"; if the venue is uncertain, lower confidence and set needsMoreEvidence instead.
 Seed fields named doNotInferFrom are negative constraints: do not use those clues as identity evidence unless stronger uploaded-photo or public-photo evidence confirms the venue.
 
 Return strict JSON only with this shape:
@@ -517,6 +518,7 @@ Rules:
 - Use evidenceCategories to make the evidence explicit. Choose from: visible_text, interior_match, storefront_match, packaging_logo, dish_match, gps_match, web_source_match.
 - Put uploaded-photo observations only in photoEvidence. Put articles, review pages, Google Maps/Yelp/public photos, or seed/source support only in externalEvidence. Put uncertainty and confidence caps in rankingRules.
 - Use dish_match only when the only strong overlap is the food or drink itself. Use interior_match, storefront_match, visible_text, or packaging_logo when those stronger clues are present.
+- Omit any candidate whose "name" is only a descriptive fallback or neighborhood/category phrase, not a real venue name.
 - Return 3-5 candidates when uncertainty remains.
 - Keep each candidate concise: at most 2 reasons, at most 3 sourceUrls, and at most 2 comparisonPhotos.
 - Return syntactically valid JSON only: no markdown, no comments, no trailing commas, and no truncated arrays.
@@ -756,12 +758,13 @@ function flattenQueryLanes(queryLanes = [], maxItems = 12) {
 }
 
 function normalizeArticleCandidate(candidate) {
+  const name = String(candidate.name ?? '').trim()
   const sourceUrls = Array.isArray(candidate.sourceUrls)
     ? candidate.sourceUrls.map(String).filter(Boolean).slice(0, 4)
     : []
 
   return {
-    name: String(candidate.name ?? '').trim(),
+    name: isPlaceholderCandidateName(name) ? '' : name,
     category: candidate.category ? String(candidate.category) : 'Cafe',
     neighborhood: candidate.neighborhood ? String(candidate.neighborhood) : '',
     address: candidate.address ? String(candidate.address) : '',
@@ -775,6 +778,15 @@ function normalizeStringList(value, maxItems = 4) {
   return Array.isArray(value)
     ? value.map(String).map((item) => item.trim()).filter(Boolean).slice(0, maxItems)
     : []
+}
+
+function isPlaceholderCandidateName(name) {
+  const cleanedName = String(name ?? '').trim().replace(/\s+/g, ' ')
+  if (!cleanedName) return false
+  return (
+    /^(other|another|unknown|unidentified|unnamed)\b/i.test(cleanedName) &&
+    /\b(cafe|coffee|restaurant|bakery|bar|counter|spot|venue|place|shop|eatery|bistro)\b/i.test(cleanedName)
+  )
 }
 
 function reasonLooksExternal(reason) {
@@ -1530,6 +1542,7 @@ export function rerankCandidates(rawCandidates = [], options = {}) {
     .map((text) => normalizeNameText(text))
     .filter((text) => text.length >= 4)
   const rankedCandidates = dedupeCandidatesBeforeRanking(rawCandidates)
+    .filter((candidate) => !isPlaceholderCandidateName(candidate.name))
     .map((candidate, originalIndex) => {
       const evidenceCategoriesForCandidate = normalizeEvidenceCategories(candidate)
       const rawEvidenceCategories = Array.isArray(candidate.evidenceCategories)

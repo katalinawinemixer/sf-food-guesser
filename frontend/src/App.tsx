@@ -60,6 +60,15 @@ function validatePhotoFile(file: File) {
   return null
 }
 
+function isPlaceholderCandidateName(name?: string) {
+  const cleanedName = String(name ?? '').trim().replace(/\s+/g, ' ')
+  if (!cleanedName) return false
+  return (
+    /^(other|another|unknown|unidentified|unnamed)\b/i.test(cleanedName) &&
+    /\b(cafe|coffee|restaurant|bakery|bar|counter|spot|venue|place|shop|eatery|bistro)\b/i.test(cleanedName)
+  )
+}
+
 async function readApiError(response: Response) {
   try {
     const result = await response.json()
@@ -548,6 +557,7 @@ function getVisionMatches(
   return analysis.candidates
     .map((candidate, index) => {
       const seedVenue = candidate.id ? seedById.get(candidate.id) : undefined
+      if (!seedVenue && isPlaceholderCandidateName(candidate.name)) return null
       const displayCategory = (seedVenue?.category || candidate.category || 'Restaurant') as VenueCategory
       if (category !== 'All' && displayCategory !== category) return null
       const distance = coords
@@ -831,7 +841,8 @@ async function analyzePhotoWithVision(file: File): Promise<VisionAnalysis> {
           }))
           .filter(
             (candidate: VisionCandidate) =>
-              venues.some((venue) => venue.id === candidate.id) || Boolean(candidate.name),
+              venues.some((venue) => venue.id === candidate.id) ||
+              (Boolean(candidate.name) && !isPlaceholderCandidateName(candidate.name)),
           )
       : [],
     needsMoreEvidence: Boolean(result.needsMoreEvidence),

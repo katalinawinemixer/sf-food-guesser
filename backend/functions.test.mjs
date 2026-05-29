@@ -1043,6 +1043,33 @@ describe('Cloudflare Pages Functions API', () => {
     expect(result.candidates.find((candidate) => candidate.name === 'Article Only Cafe')?.confidence).toBeLessThanOrEqual(38)
   })
 
+  it('drops placeholder neighborhood/category candidates in Cloudflare results', () => {
+    const result = normalizeAnalysis({
+      summary: 'Matcha drink inside a cafe in the Richmond.',
+      imageEvidence: ['green matcha drink', 'brown bags on shelves'],
+      candidates: [
+        {
+          id: '',
+          name: 'Other Inner Richmond Cafe',
+          confidence: 55,
+          evidenceCategories: ['dish_match', 'interior_match'],
+          photoEvidence: ['The photo appears to show an Inner Richmond cafe.'],
+        },
+        {
+          id: '',
+          name: 'Kissaten HiFi',
+          confidence: 72,
+          evidenceCategories: ['interior_match', 'web_source_match', 'dish_match'],
+          photoEvidence: ['The uploaded photo shows brown bags and a matcha drink.'],
+          externalEvidence: ['Public sources describe Kissaten HiFi as an Inner Richmond matcha cafe.'],
+          sourceUrls: ['https://www.theinfatuation.com/san-francisco/reviews/kissaten-hifi'],
+        },
+      ],
+    })
+
+    expect(result.candidates.map((candidate) => candidate.name)).toEqual(['Kissaten HiFi'])
+  })
+
   it('keeps Cloudflare ranking debug behind an explicit flag', () => {
     const payload = {
       summary: 'Burger and fries with OCR reading RT Bistro.',

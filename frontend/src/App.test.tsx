@@ -765,6 +765,16 @@ describe('SF Food Guesser photo flow', () => {
                 mapsQuery: 'Hidden Blue Cup Cafe 123 Valencia St San Francisco',
                 searchQueries: ['San Francisco cafe blue cup pastry case interior'],
               },
+              {
+                id: '',
+                name: 'Other Inner Richmond Cafe',
+                category: 'Cafe',
+                neighborhood: 'Inner Richmond',
+                address: 'Location not confirmed',
+                confidence: 5,
+                evidenceType: 'dish',
+                reasons: ['Generic fallback candidate from uncertainty.'],
+              },
             ],
             needsMoreEvidence: false,
           }),
@@ -789,6 +799,7 @@ describe('SF Food Guesser photo flow', () => {
       expect(screen.getByRole('heading', { name: 'Hidden Blue Cup Cafe', level: 3 })).toBeVisible()
     })
 
+    expect(screen.queryByText('Other Inner Richmond Cafe')).not.toBeInTheDocument()
     expect(screen.getAllByText(/123 Valencia St · Mission · Unverified location/)[0]).toBeVisible()
     expect(screen.queryByTestId('circle-marker')).not.toBeInTheDocument()
     expect(screen.getAllByRole('link', { name: /Search Maps/i })[0]).toBeVisible()

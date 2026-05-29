@@ -2438,6 +2438,28 @@ describe('SF Food Guesser API', () => {
     expect(candidates[0].name).toBe('Souvla')
   })
 
+  it('does not keep placeholder neighborhood/category candidates after reranking', () => {
+    const candidates = rerankCandidates([
+      {
+        id: '',
+        name: 'Other Inner Richmond Cafe',
+        confidence: 70,
+        evidenceCategories: ['dish_match', 'interior_match'],
+        reasons: ['The photo might show another cafe in the Inner Richmond.'],
+      },
+      {
+        id: '',
+        name: 'Kissaten HiFi',
+        confidence: 72,
+        evidenceCategories: ['interior_match', 'web_source_match', 'dish_match'],
+        reasons: ['External photos show a similar counter and matcha drink.'],
+        sourceUrls: ['https://www.theinfatuation.com/san-francisco/reviews/kissaten-hifi'],
+      },
+    ])
+
+    expect(candidates.map((candidate) => candidate.name)).toEqual(['Kissaten HiFi'])
+  })
+
   it('does not trust invented non-seed ids as verified venues', () => {
     const candidates = rerankCandidates(
       [
