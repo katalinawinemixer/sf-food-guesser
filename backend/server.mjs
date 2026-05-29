@@ -7,6 +7,7 @@ import express from 'express'
 import multer from 'multer'
 import sharp from 'sharp'
 import { createProviderConfig } from './providers.mjs'
+import { venues as seedVenues } from '../shared/venues.js'
 
 const maxUploadBytes = 12 * 1024 * 1024
 const allowedImageMimeTypes = new Set([
@@ -30,7 +31,7 @@ const upload = multer({
   storage: multer.memoryStorage(),
   limits: {
     fileSize: maxUploadBytes,
-    files: 1,
+    files: 2,
   },
   fileFilter: (_request, file, callback) => {
     if (isSupportedImageUpload(file)) {
@@ -63,6 +64,21 @@ const evidenceCategories = [
   'gps_match',
   'web_source_match',
 ]
+const compactSeedVenues = seedVenues.map((venue) => ({
+  id: venue.id,
+  name: venue.name,
+  category: venue.category,
+  neighborhood: venue.neighborhood,
+  address: venue.address,
+  signature: venue.signature,
+  imageEvidenceHints: venue.imageEvidenceHints,
+  visualClues: venue.visualClues,
+  menuClues: venue.menuClues,
+  doNotInferFrom: venue.doNotInferFrom,
+  multiLocation: venue.multiLocation,
+  sourceConfidence: venue.sourceConfidence,
+  note: venue.note,
+}))
 
 function parseAllowedOrigins(value = '') {
   return String(value)
@@ -140,6 +156,20 @@ function applyCors(app, allowedOrigins) {
 
     next()
   })
+}
+
+function checkLocalRateLimit(store, key, limit, windowSeconds) {
+  if (!Number.isFinite(limit) || limit <= 0) return null
+  const now = Date.now()
+  const existing = store.get(key)
+  const resetAt =
+    existing && Number.isFinite(existing.resetAt) && existing.resetAt > now
+      ? existing.resetAt
+      : now + windowSeconds * 1000
+  const count = existing && existing.resetAt === resetAt ? existing.count + 1 : 1
+  store.set(key, { count, resetAt })
+  if (count <= limit) return null
+  return Math.max(1, Math.ceil((resetAt - now) / 1000))
 }
 
 function parseModelJson(outputText) {
@@ -2504,6 +2534,7 @@ export function createApp(options = {}) {
     options.imageEmbeddingProvider ??
     String((options.env ?? process.env).IMAGE_EMBEDDING_PROVIDER ?? '')
   const app = express()
+  const adminReviewRateLimits = new Map()
   const allowedOrigins = parseAllowedOrigins(options.allowedOrigins ?? defaultAllowedOrigins.join(','))
   applyCors(app, allowedOrigins)
 
@@ -2555,6 +2586,22 @@ export function createApp(options = {}) {
   })
 
   app.get('/api/admin/feedback-review', async (request, response) => {
+    const env = options.env ?? process.env
+    const retryAfterSeconds = checkLocalRateLimit(
+      adminReviewRateLimits,
+      `admin-feedback-review:${request.ip || request.get('x-forwarded-for') || 'unknown'}`,
+      Number(env.SF_FOOD_ADMIN_REVIEW_RATE_LIMIT || 20),
+      Number(env.SF_FOOD_ADMIN_REVIEW_RATE_WINDOW_SECONDS || 3600),
+    )
+    if (retryAfterSeconds) {
+      response.setHeader('Retry-After', String(retryAfterSeconds))
+      response.status(429).json({
+        error: 'Rate limit reached for this browser or network. Wait a bit, then try again.',
+        retryAfterSeconds,
+      })
+      return
+    }
+
     const adminToken = options.adminToken ?? (options.env ?? process.env).SF_FOOD_ADMIN_TOKEN
     if (!adminToken || request.get('x-admin-token') !== adminToken) {
       response.status(401).json({ error: 'Admin token required.' })
@@ -2580,7 +2627,10 @@ export function createApp(options = {}) {
     }
   })
 
-  app.post('/api/analyze-photo', upload.single('photo'), async (request, response) => {
+  app.post('/api/analyze-photo', upload.fields([
+    { name: 'photo', maxCount: 1 },
+    { name: 'ocrPhoto', maxCount: 1 },
+  ]), async (request, response) => {
     if (!visionClient) {
       response.status(503).json({
         error:
@@ -2589,12 +2639,13 @@ export function createApp(options = {}) {
       return
     }
 
-    if (!request.file) {
+    const uploadedPhoto = request.files?.photo?.[0]
+    if (!uploadedPhoto) {
       response.status(400).json({ error: 'No photo was uploaded.' })
       return
     }
 
-    if (!looksLikeSupportedImage(request.file.buffer)) {
+    if (!looksLikeSupportedImage(uploadedPhoto.buffer)) {
       response.status(415).json({
         error:
           'Uploaded file did not look like a real image. Upload a JPG, PNG, WebP, AVIF, GIF, HEIC, or HEIF photo.',
@@ -2602,38 +2653,16 @@ export function createApp(options = {}) {
       return
     }
 
-    let venues = []
-    try {
-      venues = JSON.parse(String(request.body.venues ?? '[]'))
-    } catch {
-      response.status(400).json({ error: 'Venue payload was not valid JSON.' })
-      return
-    }
-
-    const compactVenues = venues.map((venue) => ({
-      id: venue.id,
-      name: venue.name,
-      category: venue.category,
-      neighborhood: venue.neighborhood,
-      address: venue.address,
-      signature: venue.signature,
-      imageEvidenceHints: venue.imageEvidenceHints,
-      visualClues: venue.visualClues,
-      menuClues: venue.menuClues,
-      doNotInferFrom: venue.doNotInferFrom,
-      multiLocation: venue.multiLocation,
-      sourceConfidence: venue.sourceConfidence,
-      note: venue.note,
-    }))
+    const compactVenues = compactSeedVenues
 
     const runId = randomUUID()
     const runStartedAt = Date.now()
     const uploadMetadata = {
-      mimeType: cleanText(request.file.mimetype, 120),
-      sizeBytes: request.file.size,
+      mimeType: cleanText(uploadedPhoto.mimetype, 120),
+      sizeBytes: uploadedPhoto.size,
     }
     const runLogPath = options.runLogPath ?? defaultRunLogPath
-    const uploadedImageViews = await buildUploadedImageViews(request.file)
+    const uploadedImageViews = await buildUploadedImageViews(uploadedPhoto)
 
     try {
       let searchPlan = null
@@ -2888,7 +2917,7 @@ export function createApp(options = {}) {
         }
       }
       const embeddingComparison = await compareExternalPhotoEmbeddings({
-        uploadedBuffer: request.file.buffer,
+        uploadedBuffer: uploadedPhoto.buffer,
         photoEvidence,
         enabled: imageEmbeddingProvider === 'local-signature',
       })

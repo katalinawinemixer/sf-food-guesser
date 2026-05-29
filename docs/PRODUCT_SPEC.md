@@ -92,6 +92,9 @@ When confidence is low, the app should:
 
 Uploaded photos should be treated as transient by default. Do not store user
 photos unless the user explicitly opts into a future saved-history feature.
+Strip embedded image metadata before sending a photo to model or search
+providers. GPS EXIF may be read locally in the browser for ranking, but provider
+requests should receive only the normalized image and derived coordinates.
 
 Local debugging logs may store a run id, timestamps, upload metadata such as
 MIME type and byte size, detected image labels, provider status, candidate

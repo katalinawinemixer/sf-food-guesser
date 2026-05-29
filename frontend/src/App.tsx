@@ -30,8 +30,6 @@ const allowedImageMimeTypes = new Set([
   'image/heif',
 ])
 const allowedImageExtensions = /\.(avif|gif|heic|heif|jpe?g|png|webp)$/i
-const visionNativeMimeTypes = new Set(['image/jpeg', 'image/jpg', 'image/png', 'image/webp'])
-
 function apiUrl(path: string) {
   return `${apiBaseUrl}${path}`
 }
@@ -78,11 +76,6 @@ async function readApiError(response: Response) {
   return `Photo analysis failed with status ${response.status}.`
 }
 
-function shouldTranscodeForVision(file: File) {
-  const mimeType = file.type.toLowerCase()
-  return !visionNativeMimeTypes.has(mimeType)
-}
-
 async function imageBitmapFromFile(file: File) {
   if (typeof createImageBitmap !== 'function') return null
 
@@ -108,9 +101,7 @@ async function htmlImageFromFile(file: File) {
   }
 }
 
-async function transcodeImageForVision(file: File) {
-  if (!shouldTranscodeForVision(file)) return file
-
+async function prepareImageForVision(file: File) {
   const drawable = (await imageBitmapFromFile(file)) ?? (await htmlImageFromFile(file))
   const width = drawable.width
   const height = drawable.height
@@ -120,6 +111,8 @@ async function transcodeImageForVision(file: File) {
   const context = canvas.getContext('2d')
   if (!context) throw new Error('Could not prepare this image for analysis.')
 
+  context.fillStyle = '#ffffff'
+  context.fillRect(0, 0, width, height)
   context.drawImage(drawable, 0, 0, width, height)
   if ('close' in drawable && typeof drawable.close === 'function') drawable.close()
 
@@ -137,7 +130,7 @@ async function transcodeImageForVision(file: File) {
     )
   })
 
-  const normalizedName = file.name.replace(/(\.jpe?g)?\.(avif|gif|heic|heif)$/i, '') || 'photo'
+  const normalizedName = file.name.replace(/(\.jpe?g)?\.(avif|gif|heic|heif|jpe?g|png|webp)$/i, '') || 'photo'
   return new File([jpegBlob], `${normalizedName}.jpg`, {
     type: 'image/jpeg',
     lastModified: file.lastModified,
@@ -528,89 +521,69 @@ function getVisionMatches(
   category: 'All' | VenueCategory,
   coords?: { latitude: number; longitude: number },
 ) {
-  const candidateMap = new Map(analysis.candidates.map((candidate) => [candidate.id, candidate]))
-  const seedMatches = venues
-    .filter((venue) => category === 'All' || venue.category === category)
-    .map((venue) => {
-      const candidate = candidateMap.get(venue.id)
+  const seedById = new Map(venues.map((venue) => [venue.id, venue]))
+
+  return analysis.candidates
+    .map((candidate, index) => {
+      const seedVenue = candidate.id ? seedById.get(candidate.id) : undefined
+      const displayCategory = (seedVenue?.category || candidate.category || 'Restaurant') as VenueCategory
+      if (category !== 'All' && displayCategory !== category) return null
       const distance = coords
+        && seedVenue
+        && Number.isFinite(seedVenue.lat)
+        && Number.isFinite(seedVenue.lng)
         ? distanceMeters(coords, {
-            latitude: venue.lat,
-            longitude: venue.lng,
+            latitude: seedVenue.lat,
+            longitude: seedVenue.lng,
           })
         : undefined
-      const gpsBoost = distance === undefined ? 0 : Math.max(0, 35 - distance / 20)
-      const confidence = candidate ? Math.min(98, candidate.confidence) : 0
-      const visionReasons = candidate?.reasons ?? []
       const photoEvidence = [
-        ...(candidate?.photoEvidence ?? []),
+        ...(candidate.photoEvidence ?? []),
         ...(distance !== undefined ? [`Photo GPS is ${formatDistance(distance)} away.`] : []),
       ].slice(0, 5)
-
-      return {
-        venue: {
-          ...venue,
-          locationVerified: true,
-        },
-        distanceMeters: distance,
-        score: (candidate?.confidence ?? 0) * 2 + gpsBoost,
-        confidence,
-        evidenceCategories: candidate?.evidenceCategories ?? [],
-        photoEvidence,
-        externalEvidence: candidate?.externalEvidence ?? [],
-        rankingRules: candidate?.rankingRules ?? candidate?.rankingNotes ?? [],
-        reasons: [
-          ...visionReasons,
-          ...(distance !== undefined ? [`Photo GPS is ${formatDistance(distance)} away.`] : []),
-        ].slice(0, 4),
-        rankingNotes: candidate?.rankingNotes ?? [],
-      }
-    })
-
-  const webMatches = analysis.candidates
-    .filter((candidate) => !candidate.id || !venues.some((venue) => venue.id === candidate.id))
-    .filter((candidate) => category === 'All' || candidate.category === category)
-    .map((candidate) => {
       const mapsQuery =
         candidate.mapsQuery ||
         [candidate.name, candidate.address, 'San Francisco'].filter(Boolean).join(' ')
-
       return {
         venue: {
-          id: candidate.id || `web:${candidate.name ?? 'candidate'}`,
-          name: candidate.name || 'Web-discovered candidate',
-          category: (candidate.category || 'Restaurant') as VenueCategory,
-          neighborhood: candidate.neighborhood || 'San Francisco',
-          address: candidate.address || 'Address not confirmed',
-          locationVerified: false,
-          signature: [
+          id: candidate.id || `web:${candidate.name ?? `candidate-${index + 1}`}`,
+          name: seedVenue?.name || candidate.name || 'Web-discovered candidate',
+          category: displayCategory,
+          neighborhood: seedVenue?.neighborhood || candidate.neighborhood || 'San Francisco',
+          address: seedVenue?.address || candidate.address || 'Address not confirmed',
+          lat: seedVenue?.lat,
+          lng: seedVenue?.lng,
+          locationVerified: Boolean(seedVenue),
+          signature: seedVenue?.signature ?? [
             candidate.evidenceType ? `${candidate.evidenceType} evidence` : 'Image match',
             ...(candidate.sourceUrls?.length ? ['Web-discovered match'] : []),
           ],
-          imageEvidenceHints: analysis.imageEvidence,
-          sourceUrl: candidate.sourceUrls?.[0] || `https://www.google.com/search?q=${encodeURIComponent(mapsQuery)}`,
-          mapsUrl: `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(mapsQuery)}`,
-          note: 'Discovered through live web search from the uploaded image.',
+          imageEvidenceHints: seedVenue?.imageEvidenceHints ?? analysis.imageEvidence,
+          visualClues: seedVenue?.visualClues,
+          menuClues: seedVenue?.menuClues,
+          doNotInferFrom: seedVenue?.doNotInferFrom,
+          multiLocation: seedVenue?.multiLocation,
+          sourceConfidence: seedVenue?.sourceConfidence,
+          sourceUrl: seedVenue?.sourceUrl || candidate.sourceUrls?.[0] || `https://www.google.com/search?q=${encodeURIComponent(mapsQuery)}`,
+          mapsUrl: seedVenue?.mapsUrl || `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(mapsQuery)}`,
+          note: seedVenue?.note || 'Discovered through live web search from the uploaded image.',
         },
-        distanceMeters: undefined,
-        score: candidate.confidence * 2,
+        distanceMeters: distance,
+        score: analysis.candidates.length - index,
         confidence: Math.min(98, candidate.confidence),
         evidenceCategories: candidate.evidenceCategories ?? [],
-        photoEvidence: candidate.photoEvidence ?? [],
+        photoEvidence,
         externalEvidence: candidate.externalEvidence ?? [],
         rankingRules: candidate.rankingRules ?? candidate.rankingNotes ?? [],
-        reasons: candidate.reasons.slice(0, 4),
+        reasons: [
+          ...candidate.reasons,
+          ...(distance !== undefined ? [`Photo GPS is ${formatDistance(distance)} away.`] : []),
+        ].slice(0, 4),
         rankingNotes: candidate.rankingNotes ?? [],
         sourceUrls: candidate.sourceUrls ?? [],
       }
     })
-
-  return [...seedMatches, ...webMatches]
-    .filter((match) => match.score > 0)
-    .sort((a, b) => {
-      if (b.score !== a.score) return b.score - a.score
-      return b.confidence - a.confidence
-    })
+    .filter((match): match is NonNullable<typeof match> => Boolean(match))
     .slice(0, 9)
 }
 
@@ -784,29 +757,9 @@ const analysisSteps = [
 
 async function analyzePhotoWithVision(file: File): Promise<VisionAnalysis> {
   const payload = new FormData()
-  payload.append('photo', await transcodeImageForVision(file))
+  payload.append('photo', await prepareImageForVision(file))
   const ocrPhoto = await createOcrContactSheet(file).catch(() => null)
   if (ocrPhoto) payload.append('ocrPhoto', ocrPhoto)
-  payload.append(
-    'venues',
-    JSON.stringify(
-      venues.map((venue) => ({
-        id: venue.id,
-        name: venue.name,
-        category: venue.category,
-        neighborhood: venue.neighborhood,
-        address: venue.address,
-        signature: venue.signature,
-        imageEvidenceHints: venue.imageEvidenceHints,
-        visualClues: venue.visualClues,
-        menuClues: venue.menuClues,
-        doNotInferFrom: venue.doNotInferFrom,
-        multiLocation: venue.multiLocation,
-        sourceConfidence: venue.sourceConfidence,
-        note: venue.note,
-      })),
-    ),
-  )
 
   const response = await fetch(apiUrl('/api/analyze-photo'), {
     method: 'POST',
@@ -976,13 +929,13 @@ function MainApp() {
           model: result.model,
           message: result.visionEnabled
             ? `Photo identification is ready with ${result.model}.`
-            : 'Photo identification needs OPENROUTER_API_KEY or OPENAI_API_KEY in .env, then restart npm run dev.',
+            : 'Photo identification is not configured yet.',
         })
       } catch {
         if (shouldIgnore) return
         setApiHealth({
           status: 'offline',
-          message: 'Photo identification API is offline. Start the app with npm run dev.',
+          message: 'Photo identification is temporarily unavailable. Try again in a moment.',
         })
       }
     }
@@ -1394,7 +1347,7 @@ function MainApp() {
                 <Upload size={36} />
                 <strong>{isDraggingPhoto ? 'Drop it here' : 'Drop a food photo here'}</strong>
                 <span>or click to browse · JPG, PNG, WebP, HEIC</span>
-                <em>Upload a photo. Get ranked SF venue matches with evidence.</em>
+                <em>Embedded metadata is stripped before provider analysis.</em>
               </span>
             )}
             <input

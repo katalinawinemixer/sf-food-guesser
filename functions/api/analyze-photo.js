@@ -22,10 +22,26 @@ import {
   validateImageBytes,
   validateImageFile,
 } from './_shared.js'
+import { venues as seedVenues } from '../../shared/venues.js'
 
 const providerFetchTimeoutMs = 18_000
 const requestDeadlineMs = 82_000
 const providerNativeImageTypes = new Set(['image/jpeg', 'image/jpg', 'image/png', 'image/webp'])
+const compactSeedVenues = seedVenues.map((venue) => ({
+  id: venue.id,
+  name: venue.name,
+  category: venue.category,
+  neighborhood: venue.neighborhood,
+  address: venue.address,
+  signature: venue.signature,
+  imageEvidenceHints: venue.imageEvidenceHints,
+  visualClues: venue.visualClues,
+  menuClues: venue.menuClues,
+  doNotInferFrom: venue.doNotInferFrom,
+  multiLocation: venue.multiLocation,
+  sourceConfidence: venue.sourceConfidence,
+  note: venue.note,
+}))
 
 export function onRequestOptions() {
   return optionsResponse()
@@ -197,18 +213,14 @@ export async function onRequestPost({ request, env }) {
   let ocrDataUrl = null
   if (ocrFile && typeof ocrFile === 'object' && typeof ocrFile.arrayBuffer === 'function' && typeof ocrFile.slice === 'function') {
     const ocrValidationError = validateImageFile(ocrFile)
-    if (!ocrValidationError) {
+    const ocrFileType = String(ocrFile.type || '').toLowerCase()
+    if (!ocrValidationError && providerNativeImageTypes.has(ocrFileType)) {
       const ocrImageBytesError = await validateImageBytes(ocrFile)
       if (!ocrImageBytesError) ocrDataUrl = await fileToDataUrl(ocrFile)
     }
   }
 
-  let venues = []
-  try {
-    venues = JSON.parse(String(formData.get('venues') ?? '[]'))
-  } catch {
-    return jsonResponse({ runId, error: 'Venue payload was not valid JSON.' }, 400)
-  }
+  const venues = compactSeedVenues
 
   const dataUrl = await fileToDataUrl(file)
   const models = [provider.model, ...provider.fallbackModels].filter(Boolean)

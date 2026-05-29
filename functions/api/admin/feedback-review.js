@@ -1,4 +1,9 @@
-import { jsonResponse, methodNotAllowed, optionsResponse } from '../_shared.js'
+import {
+  enforceCloudflareRateLimit,
+  jsonResponse,
+  methodNotAllowed,
+  optionsResponse,
+} from '../_shared.js'
 
 function candidateName(record) {
   return record?.candidate?.name || record?.suggestedVenue?.name || 'Unknown'
@@ -98,6 +103,15 @@ export function onRequestOptions() {
 }
 
 export async function onRequestGet({ request, env }) {
+  const rateLimitResponse = await enforceCloudflareRateLimit({
+    request,
+    env,
+    scope: 'admin-feedback-review',
+    limit: Number(env.SF_FOOD_ADMIN_REVIEW_RATE_LIMIT || 20),
+    windowSeconds: Number(env.SF_FOOD_ADMIN_REVIEW_RATE_WINDOW_SECONDS || 3600),
+  })
+  if (rateLimitResponse) return rateLimitResponse
+
   if (!env.SF_FOOD_ADMIN_TOKEN || request.headers.get('x-admin-token') !== env.SF_FOOD_ADMIN_TOKEN) {
     return jsonResponse({ error: 'Admin token required.' }, 401)
   }

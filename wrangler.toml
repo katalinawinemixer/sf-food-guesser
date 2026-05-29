@@ -11,7 +11,12 @@ OPENROUTER_FALLBACK_MODELS = "google/gemma-4-26b-a4b-it:free,nvidia/nemotron-nan
 EXA_SEARCH_TYPE = "deep"
 EXA_NUM_RESULTS = "6"
 EXA_MAX_PARALLEL_QUERIES = "4"
+SF_FOOD_RATE_LIMIT_REQUIRED = "true"
 
 [[kv_namespaces]]
 binding = "SF_FOOD_FEEDBACK_KV"
+id = "ebc5b021ab2e48f08b2d882c17cc5519"
+
+[[kv_namespaces]]
+binding = "SF_FOOD_RATE_LIMIT_KV"
 id = "ebc5b021ab2e48f08b2d882c17cc5519"

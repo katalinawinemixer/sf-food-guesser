@@ -106,9 +106,14 @@ function clientIp(request) {
   )
 }
 
-async function incrementRateLimit(store, key, limit, windowSeconds) {
+async function incrementRateLimit(store, key, limit, windowSeconds, failClosed = false) {
   const now = Date.now()
-  const existing = await store.get(key).catch(() => null)
+  let existing = null
+  try {
+    existing = await store.get(key)
+  } catch (error) {
+    if (failClosed) throw error
+  }
   let state = null
   if (existing) {
     try {
@@ -122,7 +127,11 @@ async function incrementRateLimit(store, key, limit, windowSeconds) {
   }
   state.count += 1
   const ttl = Math.max(1, Math.ceil((state.resetAt - now) / 1000))
-  await store.put(key, JSON.stringify(state), { expirationTtl: ttl }).catch(() => undefined)
+  try {
+    await store.put(key, JSON.stringify(state), { expirationTtl: ttl })
+  } catch (error) {
+    if (failClosed) throw error
+  }
 
   return state.count > limit
     ? {
@@ -141,11 +150,17 @@ export async function enforceCloudflareRateLimit({
   windowSeconds = 3600,
 }) {
   const store = env.SF_FOOD_RATE_LIMIT_KV
-  if (!store?.get || !store?.put) return null
+  const failClosed = String(env.SF_FOOD_RATE_LIMIT_REQUIRED || '').toLowerCase() === 'true'
+  if (!store?.get || !store?.put) {
+    if (failClosed) {
+      return jsonResponse({ error: 'Rate limiting is not configured.' }, 503)
+    }
+    return null
+  }
 
   const normalizedIp = clientIp(request).replace(/[^a-zA-Z0-9:_.-]+/g, '_')
   const checks = [
-    incrementRateLimit(store, `rate:${scope}:ip:${normalizedIp}`, limit, windowSeconds),
+    incrementRateLimit(store, `rate:${scope}:ip:${normalizedIp}`, limit, windowSeconds, failClosed),
   ]
   if (sessionId) {
     checks.push(
@@ -154,11 +169,17 @@ export async function enforceCloudflareRateLimit({
         `rate:${scope}:session:${String(sessionId).replace(/[^a-zA-Z0-9:_.-]+/g, '_')}`,
         limit,
         windowSeconds,
+        failClosed,
       ),
     )
   }
 
-  const results = await Promise.all(checks)
+  let results
+  try {
+    results = await Promise.all(checks)
+  } catch {
+    return jsonResponse({ error: 'Rate limiting is temporarily unavailable.' }, 503)
+  }
   const limited = results.find(Boolean)
   if (!limited) return null
 
@@ -190,13 +211,136 @@ export async function validateImageBytes(file) {
 }
 
 export async function fileToDataUrl(file) {
-  const bytes = await file.arrayBuffer()
+  const bytes = stripImageMetadataBytes(new Uint8Array(await file.arrayBuffer()))
   const byteArray = new Uint8Array(bytes)
   let binary = ''
   for (let index = 0; index < byteArray.length; index += 0x8000) {
     binary += String.fromCharCode(...byteArray.subarray(index, index + 0x8000))
   }
   return `data:${file.type || 'application/octet-stream'};base64,${btoa(binary)}`
+}
+
+export function stripImageMetadataBytes(bytes) {
+  if (looksLikeJpeg(bytes)) return stripJpegMetadata(bytes)
+  if (looksLikePng(bytes)) return stripPngMetadata(bytes)
+  if (looksLikeWebp(bytes)) return stripWebpMetadata(bytes)
+  return bytes
+}
+
+function ascii(bytes, start, end) {
+  return String.fromCharCode(...bytes.slice(start, end))
+}
+
+function startsWith(bytes, signature) {
+  return signature.every((byte, index) => bytes[index] === byte)
+}
+
+function readUint32(bytes, offset) {
+  return (
+    bytes[offset] * 0x1000000 +
+    ((bytes[offset + 1] << 16) | (bytes[offset + 2] << 8) | bytes[offset + 3])
+  )
+}
+
+function readUint32Le(bytes, offset) {
+  return (
+    bytes[offset] |
+    (bytes[offset + 1] << 8) |
+    (bytes[offset + 2] << 16) |
+    (bytes[offset + 3] << 24)
+  ) >>> 0
+}
+
+function writeUint32Le(bytes, offset, value) {
+  bytes[offset] = value & 0xff
+  bytes[offset + 1] = (value >>> 8) & 0xff
+  bytes[offset + 2] = (value >>> 16) & 0xff
+  bytes[offset + 3] = (value >>> 24) & 0xff
+}
+
+function concatBytes(chunks) {
+  const totalLength = chunks.reduce((length, chunk) => length + chunk.length, 0)
+  const output = new Uint8Array(totalLength)
+  let offset = 0
+  for (const chunk of chunks) {
+    output.set(chunk, offset)
+    offset += chunk.length
+  }
+  return output
+}
+
+function looksLikeJpeg(bytes) {
+  return bytes.length >= 3 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff
+}
+
+function looksLikePng(bytes) {
+  return bytes.length >= 8 && startsWith(bytes, [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])
+}
+
+function looksLikeWebp(bytes) {
+  return bytes.length >= 12 && ascii(bytes, 0, 4) === 'RIFF' && ascii(bytes, 8, 12) === 'WEBP'
+}
+
+function stripJpegMetadata(bytes) {
+  const chunks = [bytes.slice(0, 2)]
+  let offset = 2
+  while (offset + 4 <= bytes.length && bytes[offset] === 0xff) {
+    const marker = bytes[offset + 1]
+    if (marker === 0xda) {
+      chunks.push(bytes.slice(offset))
+      return concatBytes(chunks)
+    }
+    if (marker === 0xd9) {
+      chunks.push(bytes.slice(offset))
+      return concatBytes(chunks)
+    }
+    if ((marker >= 0xd0 && marker <= 0xd7) || marker === 0x01) {
+      chunks.push(bytes.slice(offset, offset + 2))
+      offset += 2
+      continue
+    }
+    const segmentLength = (bytes[offset + 2] << 8) + bytes[offset + 3]
+    const segmentEnd = offset + 2 + segmentLength
+    if (segmentLength < 2 || segmentEnd > bytes.length) return bytes
+    const isMetadataSegment = marker === 0xe1 || marker === 0xed || marker === 0xfe
+    if (!isMetadataSegment) chunks.push(bytes.slice(offset, segmentEnd))
+    offset = segmentEnd
+  }
+  if (offset < bytes.length) chunks.push(bytes.slice(offset))
+  return concatBytes(chunks)
+}
+
+function stripPngMetadata(bytes) {
+  const chunks = [bytes.slice(0, 8)]
+  const metadataTypes = new Set(['eXIf', 'tEXt', 'zTXt', 'iTXt'])
+  let offset = 8
+  while (offset + 12 <= bytes.length) {
+    const length = readUint32(bytes, offset)
+    const chunkEnd = offset + 12 + length
+    if (chunkEnd > bytes.length) return bytes
+    const type = ascii(bytes, offset + 4, offset + 8)
+    if (!metadataTypes.has(type)) chunks.push(bytes.slice(offset, chunkEnd))
+    offset = chunkEnd
+    if (type === 'IEND') break
+  }
+  return concatBytes(chunks)
+}
+
+function stripWebpMetadata(bytes) {
+  const chunks = [bytes.slice(0, 12)]
+  let offset = 12
+  while (offset + 8 <= bytes.length) {
+    const type = ascii(bytes, offset, offset + 4)
+    const length = readUint32Le(bytes, offset + 4)
+    const paddedLength = length + (length % 2)
+    const chunkEnd = offset + 8 + paddedLength
+    if (chunkEnd > bytes.length) return bytes
+    if (!['EXIF', 'XMP '].includes(type)) chunks.push(bytes.slice(offset, chunkEnd))
+    offset = chunkEnd
+  }
+  const output = concatBytes(chunks)
+  writeUint32Le(output, 4, output.length - 8)
+  return output
 }
 
 function looksLikeSupportedImage(bytes) {
