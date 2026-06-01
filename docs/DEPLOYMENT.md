@@ -34,9 +34,12 @@ npm run deploy:cloudflare
 The project includes `wrangler.toml` with
 `pages_build_output_dir = "frontend/dist"`.
 The checked-in `wrangler.toml` is the maintainer deployment config for the
-`spotted-in-sf` Pages project. Forks should copy the shape of the file but
-replace the project name and KV namespace IDs with their own Cloudflare
-resources.
+`spotted-in-sf` Pages project. It contains non-secret Cloudflare project and KV
+namespace identifiers so the live demo is reproducible for portfolio review.
+Forks should copy the shape of the file but replace the project name and KV
+namespace IDs with their own Cloudflare resources. API keys and admin tokens do
+not belong in `wrangler.toml`; set them only as Cloudflare Pages secrets or host
+environment variables.
 
 Production domains:
 

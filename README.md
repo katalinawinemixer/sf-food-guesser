@@ -3,25 +3,40 @@
 An AI-assisted learning prototype for identifying likely San Francisco
 restaurants, cafes, bakeries, and late-night counters from uploaded food photos.
 
-This repository is a portfolio/showcase project, not a commercial product or a
-publicly supported service. I built it to practice shipping a real full-stack
-app with AI assistance: React/Vite UI work, local and serverless APIs, provider
-integration, privacy-aware upload handling, tests, deployment checks, and
-adversarial review.
+**Live demo:** https://spotted-in-sf.com
+
+This is a portfolio/showcase project, not a commercial product or a publicly
+supported service. I built it to practice shipping a real full-stack AI app:
+React/Vite UI work, local and serverless APIs, provider integration,
+privacy-aware upload handling, tests, deployment checks, and adversarial review.
+
+## Portfolio Notes
+
+- **What I owned:** product requirements, architecture, provider selection,
+  privacy decisions, tests, deployment, and debugging. I used AI coding tools as
+  implementation accelerators, but kept responsibility for the product behavior,
+  edge cases, and release criteria.
+- **Core product problem:** food-photo recognition is noisy, location-dependent,
+  and easy to overclaim. The app is designed to rank likely venues with visible
+  uncertainty instead of pretending the model always knows the answer.
+- **Privacy posture:** uploads are handled as transient analysis inputs;
+  embedded image metadata is stripped before provider analysis. If GPS EXIF is
+  present, the browser extracts coordinates locally and sends only coordinates
+  as an optional ranking signal.
+- **Public data boundary:** benchmark photos, local feedback records, run logs,
+  and real API keys are intentionally git-ignored and are not part of the
+  repository.
+- **Current verification:** tests, lint, production build, npm audit,
+  production health checks, and the custom secret scan pass locally.
 
 The app uses uploaded image analysis, optional local GPS EXIF extraction, a
 source-backed seed venue dataset in `shared/venues.js`, and provider-backed web
 search to find likely venues beyond the local seed list. It intentionally avoids
 live-hours and reservation claims because those change frequently.
 
-Submitting a photo strips embedded image metadata before sending it to the API,
-which uses a vision model to extract image evidence, search broadly for San
-Francisco-specific matches, and rank likely venues. If the original image has
-GPS EXIF metadata, the browser extracts coordinates locally and sends only the
-coordinates as an extra ranking signal.
-
 The repository only includes placeholder environment variables. Real keys stay
-in your local `.env`, which is ignored by git.
+in your local `.env`, which is ignored by git. Cloudflare runtime secrets are set
+in the Pages project or backend host environment, never in source control.
 
 No license is currently included, so the code is visible for review and learning
 but is not granted for reuse unless a license is added later.
@@ -77,11 +92,11 @@ Create a local `.env` first:
 cp .env.example .env
 ```
 
-Replace `PASTE_YOUR_OPENROUTER_API_KEY_HERE` with your real OpenRouter key in
-`.env`. Optional keys are intentionally blank unless you have your own
-credentials for those providers. If you are using free OpenRouter vision models,
-set `OPENROUTER_FALLBACK_MODELS` to a comma-separated list of model ids to try
-when the primary model is rate-limited. Then run:
+Replace `your_openrouter_api_key_here` with your real OpenRouter key in `.env`.
+Optional keys are intentionally blank unless you have your own credentials for
+those providers. If you are using free OpenRouter vision models, set
+`OPENROUTER_FALLBACK_MODELS` to a comma-separated list of model ids to try when
+the primary model is rate-limited. Then run:
 
 ```bash
 npm install
@@ -132,6 +147,9 @@ project after DNS validation completes. The active Pages project is
 on the `main` branch.
 
 See [docs/DEPLOYMENT.md](./docs/DEPLOYMENT.md).
+
+Before changing the GitHub repository visibility to public, use
+[docs/PUBLIC_RELEASE_CHECKLIST.md](./docs/PUBLIC_RELEASE_CHECKLIST.md).
 
 ## Build Checklist
 

@@ -2,8 +2,12 @@ name = "spotted-in-sf"
 compatibility_date = "2026-05-27"
 pages_build_output_dir = "frontend/dist"
 
-# Maintainer deployment config. Forks should replace the project name and KV
-# namespace IDs with their own Cloudflare resources.
+# Maintainer deployment config for the live portfolio demo.
+#
+# These Cloudflare project and KV namespace identifiers are not API keys or
+# runtime secrets. They are safe to keep visible for portfolio review, but forks
+# should replace the project name and namespace IDs with their own Cloudflare
+# resources before deploying.
 
 [vars]
 # Set VITE_API_BASE_URL in the Cloudflare Pages dashboard at build time when the
