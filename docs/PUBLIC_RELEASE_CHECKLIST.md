@@ -13,6 +13,9 @@ Use this before changing the GitHub repository visibility from private to public
 - [x] README explains the project as a portfolio/showcase app, not a public commercial service.
 - [x] README explains AI-assisted development ownership: requirements, architecture, debugging, tests, deployment, and release criteria.
 - [x] README keeps the no-license boundary: visible for review and learning, not granted for reuse unless a license is added later.
+- [x] README includes screenshots of the upload UI and dry-run/results review UI.
+- [x] README includes a "How to Review This Repo" section for hiring/recruiter review.
+- [x] GitHub Actions CI is present so public reviewers can see the same verification gate run on pushes and pull requests.
 
 ## Required checks before flipping visibility
 
@@ -32,7 +35,7 @@ Then inspect tracked files that could accidentally contain uploads, feedback, or
 git ls-files | grep -Ei '\.(png|jpe?g|heic|webp|gif|mp4|mov|sqlite|db|csv|json)$'
 ```
 
-Expected tracked data-like files are limited to config, test fixtures, package lock files, and the benchmark manifest. Do not make the repo public if real uploaded photos, local feedback exports, run logs, database files, or credentials are tracked.
+Expected tracked data-like files are limited to config, test fixtures, package lock files, the benchmark manifest, and public README screenshots under `docs/assets/screenshots/`. Do not make the repo public if real uploaded photos, local feedback exports, run logs, database files, CSVs, credentials, or private media are tracked.
 
 ## Visibility flip command
 

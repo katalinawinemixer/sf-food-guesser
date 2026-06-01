@@ -5,6 +5,8 @@ restaurants, cafes, bakeries, and late-night counters from uploaded food photos.
 
 **Live demo:** https://spotted-in-sf.com
 
+![Spotted in SF upload screen with metadata-stripping note and evidence chips](docs/assets/screenshots/homepage-upload.png)
+
 This is a portfolio/showcase project, not a commercial product or a publicly
 supported service. I built it to practice shipping a real full-stack AI app:
 React/Vite UI work, local and serverless APIs, provider integration,
@@ -41,7 +43,29 @@ in the Pages project or backend host environment, never in source control.
 No license is currently included, so the code is visible for review and learning
 but is not granted for reuse unless a license is added later.
 
+## How to Review This Repo
+
+If you are reviewing this as a portfolio project, start here:
+
+1. Open the live demo: https://spotted-in-sf.com
+2. Read **Portfolio Notes** above for scope, ownership, AI-assistance framing,
+   and privacy boundaries.
+3. Inspect `functions/api/` for the Cloudflare Pages Functions production API.
+4. Inspect `backend/server.test.mjs`, `backend/functions.test.mjs`, and
+   `frontend/src/App.test.tsx` for API, ranking, upload, and UI behavior
+   coverage.
+5. Read `docs/DEPLOYMENT.md` for Cloudflare deployment, secrets, KV bindings,
+   CORS, rate-limit, and feedback-storage boundaries.
+6. Use `docs/PUBLIC_RELEASE_CHECKLIST.md` before changing repo visibility.
+
+This repo is meant to show engineering judgment as much as implementation: the
+app avoids live-hours/reservation claims, strips metadata before provider
+analysis, keeps uncertain guesses visibly uncertain, and separates local
+learning artifacts from source control.
+
 ## What This Demonstrates
+
+![Dry-run replay showing source-backed candidates, filtered candidates, and confidence details](docs/assets/screenshots/dry-run-replay.png)
 
 - Building a working AI-assisted web app from idea to deployed prototype.
 - Separating frontend display logic from server-owned ranking and seed data.
