@@ -41,6 +41,7 @@ const compactSeedVenues = seedVenues.map((venue) => ({
   doNotInferFrom: venue.doNotInferFrom,
   multiLocation: venue.multiLocation,
   sourceConfidence: venue.sourceConfidence,
+  sourceUrl: venue.sourceUrl,
   note: venue.note,
 }))
 

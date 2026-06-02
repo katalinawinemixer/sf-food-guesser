@@ -6,6 +6,12 @@ export function candidatePassesQualityGate(
     name?: string
     evidenceCategories?: string[]
     sourceUrls?: string[]
+    doNotInferFrom?: string[]
+    photoEvidence?: string[]
+    externalEvidence?: string[]
+    rankingRules?: string[]
+    rankingNotes?: string[]
+    reasons?: string[]
     comparisonPhotos?: Array<{
       url?: string
       pageUrl?: string
@@ -26,6 +32,12 @@ export function evaluateCandidateQuality(
     name?: string
     evidenceCategories?: string[]
     sourceUrls?: string[]
+    doNotInferFrom?: string[]
+    photoEvidence?: string[]
+    externalEvidence?: string[]
+    rankingRules?: string[]
+    rankingNotes?: string[]
+    reasons?: string[]
     comparisonPhotos?: Array<{
       url?: string
       pageUrl?: string

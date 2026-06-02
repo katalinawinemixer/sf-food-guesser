@@ -1173,6 +1173,9 @@ export function normalizeCandidate(candidate) {
     sourceUrls: Array.isArray(candidate?.sourceUrls)
       ? candidate.sourceUrls.map(String).slice(0, 4)
       : [],
+    doNotInferFrom: Array.isArray(candidate?.doNotInferFrom)
+      ? candidate.doNotInferFrom.map(String).slice(0, 6)
+      : [],
     mapsQuery: candidate?.mapsQuery ? String(candidate.mapsQuery) : [name, 'San Francisco'].filter(Boolean).join(' '),
   }
 }
@@ -1259,9 +1262,9 @@ function seedVenueCandidates(seedVenues = [], options = {}) {
         ...(Array.isArray(venue.visualClues) ? venue.visualClues : []),
         ...(Array.isArray(venue.menuClues) ? venue.menuClues : []),
       ]
-      const matchedHints = hints
+      const matchedHints = [...new Set(hints
         .map((hint) => normalizeMatchText(hint))
-        .filter((hint) => hint.length >= 4 && photoHaystack.includes(hint))
+        .filter((hint) => hint.length >= 4 && photoHaystack.includes(hint)))]
       const venueName = normalizeMatchText(venue.name)
       const nameHit = venueName && photoHaystack.includes(venueName)
       const sourceHit = webEvidence.some((page) =>
@@ -1293,6 +1296,7 @@ function seedVenueCandidates(seedVenues = [], options = {}) {
           ? ['Web/source context supports checking this venue after the direct photo match.']
           : [],
         rankingRules: ['This seed venue is only a candidate because direct photo clues matched.'],
+        doNotInferFrom: venue.doNotInferFrom,
         reasons: [
           nameHit
             ? `The uploaded photo evidence includes readable or model-reported text matching ${venue.name}.`
@@ -1471,9 +1475,34 @@ function rankCandidates(candidates, optionsOrSeedVenueIds = []) {
 }
 
 export function normalizeAnalysis(result, options = {}) {
-  const rawModelCandidates = Array.isArray(result?.candidates) ? result.candidates : []
-  const modelCandidates = Array.isArray(result?.candidates)
-    ? result.candidates.map(normalizeCandidate).filter((candidate) => candidate.name)
+  const seedVenueById = new Map(
+    (Array.isArray(options.seedVenues) ? options.seedVenues : [])
+      .filter((venue) => venue?.id)
+      .map((venue) => [String(venue.id), venue]),
+  )
+  const rawModelCandidates = Array.isArray(result?.candidates)
+    ? result.candidates.map((candidate) => {
+        const seedVenue = candidate?.id ? seedVenueById.get(String(candidate.id)) : null
+        return seedVenue
+          ? {
+              ...candidate,
+              sourceUrls: Array.isArray(candidate.sourceUrls) && candidate.sourceUrls.length
+                ? candidate.sourceUrls
+                : seedVenue.sourceUrl
+                  ? [seedVenue.sourceUrl]
+                  : [],
+              doNotInferFrom: seedVenue.doNotInferFrom ?? candidate.doNotInferFrom,
+            }
+          : candidate
+      })
+    : []
+  const modelCandidates = rawModelCandidates.length
+    ? rawModelCandidates
+        .map((candidate) => {
+          const normalized = normalizeCandidate(candidate)
+          return normalized
+        })
+        .filter((candidate) => candidate.name)
     : []
   const imageEvidence = Array.isArray(result?.imageEvidence) ? result.imageEvidence.map(String).slice(0, 8) : []
   const candidates = [

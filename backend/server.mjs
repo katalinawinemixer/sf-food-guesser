@@ -80,6 +80,7 @@ const compactSeedVenues = seedVenues.map((venue) => ({
   doNotInferFrom: venue.doNotInferFrom,
   multiLocation: venue.multiLocation,
   sourceConfidence: venue.sourceConfidence,
+  sourceUrl: venue.sourceUrl,
   note: venue.note,
 }))
 
@@ -1576,12 +1577,6 @@ export function rerankCandidates(rawCandidates = [], options = {}) {
     .map((text) => normalizeNameText(text))
     .filter((text) => text.length >= 4)
   const rankedCandidates = dedupeCandidatesBeforeRanking(rawCandidates)
-    .filter((candidate) =>
-      candidatePassesQualityGate(candidate, {
-        seedVenueIds: [...seedVenueIds],
-        trustedPhotoUrls: [...trustedPhotoUrls],
-      }),
-    )
     .map((candidate, originalIndex) => {
       const evidenceCategoriesForCandidate = normalizeEvidenceCategories(candidate)
       const rawEvidenceCategories = Array.isArray(candidate.evidenceCategories)
@@ -1720,6 +1715,12 @@ export function rerankCandidates(rawCandidates = [], options = {}) {
         _originalIndex: originalIndex,
       }
     })
+    .filter((candidate) =>
+      candidatePassesQualityGate(candidate, {
+        seedVenueIds: [...seedVenueIds],
+        trustedPhotoUrls: [...trustedPhotoUrls],
+      }),
+    )
     .sort((a, b) => b._rankScore - a._rankScore || a._originalIndex - b._originalIndex)
 
   const seenCandidateKeys = new Set()
@@ -3015,17 +3016,32 @@ export function createApp(options = {}) {
         ...embeddingComparison.trustedUrls,
       ]
       const modelCandidates = Array.isArray(result.candidates) ? result.candidates : []
+      const seedVenueById = new Map(compactVenues.map((venue) => [venue.id, venue]))
       const rawCandidates = modelCandidates.length
         ? correctCandidatesFromVisibleText(modelCandidates, result.imageEvidence)
         : buildFallbackCandidates(articleCandidates)
+      const constrainedCandidates = rawCandidates.map((candidate) => {
+        const seedVenue = candidate.id ? seedVenueById.get(candidate.id) : null
+        return seedVenue
+          ? {
+              ...candidate,
+              sourceUrls: candidate.sourceUrls?.length
+                ? candidate.sourceUrls
+                : seedVenue.sourceUrl
+                  ? [seedVenue.sourceUrl]
+                  : [],
+              doNotInferFrom: seedVenue.doNotInferFrom ?? candidate.doNotInferFrom,
+            }
+          : candidate
+      })
       const rankingDebug = debugRanking ? [] : null
-      const candidates = rerankCandidates(rawCandidates, {
+      const candidates = rerankCandidates(constrainedCandidates, {
         seedVenueIds: compactVenues.map((venue) => venue.id),
         photoEvidenceUrls,
         ocrVisibleText: searchPlan?.visibleText ?? [],
         debugReport: rankingDebug,
       })
-      const resultQuality = buildResultQuality(rawCandidates, candidates, {
+      const resultQuality = buildResultQuality(constrainedCandidates, candidates, {
         seedVenueIds: compactVenues.map((venue) => venue.id),
         photoEvidenceUrls,
         modelNeedsMoreEvidence: Boolean(result.needsMoreEvidence),

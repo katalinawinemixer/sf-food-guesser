@@ -1106,6 +1106,57 @@ describe('Cloudflare Pages Functions API', () => {
     expect(result.candidates[0].name).toBe('RT Bistro')
   })
 
+  it('does not rank seed venues from generic ingredient clues blocked by negative constraints', () => {
+    const result = normalizeAnalysis(
+      {
+        summary: 'Circular beet slices topped with creamy sauce and caviar on a black plate.',
+        imageEvidence: ['beet slices', 'creamy sauce', 'caviar', 'black plate', 'microgreens'],
+        candidates: [
+          {
+            id: 'rt-bistro',
+            name: 'RT Bistro',
+            confidence: 88,
+            evidenceCategories: ['dish_match', 'interior_match', 'web_source_match'],
+            photoEvidence: ['beet slices with caviar', 'black plate presentation'],
+            externalEvidence: ['RT Bistro is known for caviar dishes.'],
+            reasons: ['Dish matches caviar-related offerings at RT Bistro.'],
+            sourceUrls: ['https://example.com/rt-bistro'],
+          },
+        ],
+      },
+      {
+        seedVenueIds: ['rt-bistro'],
+        seedVenues: [
+          {
+            id: 'rt-bistro',
+            name: 'RT Bistro',
+            category: 'Restaurant',
+            neighborhood: 'Hayes Valley',
+            address: '205 Oak St',
+            imageEvidenceHints: ['caviar', 'burger', 'rich table'],
+            menuClues: ['bistro burger', 'caviar'],
+            doNotInferFrom: ['caviar word alone', 'generic burger alone'],
+            sourceUrl: 'https://www.rt-bistro.com/menus/',
+          },
+        ],
+        searchPlan: {
+          summary: 'Circular beet slices topped with creamy sauce and caviar on a black plate.',
+          imageEvidence: ['beet slices', 'creamy sauce', 'caviar', 'black plate', 'microgreens'],
+        },
+      },
+    )
+
+    expect(result.candidates).toEqual([])
+    expect(result.resultQuality).toMatchObject({
+      state: 'no_showable_candidates',
+      notEnoughEvidence: true,
+    })
+    expect(result.resultQuality.filteredCandidateDetails[0]).toMatchObject({
+      name: 'RT Bistro',
+      reasons: expect.arrayContaining(['weak_generic_photo_evidence', 'negative_constraint:caviar']),
+    })
+  })
+
   it('separates Cloudflare photo evidence, external evidence, and ranking rules', () => {
     const result = normalizeAnalysis({
       summary: 'Burger and fries on a wooden table.',

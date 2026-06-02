@@ -11,6 +11,70 @@ function evidenceCategories(candidate = {}) {
   )
 }
 
+function normalizeText(value) {
+  return String(value ?? '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+}
+
+const negativeConstraintStopWords = new Set([
+  'alone',
+  'and',
+  'branch',
+  'clue',
+  'clues',
+  'context',
+  'food',
+  'from',
+  'generic',
+  'gps',
+  'match',
+  'mention',
+  'name',
+  'neighborhood',
+  'one',
+  'paired',
+  'partial',
+  'party',
+  'photo',
+  'sf',
+  'text',
+  'third',
+  'uploaded',
+  'venue',
+  'visible',
+  'with',
+  'without',
+  'word',
+])
+
+function constraintTerms(constraint) {
+  return normalizeText(constraint)
+    .split(' ')
+    .filter((term) => term.length >= 4 && !negativeConstraintStopWords.has(term))
+}
+
+function matchedNegativeConstraints(candidate = {}) {
+  const haystack = normalizeText([
+    candidate.name,
+    candidate.summary,
+    ...(stringList(candidate.photoEvidence)),
+    ...(stringList(candidate.externalEvidence)),
+    ...(stringList(candidate.rankingRules)),
+    ...(stringList(candidate.rankingNotes)),
+    ...(stringList(candidate.reasons)),
+  ].join(' '))
+  if (!haystack) return []
+  return stringList(candidate.doNotInferFrom)
+    .map((constraint) => ({
+      constraint,
+      terms: constraintTerms(constraint).filter((term) => haystack.includes(term)),
+    }))
+    .filter((match) => match.terms.length > 0)
+}
+
 function hasTrustedComparisonPhoto(candidate = {}, trustedPhotoUrls = []) {
   const trusted = new Set(trustedPhotoUrls.filter(Boolean).map(String))
   const photos = Array.isArray(candidate.comparisonPhotos) ? candidate.comparisonPhotos : []
@@ -51,12 +115,27 @@ export function evaluateCandidateQuality(candidate = {}, options = {}) {
     candidate,
     stringList(options.trustedPhotoUrls ?? options.photoEvidenceUrls),
   )
-  const passes = hasSeedMatch || hasIdentityEvidence || hasExternalPhotoMatch || hasSource
+  const hasWeakGenericEvidenceOnly =
+    !hasIdentityEvidence &&
+    !hasExternalPhotoMatch &&
+    categories.length > 0 &&
+    categories.every((category) =>
+      ['dish_match', 'interior_match', 'web_source_match'].includes(category),
+    )
+  const negativeConstraintMatches = matchedNegativeConstraints(candidate)
+  const negativeConstraintTerms = [...new Set(negativeConstraintMatches.flatMap((match) => match.terms))]
+  const blockedByNegativeConstraint =
+    negativeConstraintMatches.length === 1 && !hasIdentityEvidence && !hasExternalPhotoMatch
+  const passes =
+    !blockedByNegativeConstraint &&
+    (hasSeedMatch || hasIdentityEvidence || hasExternalPhotoMatch || hasSource)
   const reasons = [
     ...(hasSeedMatch ? ['seed_match'] : []),
     ...(hasIdentityEvidence ? ['identity_evidence'] : []),
     ...(hasExternalPhotoMatch ? ['trusted_photo_match'] : []),
     ...(hasSource ? ['source_url'] : []),
+    ...(hasWeakGenericEvidenceOnly ? ['weak_generic_photo_evidence'] : []),
+    ...negativeConstraintTerms.map((term) => `negative_constraint:${term}`),
     ...(!passes ? ['no_source_or_identity_evidence'] : []),
   ]
 
