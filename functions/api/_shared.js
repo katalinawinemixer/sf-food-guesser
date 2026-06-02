@@ -1504,7 +1504,13 @@ export function normalizeAnalysis(result, options = {}) {
         })
         .filter((candidate) => candidate.name)
     : []
-  const imageEvidence = Array.isArray(result?.imageEvidence) ? result.imageEvidence.map(String).slice(0, 8) : []
+  const rawImageEvidence = Array.isArray(result?.imageEvidence) ? result.imageEvidence.map(String).slice(0, 8) : []
+  const imageEvidence =
+    rawImageEvidence.length === 1 && /^specific image evidence$/i.test(rawImageEvidence[0])
+      ? Array.isArray(options.searchPlan?.imageEvidence)
+        ? options.searchPlan.imageEvidence.map(String).slice(0, 8)
+        : []
+      : rawImageEvidence
   const candidates = [
     ...modelCandidates,
     ...seedVenueCandidates(options.seedVenues, {
@@ -1535,8 +1541,14 @@ export function normalizeAnalysis(result, options = {}) {
     modelNeedsMoreEvidence: Boolean(result?.needsMoreEvidence),
   })
 
+  const rawSummary = String(result?.summary ?? '').trim()
+  const summary =
+    rawSummary && !/^short visual summary$/i.test(rawSummary)
+      ? rawSummary
+      : String(options.searchPlan?.summary ?? 'No visual summary returned.')
+
   return {
-    summary: String(result?.summary ?? 'No visual summary returned.'),
+    summary,
     imageEvidence,
     candidates: rankedCandidates,
     needsMoreEvidence: Boolean(result?.needsMoreEvidence) || resultQuality.notEnoughEvidence,

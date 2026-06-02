@@ -1157,6 +1157,26 @@ describe('Cloudflare Pages Functions API', () => {
     })
   })
 
+  it('falls back to search-plan summary when repaired JSON returns schema placeholder text', () => {
+    const result = normalizeAnalysis(
+      {
+        summary: 'short visual summary',
+        imageEvidence: ['specific image evidence'],
+        candidates: [],
+        needsMoreEvidence: true,
+      },
+      {
+        searchPlan: {
+          summary: 'Circular beet slices with caviar on a black plate.',
+          imageEvidence: ['beet slices', 'caviar', 'black plate'],
+        },
+      },
+    )
+
+    expect(result.summary).toBe('Circular beet slices with caviar on a black plate.')
+    expect(result.imageEvidence).toEqual(['beet slices', 'caviar', 'black plate'])
+  })
+
   it('separates Cloudflare photo evidence, external evidence, and ranking rules', () => {
     const result = normalizeAnalysis({
       summary: 'Burger and fries on a wooden table.',
