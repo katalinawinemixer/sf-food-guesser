@@ -117,6 +117,62 @@ function createTimeoutFetch(fetchImpl, timeoutMs, label) {
   }
 }
 
+async function repairModelJson({ provider, model, outputText, deadline, request, env }) {
+  const prompt = `Repair this model response into valid strict JSON only. Preserve the same fields and meaning. Do not add markdown, comments, or explanation.
+
+Expected top-level shape:
+{
+  "summary": "short visual summary",
+  "imageEvidence": ["specific image evidence"],
+  "candidates": [],
+  "needsMoreEvidence": true
+}
+
+Model response to repair:
+${outputText}`
+
+  const { response, result } = await fetchJsonWithTimeout(
+    provider.endpoint,
+    {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${provider.apiKey}`,
+        'Content-Type': 'application/json',
+        ...(provider.provider === 'openrouter'
+          ? {
+              'HTTP-Referer': env.OPENROUTER_SITE_URL || request.headers.get('origin') || '',
+              'X-OpenRouter-Title': 'SF Food Guesser',
+            }
+          : {}),
+      },
+      body: JSON.stringify({
+        model,
+        messages: [
+          {
+            role: 'system',
+            content: 'You repair malformed JSON into parseable JSON. Return JSON only.',
+          },
+          {
+            role: 'user',
+            content: prompt,
+          },
+        ],
+        response_format: { type: 'json_object' },
+        temperature: 0,
+        max_tokens: 2200,
+      }),
+    },
+    remainingProviderTimeout(deadline),
+    `JSON repair with ${model}`,
+  )
+  if (!response.ok) {
+    const error = new Error(result?.error?.message || result?.message || response.statusText)
+    error.status = response.status
+    throw error
+  }
+  return result?.choices?.[0]?.message?.content ?? ''
+}
+
 function searchPlanHasImageContent(searchPlan) {
   const summary = String(searchPlan?.summary ?? '')
   const evidenceCount =
@@ -494,7 +550,25 @@ export async function onRequestPost({ request, env }) {
         }
 
         const outputText = result?.choices?.[0]?.message?.content ?? ''
-        const analysis = normalizeAnalysis(parseModelJson(outputText), {
+        let parsedAnalysis
+        try {
+          parsedAnalysis = parseModelJson(outputText)
+        } catch (parseError) {
+          providerWarnings.push({
+            provider: `${attempt.label}-json:${model}`,
+            message: String(parseError?.message ?? 'Model JSON parsing failed.'),
+          })
+          const repairedOutputText = await repairModelJson({
+            provider,
+            model,
+            outputText,
+            deadline,
+            request,
+            env,
+          })
+          parsedAnalysis = parseModelJson(repairedOutputText)
+        }
+        const analysis = normalizeAnalysis(parsedAnalysis, {
           seedVenueIds: venues.map((venue) => venue.id).filter(Boolean),
           seedVenues: venues,
           searchPlan,

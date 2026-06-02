@@ -13,8 +13,8 @@ pages_build_output_dir = "frontend/dist"
 # Set VITE_API_BASE_URL in the Cloudflare Pages dashboard at build time when the
 # API is deployed somewhere other than the same origin.
 VITE_API_BASE_URL = ""
-OPENROUTER_VISION_MODEL = "qwen/qwen3-vl-32b-instruct"
-OPENROUTER_FALLBACK_MODELS = "google/gemma-4-26b-a4b-it:free,nvidia/nemotron-nano-12b-v2-vl:free"
+OPENROUTER_VISION_MODEL = "openai/gpt-4o-mini"
+OPENROUTER_FALLBACK_MODELS = "qwen/qwen3-vl-32b-instruct,google/gemma-4-26b-a4b-it:free,nvidia/nemotron-nano-12b-v2-vl:free"
 EXA_SEARCH_TYPE = "deep"
 EXA_NUM_RESULTS = "6"
 EXA_MAX_PARALLEL_QUERIES = "4"

@@ -297,6 +297,105 @@ describe('Cloudflare Pages Functions API', () => {
     fetchMock.mockRestore()
   })
 
+  it('repairs malformed Cloudflare model JSON before trying fallback models', async () => {
+    const fetchMock = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            choices: [
+              {
+                message: {
+                  content: JSON.stringify({
+                    summary: 'A Mediterranean tray with blue-rim plates.',
+                    imageEvidence: ['blue-rim plates', 'salad', 'fries'],
+                    visibleText: [],
+                    searchQueries: ['San Francisco blue rim plates Mediterranean tray'],
+                    likelyVenueTypes: ['restaurant'],
+                  }),
+                },
+              },
+            ],
+          }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } },
+        ),
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            choices: [
+              {
+                message: {
+                  content: 'I think this is a San Francisco restaurant, but here is text instead of JSON.',
+                },
+              },
+            ],
+          }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } },
+        ),
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            choices: [
+              {
+                message: {
+                  content: JSON.stringify({
+                    summary: 'JSON repair returned strict JSON for the blue-rim tray.',
+                    imageEvidence: ['blue-rim plates', 'salad', 'fries'],
+                    candidates: [
+                      {
+                        id: '',
+                        name: 'Souvla',
+                        category: 'Restaurant',
+                        neighborhood: 'Hayes Valley',
+                        address: '517 Hayes St',
+                        confidence: 82,
+                        evidenceCategories: ['dish_match', 'visible_brand_match'],
+                        reasons: ['The repaired JSON names a venue with matching visible clues.'],
+                      },
+                    ],
+                    needsMoreEvidence: false,
+                  }),
+                },
+              },
+            ],
+          }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } },
+        ),
+      )
+    const formData = new FormData()
+    formData.set('photo', new File([pngPixel], 'souvla.png', { type: 'image/png' }))
+
+    const response = await analyzePhotoPost({
+      request: {
+        formData: async () => formData,
+        headers: cloudflareHeaders(),
+      },
+      env: usageEnv({
+        OPENROUTER_VISION_MODEL: 'primary/free-vision',
+        OPENROUTER_FALLBACK_MODELS: 'fallback/free-vision',
+      }),
+    })
+    const body = await json(response)
+
+    expect(response.status).toBe(200)
+    expect(fetchMock).toHaveBeenCalledTimes(3)
+    const repairPayload = JSON.parse(String(fetchMock.mock.calls[2]?.[1]?.body))
+    expect(repairPayload.model).toBe('primary/free-vision')
+    expect(repairPayload.messages[0]).toMatchObject({
+      role: 'system',
+      content: 'You repair malformed JSON into parseable JSON. Return JSON only.',
+    })
+    expect(body.providerWarnings[0]).toMatchObject({
+      provider: 'vision-analysis-json:primary/free-vision',
+      message: 'Model did not return JSON.',
+    })
+    expect(body.candidates[0].name).toBe('Souvla')
+
+    fetchMock.mockRestore()
+  })
+
   it('rejects disallowed Cloudflare origins before parsing uploads', async () => {
     const fetchMock = vi.spyOn(globalThis, 'fetch')
     const formData = vi.fn(async () => new FormData())
