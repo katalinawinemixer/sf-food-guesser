@@ -321,6 +321,83 @@ describe('SF Food Guesser photo flow', () => {
     })
   })
 
+  it('shows only candidate-specific useful web evidence on result cards', async () => {
+    vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ ok: true, visionEnabled: true, model: 'test-model' }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        }),
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            runId: 'run-evidence-filter',
+            summary: 'A food-only Korean restaurant table photo.',
+            imageEvidence: ['banchan dishes', 'rice cakes', 'no visible venue text'],
+            candidates: [
+              {
+                id: '',
+                name: 'San Ho Wan',
+                category: 'Restaurant',
+                neighborhood: 'Mission',
+                confidence: 62,
+                evidenceCategories: ['dish_match', 'web_source_match'],
+                photoEvidence: ['Food presentation resembles a Korean restaurant spread.'],
+                externalEvidence: ['A Michelin page names San Ho Wan in San Francisco.'],
+                reasons: ['Food presentation resembles a Korean restaurant spread.'],
+                sourceUrls: [
+                  'https://guide.michelin.com/us/en/california/san-francisco/restaurant/san-ho-wan',
+                ],
+              },
+            ],
+            webEvidence: [
+              {
+                title: 'Waymo One expands in San Francisco',
+                source: 'waymo.com',
+                url: 'https://waymo.com/blog/waymo-one-san-francisco/',
+                snippet: 'Ride service update.',
+                searchLabel: 'source',
+              },
+              {
+                title: 'San Ho Wan - San Francisco',
+                source: 'guide.michelin.com',
+                url: 'https://guide.michelin.com/us/en/california/san-francisco/restaurant/san-ho-wan',
+                snippet: 'Restaurant guide page for San Ho Wan.',
+                searchLabel: 'source',
+              },
+              {
+                title: 'San Ho Wan delivery',
+                source: 'doordash.com',
+                url: 'https://www.doordash.com/store/san-ho-wan-san-francisco-123',
+                snippet: 'Delivery listing.',
+                searchLabel: 'source',
+              },
+            ],
+            needsMoreEvidence: false,
+          }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } },
+        ),
+      )
+
+    render(<App />)
+
+    const file = new File(['fake image bytes'], 'korean-table.png', { type: 'image/png' })
+    fireEvent.change(screen.getByLabelText(/Drop a food photo here/i), {
+      target: { files: [file] },
+    })
+    const identifyButton = screen.getByRole('button', { name: 'Identify restaurant' })
+    await waitFor(() => {
+      expect(identifyButton).toBeEnabled()
+    })
+    fireEvent.click(identifyButton)
+
+    expect(await screen.findByRole('heading', { name: 'San Ho Wan', level: 3 })).toBeVisible()
+    expect(screen.getByRole('link', { name: /guide\.michelin\.com/i })).toBeVisible()
+    expect(screen.queryByRole('link', { name: /waymo\.com/i })).not.toBeInTheDocument()
+    expect(screen.queryByRole('link', { name: /doordash\.com/i })).not.toBeInTheDocument()
+  })
+
   it('preserves server candidate order instead of re-ranking in the browser', async () => {
     vi.spyOn(globalThis, 'fetch')
       .mockResolvedValueOnce(

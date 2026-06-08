@@ -764,7 +764,7 @@ function flattenQueryLanes(queryLanes = [], maxItems = 12) {
 function normalizeArticleCandidate(candidate) {
   const name = String(candidate.name ?? '').trim()
   const sourceUrls = Array.isArray(candidate.sourceUrls)
-    ? candidate.sourceUrls.map(String).filter(Boolean).slice(0, 4)
+    ? candidate.sourceUrls.map(String).filter(isUsefulEvidenceUrl).slice(0, 4)
     : []
 
   return {
@@ -784,6 +784,30 @@ function normalizeStringList(value, maxItems = 4) {
     : []
 }
 
+const blockedEvidenceDomains = new Set([
+  'doordash.com',
+  'grubhub.com',
+  'postmates.com',
+  'ubereats.com',
+  'waymo.com',
+])
+
+function sourceDomain(url) {
+  try {
+    return new URL(String(url)).hostname.replace(/^www\./, '').toLowerCase()
+  } catch {
+    return ''
+  }
+}
+
+function isUsefulEvidenceUrl(url) {
+  const domain = sourceDomain(url)
+  if (!domain) return false
+  return ![...blockedEvidenceDomains].some((blockedDomain) =>
+    domain === blockedDomain || domain.endsWith(`.${blockedDomain}`),
+  )
+}
+
 function reasonLooksExternal(reason) {
   return /\b(web|source|article|review|public photo|google maps|maps|yelp|eater|infatuation|sf standard|sfgate|url|site|external)\b/i.test(
     reason,
@@ -798,14 +822,18 @@ function explanationBuckets(candidate = {}) {
     ...normalizeStringList(candidate.rankingRules, 5),
     ...normalizeStringList(candidate.rankingNotes, 5),
   ].slice(0, 5)
+  const fallbackPhotoEvidence = reasons.filter((reason) => !reasonLooksExternal(reason)).slice(0, 4)
+  const fallbackExternalEvidence = reasons.filter(reasonLooksExternal).slice(0, 4)
+  const uploadedPhotoEvidence = explicitPhotoEvidence.filter((reason) => !reasonLooksExternal(reason))
+  const misplacedExternalEvidence = explicitPhotoEvidence.filter(reasonLooksExternal)
 
   return {
-    photoEvidence: explicitPhotoEvidence.length
-      ? explicitPhotoEvidence
-      : reasons.filter((reason) => !reasonLooksExternal(reason)).slice(0, 4),
-    externalEvidence: explicitExternalEvidence.length
-      ? explicitExternalEvidence
-      : reasons.filter(reasonLooksExternal).slice(0, 4),
+    photoEvidence: uploadedPhotoEvidence.length ? uploadedPhotoEvidence : fallbackPhotoEvidence,
+    externalEvidence: [
+      ...explicitExternalEvidence,
+      ...misplacedExternalEvidence,
+      ...(!explicitExternalEvidence.length && !misplacedExternalEvidence.length ? fallbackExternalEvidence : []),
+    ].slice(0, 5),
     rankingRules,
     reasons,
   }
@@ -836,7 +864,9 @@ function mergeCandidateRecords(existing, incoming) {
     rankingRules: mergeUniqueStrings(existing.rankingRules ?? [], incoming.rankingRules ?? []).slice(0, 6),
     rankingNotes: mergeUniqueStrings(existing.rankingNotes ?? [], incoming.rankingNotes ?? []).slice(0, 6),
     reasons: mergeUniqueStrings(existing.reasons ?? [], incoming.reasons ?? []).slice(0, 4),
-    sourceUrls: mergeUniqueStrings(existing.sourceUrls ?? [], incoming.sourceUrls ?? []).slice(0, 4),
+    sourceUrls: mergeUniqueStrings(existing.sourceUrls ?? [], incoming.sourceUrls ?? [])
+      .filter(isUsefulEvidenceUrl)
+      .slice(0, 4),
     searchQueries: mergeUniqueStrings(existing.searchQueries ?? [], incoming.searchQueries ?? []).slice(0, 6),
     comparisonPhotos: [
       ...new Map(
@@ -946,7 +976,7 @@ function discoverWebMentionCandidates(webEvidence = [], searchPlan = {}) {
             ? `A web result names ${name} while discussing visual clues that overlap with the uploaded image.`
             : `A web result names ${name} in a source returned for the uploaded image clues.`,
         openingContext: 'Discovered from web/review evidence',
-        sourceUrls: page.url ? [page.url] : [],
+        sourceUrls: page.url && isUsefulEvidenceUrl(page.url) ? [page.url] : [],
         _evidenceScore: score,
       })
     }
@@ -960,6 +990,24 @@ function discoverWebMentionCandidates(webEvidence = [], searchPlan = {}) {
 
 function normalizeNameText(value) {
   return String(value ?? '').toLowerCase().replace(/[^a-z0-9]+/g, '')
+}
+
+function normalizeMatchText(value) {
+  return String(value ?? '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+}
+
+function uploadedEvidenceSupportsSceneCategory(category, uploadedEvidenceText) {
+  if (!['interior_match', 'storefront_match'].includes(category)) return true
+  const text = normalizeMatchText(uploadedEvidenceText)
+  if (!text) return true
+  if (category === 'interior_match') {
+    return /\b(interior|inside|prep area|open kitchen|kitchen|service counter|prep counter|bar counter|counter seating|countertop|bar|shelf|shelves|shelving|tile|tiles|tiled|wall|walls|wood paneled|wood paneling|mural|murals|lighting|seating|booth|booths|dining room|display case|decor|room)\b/.test(text)
+  }
+  return /\b(storefront|exterior|front door|front doors|awning|awnings|front window|front windows|street facing window|street facing windows|facade|facades|street sign|street signs|signage|entrance|entrances|outside)\b/.test(text)
 }
 
 function extractQuotedVisibleText(items = []) {
@@ -1037,7 +1085,7 @@ function normalizeFeedbackPayload(body = {}) {
       rankingRules: cleanTextArray(candidate.rankingRules, 6, 700),
       reasons: cleanTextArray(candidate.reasons, 6, 700),
       rankingNotes: cleanTextArray(candidate.rankingNotes, 6, 700),
-      sourceUrls: cleanTextArray(candidate.sourceUrls, 6, 500),
+      sourceUrls: cleanTextArray(candidate.sourceUrls, 6, 500).filter(isUsefulEvidenceUrl),
     },
     lineup: Array.isArray(body.lineup)
       ? body.lineup
@@ -1098,7 +1146,7 @@ function cleanCandidateForLog(candidate = {}) {
     rankingRules: cleanTextArray(candidate.rankingRules, 6, 700),
     reasons: cleanTextArray(candidate.reasons, 6, 700),
     rankingNotes: cleanTextArray(candidate.rankingNotes, 6, 700),
-    sourceUrls: cleanTextArray(candidate.sourceUrls, 6, 500),
+    sourceUrls: cleanTextArray(candidate.sourceUrls, 6, 500).filter(isUsefulEvidenceUrl),
     mapsQuery: cleanText(candidate.mapsQuery, 240),
     searchQueries: cleanTextArray(candidate.searchQueries, 6, 300),
   }
@@ -1152,7 +1200,7 @@ function cleanArticleCandidateForLog(candidate = {}) {
     address: cleanText(candidate.address, 180),
     whyRelevant: cleanText(candidate.whyRelevant, 700),
     openingContext: cleanText(candidate.openingContext, 300),
-    sourceUrls: cleanTextArray(candidate.sourceUrls, 4, 500),
+    sourceUrls: cleanTextArray(candidate.sourceUrls, 4, 500).filter(isUsefulEvidenceUrl),
   }
 }
 
@@ -1367,7 +1415,9 @@ function buildFallbackCandidates(articleCandidates = []) {
       candidate.whyRelevant || 'This venue was discovered from web evidence matching the uploaded image clues.',
       candidate.openingContext || 'Needs visual confirmation before trusting the exact location.',
     ].filter(Boolean).slice(0, 2),
-    sourceUrls: Array.isArray(candidate.sourceUrls) ? candidate.sourceUrls.slice(0, 3) : [],
+    sourceUrls: Array.isArray(candidate.sourceUrls)
+      ? candidate.sourceUrls.filter(isUsefulEvidenceUrl).slice(0, 3)
+      : [],
     comparisonPhotos: [],
     mapsQuery: [candidate.name, candidate.address || candidate.neighborhood || 'San Francisco']
       .filter(Boolean)
@@ -1463,23 +1513,25 @@ export async function discoverArticleCandidates(searchPlan, searchClient = null)
       const normalized = normalizeArticleCandidate(candidate)
       return {
         ...normalized,
-        sourceUrls: articleGroundingUrls(grounding, `candidates[${index}]`),
+        sourceUrls: articleGroundingUrls(grounding, `candidates[${index}]`).filter(isUsefulEvidenceUrl),
       }
     })
     .filter((candidate) => candidate.name)
 
-  const pages = (Array.isArray(result.results) ? result.results : []).map((item) => {
-    const url = item.url || item.id
-    const highlights = Array.isArray(item.highlights) ? item.highlights : []
-    return {
-      title: String(item.title ?? 'Article candidate page'),
-      source: getSourceName(url, item.author),
-      url: String(url),
-      snippet: highlights.join(' ').slice(0, 900),
-      query,
-      searchLabel: 'article-discovery',
-    }
-  })
+  const pages = (Array.isArray(result.results) ? result.results : [])
+    .map((item) => {
+      const url = item.url || item.id
+      const highlights = Array.isArray(item.highlights) ? item.highlights : []
+      return {
+        title: String(item.title ?? 'Article candidate page'),
+        source: getSourceName(url, item.author),
+        url: String(url),
+        snippet: highlights.join(' ').slice(0, 900),
+        query,
+        searchLabel: 'article-discovery',
+      }
+    })
+    .filter((page) => isUsefulEvidenceUrl(page.url))
 
   return { candidates: candidates.slice(0, 12), pages: pages.slice(0, 12) }
 }
@@ -1573,12 +1625,24 @@ function evidenceNote(category) {
 export function rerankCandidates(rawCandidates = [], options = {}) {
   const seedVenueIds = new Set(options.seedVenueIds ?? [])
   const trustedPhotoUrls = new Set(options.photoEvidenceUrls ?? [])
+  const uploadedEvidenceText = [
+    options.uploadedSummary,
+    ...(Array.isArray(options.uploadedImageEvidence) ? options.uploadedImageEvidence : []),
+  ].join(' ')
   const ocrVisibleText = (options.ocrVisibleText ?? [])
     .map((text) => normalizeNameText(text))
     .filter((text) => text.length >= 4)
   const rankedCandidates = dedupeCandidatesBeforeRanking(rawCandidates)
-    .map((candidate, originalIndex) => {
-      const evidenceCategoriesForCandidate = normalizeEvidenceCategories(candidate)
+    .map((rawCandidate, originalIndex) => {
+      const candidate = {
+        ...rawCandidate,
+        sourceUrls: Array.isArray(rawCandidate.sourceUrls)
+          ? rawCandidate.sourceUrls.filter(isUsefulEvidenceUrl)
+          : [],
+      }
+      const evidenceCategoriesForCandidate = normalizeEvidenceCategories(candidate).filter((category) =>
+        uploadedEvidenceSupportsSceneCategory(category, uploadedEvidenceText),
+      )
       const rawEvidenceCategories = Array.isArray(candidate.evidenceCategories)
         ? candidate.evidenceCategories.map((category) => String(category).toLowerCase())
         : []
@@ -2299,7 +2363,7 @@ export async function searchExaWeb(searchQueries, searchClient = null) {
           query: search.query,
           searchLabel: search.label,
         }
-      })
+      }).filter((page) => isUsefulEvidenceUrl(page.url))
     }),
   )
 
@@ -2349,7 +2413,7 @@ export async function searchCeramicWeb(searchQueries, apiKey = process.env.CERAM
           query: search.query,
           searchLabel: search.label,
         }
-      })
+      }).filter((page) => isUsefulEvidenceUrl(page.url))
     }),
   )
 
@@ -2690,6 +2754,8 @@ export function createApp(options = {}) {
     }
     const candidates = rerankCandidates(fixture.analysis.candidates, {
       seedVenueIds: fixture.options?.seedVenueIds,
+      uploadedSummary: fixture.analysis.summary,
+      uploadedImageEvidence: fixture.analysis.imageEvidence,
       ocrVisibleText: fixture.options?.ocrVisibleText,
     })
     const resultQuality = buildResultQuality(fixture.analysis.candidates, candidates, {
@@ -3026,18 +3092,25 @@ export function createApp(options = {}) {
           ? {
               ...candidate,
               sourceUrls: candidate.sourceUrls?.length
-                ? candidate.sourceUrls
+                ? candidate.sourceUrls.filter(isUsefulEvidenceUrl)
                 : seedVenue.sourceUrl
                   ? [seedVenue.sourceUrl]
                   : [],
               doNotInferFrom: seedVenue.doNotInferFrom ?? candidate.doNotInferFrom,
             }
-          : candidate
+          : {
+              ...candidate,
+              sourceUrls: Array.isArray(candidate.sourceUrls)
+                ? candidate.sourceUrls.filter(isUsefulEvidenceUrl)
+                : [],
+            }
       })
       const rankingDebug = debugRanking ? [] : null
       const candidates = rerankCandidates(constrainedCandidates, {
         seedVenueIds: compactVenues.map((venue) => venue.id),
         photoEvidenceUrls,
+        uploadedSummary: result.summary,
+        uploadedImageEvidence: result.imageEvidence,
         ocrVisibleText: searchPlan?.visibleText ?? [],
         debugReport: rankingDebug,
       })

@@ -755,6 +755,7 @@ export async function searchExaEvidence(searchPlan, env, fetchImpl = fetch, cach
     )
     .filter((result) => {
       const key = result.url || `${result.title}:${result.snippet}`
+      if (result.url && !isUsefulEvidenceUrl(result.url)) return false
       if (!key || seen.has(key)) return false
       seen.add(key)
       return true
@@ -1124,6 +1125,30 @@ function normalizeStringList(value, maxItems = 4) {
     : []
 }
 
+const blockedEvidenceDomains = new Set([
+  'doordash.com',
+  'grubhub.com',
+  'postmates.com',
+  'ubereats.com',
+  'waymo.com',
+])
+
+function sourceDomain(url) {
+  try {
+    return new URL(String(url)).hostname.replace(/^www\./, '').toLowerCase()
+  } catch {
+    return ''
+  }
+}
+
+export function isUsefulEvidenceUrl(url) {
+  const domain = sourceDomain(url)
+  if (!domain) return false
+  return ![...blockedEvidenceDomains].some((blockedDomain) =>
+    domain === blockedDomain || domain.endsWith(`.${blockedDomain}`),
+  )
+}
+
 function reasonLooksExternal(reason) {
   return /\b(web|source|article|review|public photo|google maps|maps|yelp|eater|infatuation|sf standard|sfgate|url|site|external)\b/i.test(
     reason,
@@ -1141,10 +1166,16 @@ function explanationBuckets(candidate) {
 
   const fallbackPhotoEvidence = reasons.filter((reason) => !reasonLooksExternal(reason)).slice(0, 4)
   const fallbackExternalEvidence = reasons.filter(reasonLooksExternal).slice(0, 4)
+  const uploadedPhotoEvidence = explicitPhotoEvidence.filter((reason) => !reasonLooksExternal(reason))
+  const misplacedExternalEvidence = explicitPhotoEvidence.filter(reasonLooksExternal)
 
   return {
-    photoEvidence: explicitPhotoEvidence.length ? explicitPhotoEvidence : fallbackPhotoEvidence,
-    externalEvidence: explicitExternalEvidence.length ? explicitExternalEvidence : fallbackExternalEvidence,
+    photoEvidence: uploadedPhotoEvidence.length ? uploadedPhotoEvidence : fallbackPhotoEvidence,
+    externalEvidence: [
+      ...explicitExternalEvidence,
+      ...misplacedExternalEvidence,
+      ...(!explicitExternalEvidence.length && !misplacedExternalEvidence.length ? fallbackExternalEvidence : []),
+    ].slice(0, 5),
     rankingRules,
     reasons,
   }
@@ -1171,7 +1202,7 @@ export function normalizeCandidate(candidate) {
     rankingRules: explanations.rankingRules,
     reasons: explanations.reasons,
     sourceUrls: Array.isArray(candidate?.sourceUrls)
-      ? candidate.sourceUrls.map(String).slice(0, 4)
+      ? candidate.sourceUrls.map(String).filter(isUsefulEvidenceUrl).slice(0, 4)
       : [],
     doNotInferFrom: Array.isArray(candidate?.doNotInferFrom)
       ? candidate.doNotInferFrom.map(String).slice(0, 6)
@@ -1217,7 +1248,9 @@ function mergeCandidateRecords(existing, incoming) {
     externalEvidence: mergeUniqueStrings(existing.externalEvidence ?? [], incoming.externalEvidence ?? []).slice(0, 5),
     rankingRules: mergeUniqueStrings(existing.rankingRules ?? [], incoming.rankingRules ?? []).slice(0, 6),
     reasons: mergeUniqueStrings(existing.reasons ?? [], incoming.reasons ?? []).slice(0, 4),
-    sourceUrls: mergeUniqueStrings(existing.sourceUrls ?? [], incoming.sourceUrls ?? []).slice(0, 4),
+    sourceUrls: mergeUniqueStrings(existing.sourceUrls ?? [], incoming.sourceUrls ?? [])
+      .filter(isUsefulEvidenceUrl)
+      .slice(0, 4),
   }
 }
 
@@ -1240,6 +1273,16 @@ function normalizeMatchText(value) {
     .replace(/[^a-z0-9]+/g, ' ')
     .replace(/\s+/g, ' ')
     .trim()
+}
+
+function uploadedEvidenceSupportsSceneCategory(category, uploadedEvidenceText) {
+  if (!['interior_match', 'storefront_match'].includes(category)) return true
+  const text = normalizeMatchText(uploadedEvidenceText)
+  if (!text) return true
+  if (category === 'interior_match') {
+    return /\b(interior|inside|prep area|open kitchen|kitchen|service counter|prep counter|bar counter|counter seating|countertop|bar|shelf|shelves|shelving|tile|tiles|tiled|wall|walls|wood paneled|wood paneling|mural|murals|lighting|seating|booth|booths|dining room|display case|decor|room)\b/.test(text)
+  }
+  return /\b(storefront|exterior|front door|front doors|awning|awnings|front window|front windows|street facing window|street facing windows|facade|facades|street sign|street signs|signage|entrance|entrances|outside)\b/.test(text)
 }
 
 function seedVenueCandidates(seedVenues = [], options = {}) {
@@ -1317,6 +1360,10 @@ function rankCandidates(candidates, optionsOrSeedVenueIds = []) {
     ? { seedVenueIds: optionsOrSeedVenueIds }
     : optionsOrSeedVenueIds ?? {}
   const seedIds = new Set((options.seedVenueIds ?? []).filter(Boolean))
+  const uploadedEvidenceText = [
+    options.uploadedSummary,
+    ...(Array.isArray(options.uploadedImageEvidence) ? options.uploadedImageEvidence : []),
+  ].join(' ')
   const ocrVisibleText = (options.ocrVisibleText ?? [])
     .map((text) => normalizeMatchText(text))
     .filter((text) => text.length >= 4)
@@ -1325,6 +1372,11 @@ function rankCandidates(candidates, optionsOrSeedVenueIds = []) {
     .map((candidate, originalIndex) => {
       const categories = new Set(candidate.evidenceCategories)
       const originalCategories = new Set(candidate.evidenceCategories)
+      for (const category of [...categories]) {
+        if (!uploadedEvidenceSupportsSceneCategory(category, uploadedEvidenceText)) {
+          categories.delete(category)
+        }
+      }
       const hasSeedMatch = Boolean(candidate.id) && seedIds.has(candidate.id)
       const candidateText = normalizeMatchText([
         ...(Array.isArray(candidate.reasons) ? candidate.reasons : []),
@@ -1511,6 +1563,11 @@ export function normalizeAnalysis(result, options = {}) {
         ? options.searchPlan.imageEvidence.map(String).slice(0, 8)
         : []
       : rawImageEvidence
+  const rawSummary = String(result?.summary ?? '').trim()
+  const summary =
+    rawSummary && !/^short visual summary$/i.test(rawSummary)
+      ? rawSummary
+      : String(options.searchPlan?.summary ?? 'No visual summary returned.')
   const candidates = [
     ...modelCandidates,
     ...seedVenueCandidates(options.seedVenues, {
@@ -1524,6 +1581,8 @@ export function normalizeAnalysis(result, options = {}) {
   const rankingDebug = options.debugRanking ? [] : null
   const rankedCandidates = rankCandidates(candidates, {
     seedVenueIds: options.seedVenueIds,
+    uploadedSummary: summary,
+    uploadedImageEvidence: imageEvidence,
     ocrVisibleText: [
       ...(Array.isArray(options.searchPlan?.visibleText) ? options.searchPlan.visibleText : []),
       ...(Array.isArray(options.ocr?.visibleText) ? options.ocr.visibleText : []),
@@ -1540,12 +1599,6 @@ export function normalizeAnalysis(result, options = {}) {
     seedVenueIds: options.seedVenueIds,
     modelNeedsMoreEvidence: Boolean(result?.needsMoreEvidence),
   })
-
-  const rawSummary = String(result?.summary ?? '').trim()
-  const summary =
-    rawSummary && !/^short visual summary$/i.test(rawSummary)
-      ? rawSummary
-      : String(options.searchPlan?.summary ?? 'No visual summary returned.')
 
   return {
     summary,

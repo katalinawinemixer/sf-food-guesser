@@ -1376,6 +1376,64 @@ describe('Cloudflare Pages Functions API', () => {
     )
   })
 
+  it('keeps external-photo claims out of uploaded-photo evidence and filters weak provider URLs', () => {
+    const result = normalizeAnalysis({
+      summary: 'Food-only photo with banchan, rice cakes, and sauce on a table.',
+      imageEvidence: ['banchan dishes', 'rice cakes', 'sauce cup', 'no visible venue text'],
+      candidates: [
+        {
+          name: 'San Ho Wan',
+          category: 'Restaurant',
+          neighborhood: 'Mission',
+          confidence: 88,
+          evidenceCategories: ['interior_match', 'dish_match', 'web_source_match'],
+          photoEvidence: ['Interior matches external photos of San Ho Wan.'],
+          externalEvidence: ['A guide page names San Ho Wan as a San Francisco Korean restaurant.'],
+          reasons: [
+            'Interior matches external photos of San Ho Wan.',
+            'Dish presentation loosely resembles Korean restaurant menu photos.',
+          ],
+          sourceUrls: [
+            'https://waymo.com/blog/waymo-one-san-francisco/',
+            'https://www.doordash.com/store/san-ho-wan-san-francisco-123',
+            'https://guide.michelin.com/us/en/california/san-francisco/restaurant/san-ho-wan',
+          ],
+        },
+      ],
+    })
+
+    expect(result.candidates).toHaveLength(1)
+    expect(result.candidates[0].evidenceCategories).not.toContain('interior_match')
+    expect(result.candidates[0].photoEvidence).not.toContain('Interior matches external photos of San Ho Wan.')
+    expect(result.candidates[0].externalEvidence).toEqual(
+      expect.arrayContaining(['Interior matches external photos of San Ho Wan.']),
+    )
+    expect(result.candidates[0].sourceUrls).toEqual([
+      'https://guide.michelin.com/us/en/california/san-francisco/restaurant/san-ho-wan',
+    ])
+  })
+
+  it('keeps uploaded scene evidence when the photo itself has distinctive interior or storefront cues', () => {
+    const result = normalizeAnalysis({
+      summary: 'Cafe interior with green tiles, red booths, and front windows.',
+      imageEvidence: ['green tiles behind the counter', 'red booths', 'front windows'],
+      candidates: [
+        {
+          name: 'Tile Booth Cafe',
+          confidence: 82,
+          evidenceCategories: ['interior_match', 'storefront_match', 'web_source_match'],
+          photoEvidence: ['Uploaded photo shows green tiles, red booths, and front windows.'],
+          sourceUrls: ['https://example.com/tile-booth-cafe'],
+        },
+      ],
+    })
+
+    expect(result.candidates).toHaveLength(1)
+    expect(result.candidates[0].evidenceCategories).toEqual(
+      expect.arrayContaining(['interior_match', 'storefront_match']),
+    )
+  })
+
   it('rejects unsupported Cloudflare photo uploads before provider calls', async () => {
     const fetchMock = vi.spyOn(globalThis, 'fetch')
     const formData = new FormData()
@@ -1494,10 +1552,13 @@ describe('Cloudflare Pages Functions API', () => {
         SF_FOOD_FEEDBACK_KV: { put },
       },
     })
+    const body = await json(response)
     const feedbackPut = put.mock.calls.find(([key]) => String(key).startsWith('feedback:'))
     const storedRecord = JSON.parse(feedbackPut[1])
 
     expect(response.status).toBe(201)
+    expect(JSON.stringify(body)).not.toContain('Kissaten Hi-Fi')
+    expect(JSON.stringify(body)).not.toContain('Wrong Cafe')
     expect(put).toHaveBeenCalledWith('feedback-suggestion:run-suggestion:anonymous-session', expect.any(String))
     expect(storedRecord).toMatchObject({
       runId: 'run-suggestion',

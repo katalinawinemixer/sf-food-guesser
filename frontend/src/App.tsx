@@ -692,6 +692,52 @@ function hasIdentityEvidence(evidenceCategories: string[] = []) {
   )
 }
 
+const blockedEvidenceDomains = new Set([
+  'doordash.com',
+  'grubhub.com',
+  'postmates.com',
+  'ubereats.com',
+  'waymo.com',
+])
+
+function sourceDomain(url?: string) {
+  try {
+    return new URL(String(url ?? '')).hostname.replace(/^www\./, '').toLowerCase()
+  } catch {
+    return ''
+  }
+}
+
+function isUsefulEvidenceUrl(url?: string) {
+  const domain = sourceDomain(url)
+  if (!domain) return false
+  return ![...blockedEvidenceDomains].some((blockedDomain) =>
+    domain === blockedDomain || domain.endsWith(`.${blockedDomain}`),
+  )
+}
+
+function candidateEvidenceSources(match: MatchResult, analysis?: VisionAnalysis) {
+  const webEvidence = analysis?.webEvidence ?? []
+  if (!webEvidence.length) return []
+
+  const sourceUrls = [
+    match.venue.sourceUrl,
+    ...('sourceUrls' in match && Array.isArray(match.sourceUrls) ? match.sourceUrls : []),
+  ]
+  const candidateUrls = new Set(sourceUrls.filter(isUsefulEvidenceUrl))
+  const candidateName = match.venue.name.toLowerCase()
+  const normalizedCandidateName = candidateName.replace(/[^a-z0-9]+/g, ' ').trim()
+
+  return webEvidence
+    .filter((page) => {
+      if (!isUsefulEvidenceUrl(page.url)) return false
+      if (candidateUrls.has(page.url)) return true
+      const pageText = [page.title, page.snippet, page.url].filter(Boolean).join(' ').toLowerCase()
+      return normalizedCandidateName.length >= 4 && pageText.includes(normalizedCandidateName)
+    })
+    .slice(0, 3)
+}
+
 function confidenceLabel(confidence: number, evidenceCategories: string[] = []) {
   if (confidence >= 75 && hasIdentityEvidence(evidenceCategories)) return 'Identity clue'
   if (confidence >= 60) return 'Needs confirmation'
@@ -1809,6 +1855,7 @@ function MainApp() {
                 const externalEvidence = match.externalEvidence ?? []
                 const rankingRules = match.rankingRules?.length ? match.rankingRules : match.rankingNotes
                 const badges = evidenceBadges(match, photo.analysis)
+                const evidenceSources = candidateEvidenceSources(match, photo.analysis)
 
                 return (
                   <article
@@ -1907,10 +1954,10 @@ function MainApp() {
                       ))}
                     </ul>
 
-                    {photo.analysis?.webEvidence?.length ? (
+                    {evidenceSources.length ? (
                       <div className="evidence-sources" aria-label="Supporting web evidence">
                         <span>Evidence checked</span>
-                        {photo.analysis.webEvidence.slice(0, 3).map((page) => (
+                        {evidenceSources.map((page) => (
                           <a key={page.url} href={page.url} target="_blank" rel="noreferrer">
                             {page.searchLabel ? `${page.searchLabel}: ` : ''}
                             {page.source}

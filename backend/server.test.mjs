@@ -349,7 +349,7 @@ describe('SF Food Guesser API', () => {
     const feedbackLogPath = join(tempDir, 'feedback.jsonl')
 
     try {
-      await request(
+      const response = await request(
         createApp({
           openAIClient: null,
           photoSearch: null,
@@ -390,6 +390,8 @@ describe('SF Food Guesser API', () => {
 
       const record = JSON.parse((await readFile(feedbackLogPath, 'utf8')).trim())
 
+      expect(JSON.stringify(response.body)).not.toContain('Kissaten Hi-Fi')
+      expect(JSON.stringify(response.body)).not.toContain('Wrong Cafe')
       expect(record).toMatchObject({
         runId: 'run-correction',
         sessionId: 'anonymous-session',
@@ -2344,6 +2346,57 @@ describe('SF Food Guesser API', () => {
       evidenceCategories: ['interior_match', 'web_source_match'],
     })
     expect(candidates.map((candidate) => candidate.name)).not.toContain('Dish Only Cafe')
+  })
+
+  it('does not treat external-photo claims as uploaded-photo interior evidence', () => {
+    const candidates = rerankCandidates([
+      {
+        name: 'San Ho Wan',
+        confidence: 88,
+        evidenceCategories: ['interior_match', 'dish_match', 'web_source_match'],
+        photoEvidence: ['Interior matches external photos of San Ho Wan.'],
+        externalEvidence: ['A guide page names San Ho Wan as a San Francisco Korean restaurant.'],
+        reasons: ['Interior matches external photos of San Ho Wan.'],
+        sourceUrls: [
+          'https://waymo.com/blog/waymo-one-san-francisco/',
+          'https://www.doordash.com/store/san-ho-wan-san-francisco-123',
+          'https://guide.michelin.com/us/en/california/san-francisco/restaurant/san-ho-wan',
+        ],
+      },
+    ], {
+      uploadedSummary: 'Food-only photo with banchan, rice cakes, and sauce on a table.',
+      uploadedImageEvidence: ['banchan dishes', 'rice cakes', 'sauce cup', 'no visible venue text'],
+    })
+
+    expect(candidates).toHaveLength(1)
+    expect(candidates[0].evidenceCategories).not.toContain('interior_match')
+    expect(candidates[0].photoEvidence).not.toContain('Interior matches external photos of San Ho Wan.')
+    expect(candidates[0].externalEvidence).toEqual(
+      expect.arrayContaining(['Interior matches external photos of San Ho Wan.']),
+    )
+    expect(candidates[0].sourceUrls).toEqual([
+      'https://guide.michelin.com/us/en/california/san-francisco/restaurant/san-ho-wan',
+    ])
+  })
+
+  it('keeps uploaded interior and storefront categories for distinctive scene cues', () => {
+    const candidates = rerankCandidates([
+      {
+        name: 'Tile Booth Cafe',
+        confidence: 82,
+        evidenceCategories: ['interior_match', 'storefront_match', 'web_source_match'],
+        photoEvidence: ['Uploaded photo shows green tiles, red booths, and front windows.'],
+        sourceUrls: ['https://example.com/tile-booth-cafe'],
+      },
+    ], {
+      uploadedSummary: 'Cafe interior with green tiles, red booths, and front windows.',
+      uploadedImageEvidence: ['green tiles behind the counter', 'red booths', 'front windows'],
+    })
+
+    expect(candidates).toHaveLength(1)
+    expect(candidates[0].evidenceCategories).toEqual(
+      expect.arrayContaining(['interior_match', 'storefront_match']),
+    )
   })
 
   it('caps unverified web-discovered interior claims', () => {
