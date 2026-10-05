@@ -1,4 +1,4 @@
-import { type DragEvent, type FormEvent, useEffect, useMemo, useState } from 'react'
+import { type DragEvent, type FormEvent, useEffect, useMemo, useRef, useState } from 'react'
 import { gps } from 'exifr'
 import {
   ArrowUpRight,
@@ -1153,9 +1153,10 @@ const analysisSteps = [
   'Ranking likely SF matches',
 ]
 
-async function analyzePhotoWithVision(file: File): Promise<VisionAnalysis> {
+async function analyzePhotoWithVision(file: File, signal: AbortSignal): Promise<VisionAnalysis> {
   const payload = new FormData()
   const { photo, ocrPhoto } = await prepareUploadImages(file)
+  signal.throwIfAborted()
   payload.append('photo', photo)
   if (ocrPhoto) payload.append('ocrPhoto', ocrPhoto)
 
@@ -1163,6 +1164,7 @@ async function analyzePhotoWithVision(file: File): Promise<VisionAnalysis> {
     method: 'POST',
     body: payload,
     credentials: 'include',
+    signal,
   })
 
   if (!response.ok) {
@@ -1188,6 +1190,9 @@ function MainApp() {
   })
   const [correctionState, setCorrectionState] = useState<CorrectionState>({ status: 'idle' })
   const feedbackSessionId = useMemo(() => getFeedbackSessionId(), [])
+  const analysisRequest = useRef<AbortController | null>(null)
+
+  useEffect(() => () => analysisRequest.current?.abort(), [])
 
   const matches = useMemo(
     () =>
@@ -1271,8 +1276,14 @@ function MainApp() {
     setCorrectionState({ status: 'idle' })
   }
 
+  function cancelAnalysis() {
+    analysisRequest.current?.abort()
+    analysisRequest.current = null
+  }
+
   function handlePhotoFile(file?: File) {
     if (!file) return
+    cancelAnalysis()
     const validationMessage = validatePhotoFile(file)
 
     if (validationMessage) {
@@ -1312,6 +1323,7 @@ function MainApp() {
       return
     }
 
+    cancelAnalysis()
     setPhotoFile(null)
     resetFeedbackAndCorrections()
     setPhoto({
@@ -1322,7 +1334,10 @@ function MainApp() {
   }
 
   async function submitPhoto() {
-    if (!photoFile || !photo.previewUrl) return
+    if (!photoFile || !photo.previewUrl || photo.status === 'reading') return
+    cancelAnalysis()
+    const controller = new AbortController()
+    analysisRequest.current = controller
 
     setPhoto({
       status: 'reading',
@@ -1336,8 +1351,9 @@ function MainApp() {
     try {
       const [location, analysis] = await Promise.all([
         gps(photoFile).catch(() => undefined),
-        analyzePhotoWithVision(photoFile),
+        analyzePhotoWithVision(photoFile, controller.signal),
       ])
+      if (analysisRequest.current !== controller || controller.signal.aborted) return
       const coords =
         location &&
         Number.isFinite(location.latitude) &&
@@ -1372,6 +1388,7 @@ function MainApp() {
         message: `The image was analyzed, but it was too ambiguous to rank a venue: ${analysis.summary}`,
       })
     } catch (error) {
+      if (analysisRequest.current !== controller || controller.signal.aborted) return
       const message =
         error instanceof Error
           ? error.message
@@ -1382,10 +1399,13 @@ function MainApp() {
         previewUrl,
         message,
       })
+    } finally {
+      if (analysisRequest.current === controller) analysisRequest.current = null
     }
   }
 
   function clearPhoto() {
+    cancelAnalysis()
     setPhoto({ status: 'empty' })
     setPhotoFile(null)
     setActiveVenueId(null)
@@ -1665,12 +1685,10 @@ function MainApp() {
 
           {photo.status !== 'empty' ? (
             <div className="upload-controls">
-              {photo.status !== 'reading' ? (
-                <button className="clear-photo" type="button" aria-label="Remove photo" onClick={clearPhoto}>
-                  <X size={14} />
-                  Remove photo
-                </button>
-              ) : null}
+              <button className="clear-photo" type="button" aria-label="Remove photo" onClick={clearPhoto}>
+                <X size={14} />
+                Remove photo
+              </button>
 
               <div className={`photo-status ${photo.status}`}>
                 {photo.status === 'gps' ? <LocateFixed size={16} /> : <Camera size={16} />}

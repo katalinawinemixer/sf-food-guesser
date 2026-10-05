@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import App from './App'
 
@@ -16,6 +16,55 @@ describe('SF Food Guesser photo flow', () => {
   afterEach(() => {
     cleanup()
     vi.unstubAllGlobals()
+  })
+
+  for (const outcome of ['success', 'error']) {
+    it(`ignores stale analysis ${outcome} after replacing a photo`, async () => {
+      let finishAnalysis!: (response: Response) => void
+      const pendingAnalysis = new Promise<Response>((resolve) => { finishAnalysis = resolve })
+      const fetchMock = vi.spyOn(globalThis, 'fetch')
+        .mockResolvedValueOnce(new Response(JSON.stringify({ ok: true, visionEnabled: true, model: 'test-model' })))
+        .mockImplementationOnce(() => pendingAnalysis)
+      render(<App />)
+      const input = document.querySelector('input[type="file"]') as HTMLInputElement
+      fireEvent.change(input, { target: { files: [new File(['first'], 'first.png', { type: 'image/png' })] } })
+      fireEvent.click(await screen.findByRole('button', { name: 'Identify restaurant' }))
+      await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2))
+      fireEvent.change(input, { target: { files: [new File(['second'], 'second.png', { type: 'image/png' })] } })
+      await act(async () => {
+        finishAnalysis(outcome === 'success'
+        ? new Response(JSON.stringify({ summary: 'Old photo result', imageEvidence: [], candidates: [], needsMoreEvidence: true }))
+        : new Response(JSON.stringify({ error: 'Old photo error' }), { status: 500 }))
+        await pendingAnalysis
+      })
+      await waitFor(() => expect(screen.getByRole('button', { name: 'Identify restaurant' })).toBeEnabled())
+      expect(screen.getByRole('img', { name: 'second.png' })).toBeVisible()
+      expect(screen.getByText('Photo loaded. Submit it to identify the most likely SF venue.')).toBeVisible()
+      expect(screen.queryByText(/Old photo (result|error)/)).not.toBeInTheDocument()
+    })
+  }
+
+  it('cancels an in-flight analysis when the photo is removed', async () => {
+    let finishAnalysis!: (response: Response) => void
+    const pendingAnalysis = new Promise<Response>((resolve) => { finishAnalysis = resolve })
+    const fetchMock = vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(new Response(JSON.stringify({ ok: true, visionEnabled: true, model: 'test-model' })))
+      .mockImplementationOnce(() => pendingAnalysis)
+    render(<App />)
+    fireEvent.change(document.querySelector('input[type="file"]') as HTMLInputElement, {
+      target: { files: [new File(['first'], 'first.png', { type: 'image/png' })] },
+    })
+    fireEvent.click(await screen.findByRole('button', { name: 'Identify restaurant' }))
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2))
+    const signal = fetchMock.mock.calls[1][1]?.signal
+    fireEvent.click(screen.getByRole('button', { name: 'Remove photo' }))
+    expect(signal?.aborted).toBe(true)
+    await act(async () => {
+      finishAnalysis(new Response(JSON.stringify({ summary: 'Removed photo result', imageEvidence: [], candidates: [], needsMoreEvidence: true })))
+      await pendingAnalysis
+    })
+    expect(screen.getByText('Drop a food photo here')).toBeVisible()
+    expect(screen.queryByText(/Removed photo result/)).not.toBeInTheDocument()
   })
 
   it('renders as a photo-first app without typed text-entry UI', () => {
